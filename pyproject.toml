@@ -7,11 +7,16 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Haiwei Yu" }]
 requires-python = ">=3.12"
+# The crawler needs only these; it runs from its own small environment (scripts/start-crawl.ps1) so that heavier
+# analysis and orchestration packages can change while a multi-day crawl keeps going.
 dependencies = [
   "httpx>=0.28",
   "lxml>=5.3",
   "protego>=0.3",
 ]
+
+[project.optional-dependencies]
+orchestration = ["prefect>=3.4"]
 
 [project.scripts]
 ssp = "safestart_pipeline.cli:main"

@@ -22,12 +22,16 @@ the data-engineering principles will be added as each stage lands.
 ## Quick start
 
 ```bash
-uv sync
+uv sync --all-extras
 uv run pytest
 uv run ssp inventory msha   # robots.txt and sitemaps -> the URL inventory
 uv run ssp crawl msha       # resumable; state lives in <data root>/state/crawl-msha.sqlite
 uv run ssp status msha
 ```
+
+On Windows, `scripts/start-crawl.ps1 -Site osha` starts a crawl that outlives the shell, from its own small environment
+in `.runtime/`, so the development environment can change while a multi-day crawl continues; `scripts/stop-crawl.ps1`
+stops it and the next start resumes.
 
 The data root defaults to `./data`; set `SAFESTART_DATA_ROOT` or `data_root` in `pipeline.local.toml` to move it.
 

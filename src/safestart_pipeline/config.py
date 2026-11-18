@@ -17,11 +17,15 @@ USER_AGENT = "Mozilla/5.0 (compatible; SafeStartInventory/0.1)"
 def data_root() -> Path:
     """Where raw files, state, the lake and the warehouse live.
 
-    SAFESTART_DATA_ROOT wins, then `data_root` in pipeline.local.toml, then ./data inside the repository.
+    SAFESTART_DATA_ROOT wins, then `data_root` in a pipeline.local.toml in the working directory or the repository
+    (an installed copy, such as the crawler's own environment, finds it through the working directory), then ./data.
     """
     value = os.environ.get("SAFESTART_DATA_ROOT")
-    if not value and LOCAL_CONFIG.exists():
-        value = tomllib.loads(LOCAL_CONFIG.read_text(encoding="utf-8")).get("data_root")
-    root = Path(value) if value else REPO_ROOT / "data"
+    if not value:
+        for candidate in (Path.cwd() / LOCAL_CONFIG.name, LOCAL_CONFIG):
+            if candidate.exists():
+                value = tomllib.loads(candidate.read_text(encoding="utf-8")).get("data_root")
+                break
+    root = Path(value) if value else Path.cwd() / "data"
     root.mkdir(parents=True, exist_ok=True)
     return root

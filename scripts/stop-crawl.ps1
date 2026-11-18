@@ -2,8 +2,8 @@
 # flight is fetched again on the next start.
 param([Parameter(Mandatory = $true)][ValidateSet("osha", "msha")][string]$Site)
 
-$targets = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*ssp*crawl $Site*" })
-if (-not $targets) {
+$targets = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*safestart_pipeline.cli crawl $Site*" })
+if ($targets.Count -eq 0) {
   "No $Site crawl is running."
   return
 }
