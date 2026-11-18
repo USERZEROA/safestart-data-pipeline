@@ -28,11 +28,13 @@ if ($running.Count -gt 0) {
   return
 }
 
-# Created through WMI so the crawl does not belong to this shell and survives it. The working directory is the
-# repository, where pipeline.local.toml names the data root.
+# Created through WMI so the crawl does not belong to this shell and survives it, with its console window hidden
+# (progress is in the log file). The working directory is the repository, where pipeline.local.toml names the data root.
+$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
 $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-  CommandLine      = "`"$python`" -m safestart_pipeline.cli crawl $Site"
-  CurrentDirectory = $repo
+  CommandLine               = "`"$python`" -m safestart_pipeline.cli crawl $Site"
+  CurrentDirectory          = $repo
+  ProcessStartupInformation = $startup
 }
 if ($result.ReturnValue -ne 0) { throw "Could not start the crawl (Win32_Process.Create returned $($result.ReturnValue))." }
 "Started the $Site crawl as process $($result.ProcessId)."
