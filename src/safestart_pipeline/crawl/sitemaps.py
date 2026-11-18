@@ -1,0 +1,56 @@
+"""Sitemap index and URL-set parsing (sitemaps.org 0.9), plain or gzip, with entity expansion and network access off."""
+
+from __future__ import annotations
+
+import gzip
+from dataclasses import dataclass
+
+from lxml import etree
+
+GZIP_MAGIC = bytes([0x1F, 0x8B])
+
+
+@dataclass(frozen=True)
+class SitemapEntry:
+    loc: str
+    lastmod: str | None
+
+
+@dataclass(frozen=True)
+class Sitemap:
+    kind: str  # "index" or "urlset"
+    entries: list[SitemapEntry]
+
+
+def _parser() -> etree.XMLParser:
+    return etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+
+
+def parse_sitemap(content: bytes) -> Sitemap:
+    """Entries of a sitemap index (child sitemaps) or a URL set (pages). Raises ValueError for anything else."""
+    if content[:2] == GZIP_MAGIC:
+        content = gzip.decompress(content)
+    try:
+        root = etree.fromstring(content, parser=_parser())
+    except etree.XMLSyntaxError as problem:
+        raise ValueError(f"not well-formed XML: {problem}") from problem
+    kind = etree.QName(root).localname
+    if kind not in ("sitemapindex", "urlset"):
+        raise ValueError(f"not a sitemap: <{kind}>")
+    child = "sitemap" if kind == "sitemapindex" else "url"
+    entries: list[SitemapEntry] = []
+    for item in root:
+        if not isinstance(item.tag, str) or etree.QName(item).localname != child:
+            continue
+        loc = lastmod = None
+        for field in item:
+            if not isinstance(field.tag, str):
+                continue
+            name = etree.QName(field).localname
+            if name == "loc":
+                loc = (field.text or "").strip()
+            elif name == "lastmod":
+                lastmod = (field.text or "").strip() or None
+        if loc:
+            entries.append(SitemapEntry(loc, lastmod))
+    return Sitemap("index" if kind == "sitemapindex" else "urlset", entries)
