@@ -1,4 +1,4 @@
-from safestart_pipeline.crawl.urls import extension, is_media, normalize
+from safestart_pipeline.crawl.urls import extension, is_asset, normalize
 
 BASE = "https://www.example.test/a/x/"
 
@@ -24,10 +24,12 @@ def test_normalize_rejects_everything_that_is_not_a_web_url():
         assert normalize(value, BASE) is None
 
 
-def test_extension_and_media():
+def test_extension_and_page_assets():
     assert extension("https://x.test/a/B.PDF") == ".pdf"
     assert extension("https://x.test/a/") == ""
     assert extension("https://x.test/.hidden") == ""
-    assert is_media("https://x.test/logo.PNG")
-    assert not is_media("https://x.test/doc.pdf")
-    assert not is_media("https://x.test/page")
+    assert is_asset("https://x.test/theme/site.CSS") and is_asset("https://x.test/app.js")
+    assert not is_asset("https://x.test/logo.png")  # images, audio and video are content
+    assert not is_asset("https://x.test/briefing.wav")
+    assert not is_asset("https://x.test/doc.pdf")
+    assert not is_asset("https://x.test/page")

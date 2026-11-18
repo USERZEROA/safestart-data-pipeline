@@ -4,14 +4,10 @@ from __future__ import annotations
 
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
-# Page assets and media are not part of the regulatory corpus: they are recorded as skipped and never downloaded.
-MEDIA_EXTENSIONS = frozenset(
-    (
-        ".jpg .jpeg .png .gif .svg .webp .avif .ico .bmp .tif .tiff .heic "
-        ".mp4 .m4v .mov .avi .wmv .webm .mpg .mpeg .flv .swf .mp3 .wav .m4a .ogg .wma "
-        ".css .js .map .woff .woff2 .ttf .otf .eot"
-    ).split()
-)
+# Page assets (style sheets, scripts, fonts) are the site's own machinery, not content: they are recorded as skipped
+# "asset" and never downloaded. Images, audio and video linked from the sites are content and are downloaded like any
+# other file, so each copy is complete (owner, 2026-11-18).
+ASSET_EXTENSIONS = frozenset(".css .js .mjs .map .woff .woff2 .ttf .otf .eot".split())
 
 _SAFE_PATH = "/%:@!$&'()*+,;=-._~"
 _SAFE_QUERY = _SAFE_PATH + "?"
@@ -44,5 +40,5 @@ def extension(url: str) -> str:
     return last[dot:].lower() if dot > 0 else ""
 
 
-def is_media(url: str) -> bool:
-    return extension(url) in MEDIA_EXTENSIONS
+def is_asset(url: str) -> bool:
+    return extension(url) in ASSET_EXTENSIONS

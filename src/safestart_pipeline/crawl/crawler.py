@@ -1,8 +1,9 @@
 """Polite, resumable crawl of one site.
 
 Seeds from the site's sitemaps, follows in-scope links and redirects, and gives every URL it learns of a final state:
-fetched (with SHA-256), unchanged (304), redirect, not_found, error (after retries) or skipped (robots, media, size cap,
-discovered-URL limit). Requests go one at a time, at least `Crawl-delay` apart, and stop on a sustained block.
+fetched (with SHA-256), unchanged (304), redirect, not_found, error (after retries) or skipped (robots, page asset,
+query string, excluded, size limit, discovered-URL limit). Requests go one at a time, at least `Crawl-delay` apart,
+and stop on a sustained block.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from .robots import Robots
 from .sitemaps import parse_sitemap
 from .sites import Site
 from .store import Store
-from .urls import is_media, normalize
+from .urls import is_asset, normalize
 
 RETRY_DELAYS = (timedelta(minutes=5), timedelta(minutes=30))  # a third failure is final
 RETRY_STATUSES = frozenset({403, 408, 425, 429, 500, 502, 503, 504})
@@ -162,8 +163,8 @@ class Crawler:
             state, reason = "skipped", "robots"
         elif self.site.excluded(url):
             state, reason = "skipped", "excluded"
-        elif is_media(url):
-            state, reason = "skipped", "media"
+        elif is_asset(url):
+            state, reason = "skipped", "asset"
         elif not in_sitemap and not self.site.follow_query_links and urlsplit(url).query:
             state, reason = "skipped", "query"
         elif not in_sitemap and self.discovered >= self.site.discovered_limit:
@@ -296,12 +297,31 @@ class Crawler:
             self.pause(result.retry_after)
         return results
 
+    def requeue_policy_skips(self) -> dict[str, int]:
+        """Queue again what an earlier, stricter rule skipped: images, audio and video (once skipped as "media") and
+        files under the site's current size limit (once over a smaller one). Page assets stay skipped."""
+        counts = {"media": 0, "size_cap": 0}
+        for row in self.store.skipped(("media", "size_cap")):
+            url, reason = row["url"], row["skip_reason"]
+            if reason == "media" and is_asset(url):
+                self.store.update(url, skip_reason="asset")
+                continue
+            if reason == "size_cap" and (row["content_length"] or 0) > self.site.max_bytes:
+                continue
+            self.store.update(url, state="pending", skip_reason=None, error=None, attempts=0, next_attempt_at=None)
+            counts[reason] += 1
+        self.store.commit()
+        return counts
+
     # Crawl -------------------------------------------------------------------------------------------------------------
 
     def crawl(self, max_requests: int | None = None, until: datetime | None = None) -> dict[str, object]:
         """Work through due URLs until none are left, the request or time limit is reached, the byte budget is used,
         or the site keeps answering like a block."""
         self.ensure_robots()
+        requeued = self.requeue_policy_skips()
+        if any(requeued.values()):
+            self.log.info("queued again under the current download rules: %s", requeued)
         blocked_in_a_row = block_pauses = 0
         stopped = "done"
         while True:
@@ -327,7 +347,7 @@ class Crawler:
                 continue
             result = fetch(
                 self.client, url, self.objects, etag=row["etag"], last_modified=row["last_modified"],
-                max_bytes=self.site.max_bytes,
+                max_bytes=self.site.max_bytes, max_seconds=self.site.max_seconds,
             )
             self.requests += 1
             self.apply(row, result)

@@ -17,7 +17,10 @@ class Site:
     min_delay: float  # seconds between requests; robots.txt Crawl-delay raises it, never lowers it
     byte_budget: int  # stop and report when downloads reach this many bytes
     discovered_limit: int = 100_000  # URLs found only through links; beyond it they are recorded as skipped
-    max_bytes: int = 50 * 1024 * 1024  # per file
+    # Per file. Copies are complete (owner, 2026-11-18): these limits only stop a runaway response, and a file that
+    # passes them is never left out for its size.
+    max_bytes: int = 2 * GB
+    max_seconds: float = 3600.0
     # Links with a query string (filters, facets, search, calendars) multiply without end. They are recorded as skipped
     # unless the sitemap lists them; sitemap URLs are always fetched when robots.txt allows them.
     follow_query_links: bool = False
@@ -67,7 +70,8 @@ SITES = {
         hosts=frozenset({"arlweb.msha.gov"}),
         sitemaps=(),
         min_delay=1.0,
-        byte_budget=20 * GB,  # raised from 10 GB (owner, 2026-11-18): the fatality reports alone outgrew it
+        # Complete copy (owner, 2026-11-18): about 12 GB of pages and reports plus 13 GB of large exhibits.
+        byte_budget=40 * GB,
         seed_from=("msha",),
         excluded_paths=("/OpenGovernmentData/DataSets/",),
     ),

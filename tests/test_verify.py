@@ -21,7 +21,7 @@ def test_a_finished_crawl_is_complete_and_damaged_files_are_found(setup, tmp_pat
     report = verify_crawl(crawler.site, tmp_path, rehash=True)
     assert report["verdict"] == {"complete": True, "reasons": []}
     assert report["waiting"] == 0 and report["sitemap"]["urls"] == 6
-    assert {reason: item["count"] for reason, item in report["skipped"].items()} == {"robots": 2, "media": 1, "size_cap": 1}
+    assert {reason: item["count"] for reason, item in report["skipped"].items()} == {"robots": 2, "asset": 1, "size_cap": 1}
     assert report["skipped"]["size_cap"]["examples"] == [f"{HOST}/big.pdf  (0.0 MB)"]
     assert report["failed"]["not_found"]["count"] == 1 and report["redirects"] == {"target fetched": 1}
     assert report["outside_links"]["by_host"] == {"other.test": 1}

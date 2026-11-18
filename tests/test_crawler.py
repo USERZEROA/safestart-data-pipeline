@@ -32,7 +32,7 @@ PAGES = """<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://other.test/not-ours</loc></url>
 </urlset>"""
 HOME = """<html><body>
-<a href="/a">A</a> <a href="/b">B</a> <a href="/private/x">private</a> <a href="/logo.png">logo</a>
+<a href="/a">A</a> <a href="/b">B</a> <a href="/private/x">private</a> <a href="/logo.png">logo</a> <a href="/site.css">style</a>
 <a href="/search?q=1">search</a> <a href="https://other.test/x">elsewhere</a> <a href="http://example.test/c">C</a>
 </body></html>"""
 HTML = {"content-type": "text/html; charset=utf-8"}
@@ -75,6 +75,8 @@ class FakeSite:
             return httpx.Response(200, text="ok", headers={"content-type": "text/plain"})
         if path == "/moved":
             return httpx.Response(301, headers={"location": "/b"})
+        if path == "/logo.png":
+            return httpx.Response(200, content=b"PNG" + b"0" * 100, headers={"content-type": "image/png"})
         return httpx.Response(404)
 
 
@@ -133,7 +135,8 @@ def test_every_url_ends_in_a_final_state(setup):
         f"{HOST}/flaky": ("fetched", None),
         f"{HOST}/moved": ("redirect", None),
         f"{HOST}/private/x": ("skipped", "robots"),
-        f"{HOST}/logo.png": ("skipped", "media"),
+        f"{HOST}/logo.png": ("fetched", None),
+        f"{HOST}/site.css": ("skipped", "asset"),
         f"{HOST}/search?q=1": ("skipped", "robots"),
     }
     assert all(state in FINAL_STATES for state, _ in states(crawler).values())
@@ -147,7 +150,7 @@ def test_politeness_rules_hold(setup):
     crawler.seed_from_sitemaps()
     crawler.crawl()
     requested = [str(request.url) for request in fake.requests]
-    assert not [url for url in requested if "/private/" in url or "?" in url or url.endswith(".png") or "other.test" in url]
+    assert not [url for url in requested if "/private/" in url or "?" in url or url.endswith(".css") or "other.test" in url]
     assert all(request.headers["user-agent"] == USER_AGENT for request in fake.requests)
     # robots.txt asks for 10 s between requests: no pause is shorter, and each request is followed by one.
     assert min(clock.sleeps) >= 10.0
@@ -169,7 +172,7 @@ def test_recheck_is_conditional(setup):
     crawler, fake, clock = setup
     crawler.seed_from_sitemaps()
     crawler.crawl()
-    assert crawler.store.recheck() == 5
+    assert crawler.store.recheck() == 6
     fake.requests.clear()
     crawler.crawl()
     sent = [request for request in fake.requests if request.url.path == "/a"]
@@ -269,6 +272,32 @@ def test_an_approved_large_file_is_fetched_on_request(setup):
     assert clock.sleeps[-1] >= 10.0  # the site's crawl delay still follows the request
 
 
+def test_files_an_earlier_rule_skipped_are_queued_again(setup):
+    crawler, fake, clock = setup
+    rows = {
+        f"{HOST}/logo.png": ("media", None),  # an image: downloaded now
+        f"{HOST}/site.css": ("media", None),  # a page asset: stays skipped, under its own reason
+        f"{HOST}/big.pdf": ("size_cap", 5004),  # still over this site's 1,000-byte limit
+        f"{HOST}/b": ("size_cap", 800),  # under it now
+        f"{HOST}/c": ("size_cap", None),  # size never declared
+    }
+    for url, (reason, size) in rows.items():
+        crawler.store.insert_url(url, source="sitemap", state="skipped", skip_reason=reason, in_sitemap=True, lastmod=None,
+                                 discovered_from=None, now="2026-11-17T12:00:00Z")
+        crawler.store.update(url, content_length=size)
+    crawler.store.commit()
+    assert crawler.requeue_policy_skips() == {"media": 1, "size_cap": 2}
+    assert {url: states(crawler)[url] for url in rows} == {
+        f"{HOST}/logo.png": ("pending", None),
+        f"{HOST}/site.css": ("skipped", "asset"),
+        f"{HOST}/big.pdf": ("skipped", "size_cap"),
+        f"{HOST}/b": ("pending", None),
+        f"{HOST}/c": ("pending", None),
+    }
+    crawler.crawl()
+    assert crawler.store.get(f"{HOST}/logo.png")["state"] == "fetched"
+
+
 def test_a_host_without_sitemaps_is_seeded_from_another_crawls_links(tmp_path):
     clock = Clock()
     first = Store(tmp_path / "state" / "crawl-example.sqlite")
@@ -292,11 +321,11 @@ def test_a_host_without_sitemaps_is_seeded_from_another_crawls_links(tmp_path):
         "https://legacy.example.test/report.pdf": ("pending", None),
         "https://legacy.example.test/old.htm": ("pending", None),
         "https://legacy.example.test/data/sets/x.zip": ("skipped", "excluded"),
-        "https://legacy.example.test/clip.wav": ("skipped", "media"),
+        "https://legacy.example.test/clip.wav": ("pending", None),
     }
     assert crawler.store.get("https://legacy.example.test/old.htm")["discovered_from"] == f"{HOST}/"
     assert crawler.crawl()["stopped"] == "done"
-    assert crawler.store.counts() == {"fetched": 2, "skipped": 2}
+    assert crawler.store.counts() == {"fetched": 3, "skipped": 1}
     crawler.store.close()
     client.close()
 

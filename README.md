@@ -27,10 +27,12 @@ the data-engineering principles will be added as each stage lands.
 - One request at a time per host, a product-token User-Agent, conditional requests on re-checks, and backing off on
   `429`/`503` and on repeated `403` responses. A block is never worked around.
 - Every URL the crawler learns of, from a sitemap, a page link or a redirect, ends in a recorded state: fetched (with its
-  SHA-256), unchanged, redirect, not found, error after retries, or skipped with a reason (robots, media, query string,
-  size cap, or excluded because another source downloads it).
-- Files over 50 MB are recorded as skipped; ones judged worth keeping are downloaded one by one with
-  `ssp fetch <site> <url> --max-mb <n>`, under the same robots.txt check and pacing.
+  SHA-256), unchanged, redirect, not found, error after retries, or skipped with a reason (robots, page asset such as a
+  style sheet or script, query string, size limit, or excluded because another source downloads it).
+- Copies are complete: images, audio and video linked from the sites are kept like documents, and a file is skipped
+  only above 2 GB or an hour of download, limits that stop a runaway response. `ssp fetch <site> <url> --max-mb <n>`
+  downloads such a file on its own under the same robots.txt check and pacing. A crawl first re-queues what an earlier,
+  stricter rule skipped (the former 50 MB limit and the former media rule).
 
 ## Completeness
 

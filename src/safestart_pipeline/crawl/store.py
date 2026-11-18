@@ -145,6 +145,11 @@ class Store:
         row = self.db.execute("select coalesce(sum(content_length), 0) from urls where state = 'fetched'").fetchone()
         return int(row[0])
 
+    def skipped(self, reasons: tuple[str, ...]) -> list[sqlite3.Row]:
+        marks = ", ".join("?" for _ in reasons)
+        query = f"select * from urls where state = 'skipped' and skip_reason in ({marks})"
+        return self.db.execute(query, reasons).fetchall()
+
     def recheck(self) -> int:
         """Queue every downloaded or unchanged URL again; the stored validators make the requests conditional."""
         cursor = self.db.execute(
