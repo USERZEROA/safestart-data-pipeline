@@ -67,7 +67,7 @@ SITES = {
         hosts=frozenset({"arlweb.msha.gov"}),
         sitemaps=(),
         min_delay=1.0,
-        byte_budget=10 * GB,
+        byte_budget=20 * GB,  # raised from 10 GB (owner, 2026-11-18): the fatality reports alone outgrew it
         seed_from=("msha",),
         excluded_paths=("/OpenGovernmentData/DataSets/",),
     ),
