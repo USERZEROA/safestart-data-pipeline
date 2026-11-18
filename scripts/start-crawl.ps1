@@ -6,7 +6,7 @@
 # repository), so the development environment can add or upgrade packages while a crawl that takes days keeps going.
 # -Refresh rebuilds that snapshot from the working tree; it refuses while any crawl is running.
 param(
-  [Parameter(Mandatory = $true)][ValidateSet("osha", "msha")][string]$Site,
+  [Parameter(Mandatory = $true)][ValidateSet("osha", "msha", "arlweb")][string]$Site,
   [switch]$Refresh
 )
 

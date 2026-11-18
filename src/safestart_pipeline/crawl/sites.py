@@ -21,6 +21,14 @@ class Site:
     # Links with a query string (filters, facets, search, calendars) multiply without end. They are recorded as skipped
     # unless the sitemap lists them; sitemap URLs are always fetched when robots.txt allows them.
     follow_query_links: bool = False
+    # A host without sitemaps is seeded from the links other crawls recorded to it (`ssp inventory` reads them).
+    seed_from: tuple[str, ...] = ()
+    # Path prefixes (compared without case) that another source already downloads; recorded as skipped "excluded".
+    excluded_paths: tuple[str, ...] = ()
+
+    def excluded(self, url: str) -> bool:
+        path = urlsplit(url).path.lower()
+        return any(path.startswith(prefix.lower()) for prefix in self.excluded_paths)
 
     def in_scope(self, url: str | None) -> str | None:
         """The canonical https form of a URL on one of this site's hosts, or None for any other host."""
@@ -48,5 +56,19 @@ SITES = {
         sitemaps=("https://www.msha.gov/sitemap.xml",),
         min_delay=1.0,
         byte_budget=15 * GB,
+    ),
+    # MSHA's legacy host: no home page (it redirects to www.msha.gov), no sitemap and no directory listings. Most old
+    # pages now redirect to www.msha.gov, while older documents (investigation reports, guides, alerts) are still served
+    # here, reachable only through links, so the www.msha.gov crawl's links seed it. Its open-data directory belongs to
+    # the bulk source (acquire/bulk.py), which keeps every version of those files.
+    "arlweb": Site(
+        name="arlweb",
+        canonical_host="arlweb.msha.gov",
+        hosts=frozenset({"arlweb.msha.gov"}),
+        sitemaps=(),
+        min_delay=1.0,
+        byte_budget=10 * GB,
+        seed_from=("msha",),
+        excluded_paths=("/OpenGovernmentData/DataSets/",),
     ),
 }

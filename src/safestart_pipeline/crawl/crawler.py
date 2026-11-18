@@ -8,6 +8,7 @@ discovered-URL limit). Requests go one at a time, at least `Crawl-delay` apart, 
 from __future__ import annotations
 
 import logging
+import sqlite3
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -159,6 +160,8 @@ class Crawler:
         state, reason = "pending", None
         if self.robots is not None and not self.robots.allowed(url):
             state, reason = "skipped", "robots"
+        elif self.site.excluded(url):
+            state, reason = "skipped", "excluded"
         elif is_media(url):
             state, reason = "skipped", "media"
         elif not in_sitemap and not self.site.follow_query_links and urlsplit(url).query:
@@ -235,6 +238,63 @@ class Crawler:
         self.store.set_meta("inventory_at", iso(self.now()))
         self.store.commit()
         return {"sitemaps": len(seen), "listed": listed, "offsite_entries": offsite, **self.store.counts()}
+
+    def seed_from_links(self, data_root: Path) -> dict[str, int]:
+        """Record the links other crawls found to this site's hosts: the inventory of a host without sitemaps. Each
+        other crawl's state is only read."""
+        self.ensure_robots()
+        seeded = 0
+        patterns = [f"{scheme}://{host}/%" for host in sorted(self.site.hosts) for scheme in ("http", "https")]
+        for other in self.site.seed_from:
+            path = data_root / "state" / f"crawl-{other}.sqlite"
+            if not path.exists():
+                self.log.warning("no %s crawl state to seed from", other)
+                continue
+            source = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+            try:
+                where = " or ".join("to_url like ?" for _ in patterns)
+                rows = source.execute(f"select to_url, min(from_url) from links where {where} group by to_url", patterns)
+                for link, page in rows.fetchall():
+                    url = self.site.in_scope(normalize(link))
+                    if url and self.store.get(url) is None:
+                        self.add_known(url, source=f"links:{other}", discovered_from=page)
+                        seeded += 1
+            finally:
+                source.close()
+        self.store.set_meta("seeded_from_links_at", iso(self.now()))
+        self.store.commit()
+        return {"seeded_from_links": seeded, **self.store.counts()}
+
+    def fetch_now(self, urls: list[str], *, max_bytes: int, max_seconds: float) -> list[dict[str, object]]:
+        """Download chosen URLs at once with their own size and time limits (files over the site's cap that were
+        approved one by one), whatever their current state, with the usual robots.txt check and pacing."""
+        results = []
+        for url in urls:
+            robots = self.ensure_robots()
+            canonical = self.site.in_scope(normalize(url))
+            if canonical is None:
+                results.append({"url": url, "state": "not on this site"})
+                continue
+            if self.store.get(canonical) is None:
+                self.add_known(canonical, source="manual")
+            if not robots.allowed(canonical):
+                self.store.update(canonical, state="skipped", skip_reason="robots")
+                self.store.commit()
+                results.append({"url": canonical, "state": "skipped", "reason": "robots"})
+                continue
+            # Back to pending, as if newly found, so the outcome is recorded exactly as the crawl would record it.
+            self.store.update(canonical, state="pending", skip_reason=None, error=None, attempts=0, next_attempt_at=None)
+            row = self.store.get(canonical)
+            result = fetch(self.client, canonical, self.objects, max_bytes=max_bytes, max_seconds=max_seconds)
+            self.requests += 1
+            self.apply(row, result)
+            self.store.commit()
+            row = self.store.get(canonical)
+            results.append({"url": canonical, "state": row["state"], "reason": row["skip_reason"], "status": row["http_status"],
+                            "bytes": row["content_length"], "sha256": row["sha256"], "error": row["error"]})
+            self.log.info("fetched on request %s -> %s %s bytes", canonical, row["state"], row["content_length"])
+            self.pause(result.retry_after)
+        return results
 
     # Crawl -------------------------------------------------------------------------------------------------------------
 

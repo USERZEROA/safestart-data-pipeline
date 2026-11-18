@@ -9,7 +9,7 @@ from safestart_pipeline.config import USER_AGENT
 from safestart_pipeline.crawl.crawler import BLOCK_PAUSE_SECONDS, MAX_BLOCK_PAUSES, Crawler
 from safestart_pipeline.crawl.locks import SiteLock
 from safestart_pipeline.crawl.sites import Site
-from safestart_pipeline.crawl.store import FINAL_STATES
+from safestart_pipeline.crawl.store import FINAL_STATES, Store
 
 HOST = "https://www.example.test"
 ROBOTS = """User-agent: *
@@ -253,6 +253,50 @@ def test_query_links_are_recorded_but_not_followed(tmp_path):
         f"{HOST}/list?f%5B0%5D=type%3A1": ("skipped", "query"),
         f"{HOST}/doc": ("fetched", None),
     }
+    crawler.store.close()
+    client.close()
+
+
+def test_an_approved_large_file_is_fetched_on_request(setup):
+    crawler, fake, clock = setup
+    crawler.seed_from_sitemaps()
+    crawler.crawl()
+    assert crawler.store.get(f"{HOST}/big.pdf")["skip_reason"] == "size_cap"
+    results = crawler.fetch_now([f"{HOST}/big.pdf", "https://other.test/x"], max_bytes=10_000, max_seconds=60)
+    row = crawler.store.get(f"{HOST}/big.pdf")
+    assert (row["state"], row["skip_reason"], row["content_length"]) == ("fetched", None, 5004) and row["sha256"]
+    assert [result["state"] for result in results] == ["fetched", "not on this site"]
+    assert clock.sleeps[-1] >= 10.0  # the site's crawl delay still follows the request
+
+
+def test_a_host_without_sitemaps_is_seeded_from_another_crawls_links(tmp_path):
+    clock = Clock()
+    first = Store(tmp_path / "state" / "crawl-example.sqlite")
+    first.add_links(f"{HOST}/", [
+        "https://legacy.example.test/report.pdf", "http://legacy.example.test/old.htm",
+        "https://legacy.example.test/data/sets/x.zip", "https://legacy.example.test/clip.wav", "https://elsewhere.test/a",
+    ])
+    first.close()
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, text="ok", headers={"content-type": "text/plain"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    legacy = Site(name="legacy", canonical_host="legacy.example.test", hosts=frozenset({"legacy.example.test"}), sitemaps=(),
+                  min_delay=1.0, byte_budget=10**9, seed_from=("example",), excluded_paths=("/DATA/Sets/",))
+    crawler = Crawler(legacy, tmp_path, client, sleep=clock.sleep, now=lambda: clock.now)
+    assert crawler.seed_from_links(tmp_path)["seeded_from_links"] == 4
+    assert states(crawler) == {
+        "https://legacy.example.test/report.pdf": ("pending", None),
+        "https://legacy.example.test/old.htm": ("pending", None),
+        "https://legacy.example.test/data/sets/x.zip": ("skipped", "excluded"),
+        "https://legacy.example.test/clip.wav": ("skipped", "media"),
+    }
+    assert crawler.store.get("https://legacy.example.test/old.htm")["discovered_from"] == f"{HOST}/"
+    assert crawler.crawl()["stopped"] == "done"
+    assert crawler.store.counts() == {"fetched": 2, "skipped": 2}
     crawler.store.close()
     client.close()
 

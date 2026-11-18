@@ -1,6 +1,6 @@
 # Windows: stop a crawl started by start-crawl.ps1. The state is committed after every URL, so at most the URL in
 # flight is fetched again on the next start.
-param([Parameter(Mandatory = $true)][ValidateSet("osha", "msha")][string]$Site)
+param([Parameter(Mandatory = $true)][ValidateSet("osha", "msha", "arlweb")][string]$Site)
 
 $targets = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*safestart_pipeline.cli crawl $Site*" })
 if ($targets.Count -eq 0) {

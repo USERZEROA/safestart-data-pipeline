@@ -9,6 +9,16 @@ them for the application's dashboards.
 Work in progress (November 16 to December 4, 2026). Sections on the architecture, data model, orchestration, tests and
 the data-engineering principles will be added as each stage lands.
 
+## Sources
+
+| Source | How it is acquired | Inventory |
+|---|---|---|
+| MSHA website (`www.msha.gov`) | crawl | sitemaps, then links |
+| MSHA legacy host (`arlweb.msha.gov`) | crawl | the links the MSHA crawl recorded to it (the host has no home page, sitemap or directory listings) |
+| OSHA website (`www.osha.gov`) | crawl | sitemaps, then links |
+| eCFR titles 29 and 30 | bulk download of the govinfo XML (eCFR's own full-text API is closed to robots) | fixed list |
+| MSHA open enforcement datasets | bulk download, every version kept | the open-data page's links |
+
 ## Crawling rules
 
 - Every request follows the host's `robots.txt` (RFC 9309): its `Allow`/`Disallow` patterns and its `Crawl-delay`. OSHA
@@ -17,7 +27,20 @@ the data-engineering principles will be added as each stage lands.
 - One request at a time per host, a product-token User-Agent, conditional requests on re-checks, and backing off on
   `429`/`503` and on repeated `403` responses. A block is never worked around.
 - Every URL the crawler learns of, from a sitemap, a page link or a redirect, ends in a recorded state: fetched (with its
-  SHA-256), unchanged, redirect, not found, error after retries, or skipped with a reason (robots, media, size cap).
+  SHA-256), unchanged, redirect, not found, error after retries, or skipped with a reason (robots, media, query string,
+  size cap, or excluded because another source downloads it).
+- Files over 50 MB are recorded as skipped; ones judged worth keeping are downloaded one by one with
+  `ssp fetch <site> <url> --max-mb <n>`, under the same robots.txt check and pacing.
+
+## Completeness
+
+`ssp verify <site>` reports whether a crawl is complete: every URL it learned of in a final state, every downloaded
+file on disk with its recorded size (`--rehash` recomputes each SHA-256), where redirects and outside links lead, and,
+with `--live`, whether today's sitemaps still match the inventory (added, dropped, or changed after download).
+`ssp verify bulk` checks every bulk file's hash and format; with `--live` it compares the open-data page and each
+file's size and date with the source today, and each eCFR title section by section with the official eCFR structure
+and its latest amendment date. Each run writes its full report to `<data root>/reports/`. A live check never runs
+against a host whose crawl is in progress.
 
 ## Quick start
 
@@ -27,6 +50,8 @@ uv run pytest
 uv run ssp inventory msha   # robots.txt and sitemaps -> the URL inventory
 uv run ssp crawl msha       # resumable; state lives in <data root>/state/crawl-msha.sqlite
 uv run ssp status msha
+uv run ssp verify msha --live
+uv run ssp inventory arlweb # after the MSHA crawl: seeded from the links it recorded
 ```
 
 On Windows, `scripts/start-crawl.ps1 -Site osha` starts a crawl that outlives the shell, from its own small environment
