@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -160,6 +161,8 @@ class Crawler:
             state, reason = "skipped", "robots"
         elif is_media(url):
             state, reason = "skipped", "media"
+        elif not in_sitemap and not self.site.follow_query_links and urlsplit(url).query:
+            state, reason = "skipped", "query"
         elif not in_sitemap and self.discovered >= self.site.discovered_limit:
             state, reason = "skipped", "discovered_limit"
         self.store.insert_url(

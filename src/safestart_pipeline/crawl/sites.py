@@ -18,6 +18,9 @@ class Site:
     byte_budget: int  # stop and report when downloads reach this many bytes
     discovered_limit: int = 100_000  # URLs found only through links; beyond it they are recorded as skipped
     max_bytes: int = 50 * 1024 * 1024  # per file
+    # Links with a query string (filters, facets, search, calendars) multiply without end. They are recorded as skipped
+    # unless the sitemap lists them; sitemap URLs are always fetched when robots.txt allows them.
+    follow_query_links: bool = False
 
     def in_scope(self, url: str | None) -> str | None:
         """The canonical https form of a URL on one of this site's hosts, or None for any other host."""

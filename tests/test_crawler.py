@@ -230,6 +230,33 @@ def test_unreachable_robots_waits_instead_of_skipping(tmp_path):
     client.close()
 
 
+def test_query_links_are_recorded_but_not_followed(tmp_path):
+    clock = Clock()
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.path == "/list":
+            body = '<html><body><a href="/list?f%5B0%5D=type%3A1">facet</a> <a href="/doc">doc</a></body></html>'
+            return httpx.Response(200, text=body, headers=HTML)
+        return httpx.Response(200, text="ok", headers={"content-type": "text/plain"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    crawler = Crawler(example_site(name="facets", sitemaps=()), tmp_path, client, sleep=clock.sleep, now=lambda: clock.now)
+    crawler.add_known(f"{HOST}/list", source="sitemap", in_sitemap=True)
+    crawler.add_known(f"{HOST}/listed?page=2", source="sitemap", in_sitemap=True)
+    crawler.store.commit()
+    crawler.crawl()
+    assert states(crawler) == {
+        f"{HOST}/list": ("fetched", None),
+        f"{HOST}/listed?page=2": ("fetched", None),
+        f"{HOST}/list?f%5B0%5D=type%3A1": ("skipped", "query"),
+        f"{HOST}/doc": ("fetched", None),
+    }
+    crawler.store.close()
+    client.close()
+
+
 def test_one_crawl_per_site(tmp_path):
     lock_path = tmp_path / "crawl-example.lock"
     with SiteLock(lock_path):
