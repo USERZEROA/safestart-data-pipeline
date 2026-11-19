@@ -1,4 +1,4 @@
-"""Command line: `ssp inventory|crawl|status|recheck|fetch|verify`."""
+"""Command line: `ssp inventory|crawl|status|recheck|fetch|verify|lake`."""
 
 from __future__ import annotations
 
@@ -111,8 +111,16 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("target", choices=[*sorted(SITES), "bulk"])
     check.add_argument("--rehash", action="store_true", help="recompute every stored file's SHA-256 (slow for a crawl)")
     check.add_argument("--live", action="store_true", help="also compare with the source as it is today")
+    lake = commands.add_parser("lake", help="bring the typed Parquet lake up to date with the current downloads")
+    lake.add_argument("--only", nargs="+", metavar="DATASET", help="build only these MSHA datasets")
     args = parser.parse_args(argv)
     root = data_root()
+    if args.command == "lake":
+        from .lake.msha_ogd import build_lake  # the analysis extra; the crawler's own environment does not need it
+
+        setup_logging(root / "logs" / "lake.log")
+        print(json.dumps({"msha_ogd": build_lake(root, args.only)}, indent=2, sort_keys=True))
+        return 0
     if args.command == "verify":
         print(json.dumps(verify(root, args.target, rehash=args.rehash, live=args.live), indent=2, sort_keys=True))
         return 0

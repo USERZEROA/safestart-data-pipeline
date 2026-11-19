@@ -9,6 +9,11 @@ them for the application's dashboards.
 Work in progress (November 16 to December 4, 2026). Sections on the architecture, data model, orchestration, tests and
 the data-engineering principles will be added as each stage lands.
 
+## Team
+
+A single-member team: Haiwei Yu designs, builds, tests and documents every stage (ingestion, storage, transformation,
+orchestration, analysis and the dashboard).
+
 ## Sources
 
 | Source | How it is acquired | Inventory |
@@ -33,6 +38,17 @@ the data-engineering principles will be added as each stage lands.
   only above 2 GB or an hour of download, limits that stop a runaway response. `ssp fetch <site> <url> --max-mb <n>`
   downloads such a file on its own under the same robots.txt check and pacing. A crawl first re-queues what an earlier,
   stricter rule skipped (the former 50 MB limit and the former media rule).
+
+## Lake
+
+`ssp lake` turns the current download of each of MSHA's 20 open datasets into typed Parquet under
+`<data root>/lake/msha_ogd/<dataset>/`, one file per source version named after the zip's SHA-256, so a rebuild of an
+unchanged version does nothing and every row traces back to the exact file it came from. Polars reads each
+pipe-delimited file (Windows-1252, decoded to UTF-8) and casts every column to the type MSHA's definition file declares
+(`VARCHAR2` to text, `DATE` to a date, `NUMBER(p)` to an integer, `NUMBER(p,s)` to a float). Spaces are trimmed, MSHA's
+markers for unknown values (`?`, `NO VALUE FOUND`) and empty strings become nulls, and a value that does not parse as
+its declared type becomes a null counted per column in the dataset's `manifest.json`. `_dictionary.parquet` collects
+every column's declared type and MSHA's description.
 
 ## Completeness
 
