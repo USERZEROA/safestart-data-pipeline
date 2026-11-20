@@ -12,6 +12,7 @@ null that is counted per column in the manifest rather than dropped without a tr
 
 from __future__ import annotations
 
+import codecs
 import io
 import json
 import re
@@ -51,6 +52,20 @@ DATASETS: dict[str, tuple[str, str]] = {
 UNKNOWN_VALUES = ("", "?", "NO VALUE FOUND")
 DATE_FORMAT = "%m/%d/%Y"
 SOURCE_ENCODING = "cp1252"
+# A few files hold bytes Windows-1252 leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D). Each becomes U+FFFD, and the
+# manifest records how many there were.
+DECODE_ERRORS = "safestart-count-replace"
+_undecodable = [0]
+
+
+def _count_and_replace(error: UnicodeError) -> tuple[str, int]:
+    if not isinstance(error, UnicodeDecodeError):
+        raise error
+    _undecodable[0] += error.end - error.start
+    return chr(0xFFFD) * (error.end - error.start), error.end
+
+
+codecs.register_error(DECODE_ERRORS, _count_and_replace)
 
 
 @dataclass(frozen=True)
@@ -93,15 +108,17 @@ def read_definitions(path: Path) -> dict[str, ColumnDef]:
     return columns
 
 
-def transcode_member(zip_path: Path, target: Path) -> str:
-    """Write the zip's single text member to `target` as UTF-8; returns the member's name."""
+def transcode_member(zip_path: Path, target: Path) -> tuple[str, int]:
+    """Write the zip's single text member to `target` as UTF-8; returns its name and the count of undecodable bytes."""
     with zipfile.ZipFile(zip_path) as archive:
         members = [info for info in archive.infolist() if not info.is_dir()]
         if len(members) != 1:
             raise ValueError(f"{zip_path.name}: expected one file in the zip, found {len(members)}")
+        _undecodable[0] = 0
         with archive.open(members[0]) as raw, target.open("w", encoding="utf-8", newline="") as out:
-            shutil.copyfileobj(io.TextIOWrapper(raw, encoding=SOURCE_ENCODING, newline=""), out, 1024 * 1024)
-        return members[0].filename
+            text = io.TextIOWrapper(raw, encoding=SOURCE_ENCODING, errors=DECODE_ERRORS, newline="")
+            shutil.copyfileobj(text, out, 1024 * 1024)
+        return members[0].filename, _undecodable[0]
 
 
 def header_of(path: Path) -> list[str]:
@@ -143,7 +160,7 @@ def build_dataset(
     definitions = read_definitions(definition_path)
     temp = folder / f".{source_sha256[:16]}.txt"
     try:
-        member = transcode_member(zip_path, temp)
+        member, undecodable = transcode_member(zip_path, temp)
         header = header_of(temp)
         frame = pl.scan_csv(temp, separator="|", quote_char='"', infer_schema=False, null_values=list(UNKNOWN_VALUES))
         columns = [(source, definitions.get(source)) for source in header]
@@ -164,6 +181,7 @@ def build_dataset(
         "source_sha256": source_sha256,
         "source_file": source_name or zip_path.name,
         "member": member,
+        "undecodable_bytes": undecodable,
         "parquet": target.name,
         "rows": failures.pop("__rows"),
         "built_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),

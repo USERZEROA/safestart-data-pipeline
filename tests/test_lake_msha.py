@@ -28,8 +28,10 @@ DEFINITION = (
 
 
 def mines_zip(path):
+    # "Third" carries a byte Windows-1252 leaves undefined, as a few of MSHA's real files do.
+    blob = MINES_TXT.encode("cp1252").replace(b"Third", b"Thi" + bytes([0x8F]) + b"rd")
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("Mines.txt", MINES_TXT.encode("cp1252"))
+        archive.writestr("Mines.txt", blob)
     return path
 
 
@@ -62,6 +64,7 @@ def test_a_dataset_becomes_typed_parquet_with_its_failures_counted(tmp_path):
     assert rows[1] == {"mine_id": "0100004", "current_mine_name": "Café Mine", "current_status_dt": None, "no_employees": None,
                        "latitude": None, "extra_col": None}
     assert rows[2]["current_status_dt"] is None and rows[2]["latitude"] == -86.758889
+    assert rows[2]["current_mine_name"] == "Thi" + chr(0xFFFD) + "rd" and result["undecodable_bytes"] == 1
 
     failures = {column["name"]: column["cast_failures"] for column in result["columns"]}
     assert failures["no_employees"] == 1 and failures["current_status_dt"] == 1 and failures["latitude"] == 0
