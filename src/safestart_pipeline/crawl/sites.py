@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
+
+from .urls import extension, is_page
 
 GB = 1024**3
 
@@ -32,10 +35,33 @@ class Site:
     # reached that way repeats the prefix in every link, so following them would copy the site once more. Removed from
     # every URL on the site's hosts.
     alias_prefixes: tuple[str, ...] = ()
+    # Content the project does not use: never downloaded, recorded as skipped "not_needed", and queued again only if
+    # these rules change. Matched without case: file types, path prefixes, and words in a file's name (pages are left
+    # alone, since an English page may name a language). A waiting file every known link to which comes from a page
+    # these rules name is not needed either, unless it lies under `kept_paths`.
+    unneeded_types: frozenset[str] = frozenset()
+    unneeded_paths: tuple[str, ...] = ()
+    unneeded_words: frozenset[str] = frozenset()
+    kept_paths: tuple[str, ...] = ()
 
     def excluded(self, url: str) -> bool:
         path = urlsplit(url).path.lower()
         return any(path.startswith(prefix.lower()) for prefix in self.excluded_paths)
+
+    def unneeded(self, url: str) -> bool:
+        path = unquote(urlsplit(url).path).lower()
+        if any(path.startswith(prefix.lower()) for prefix in self.unneeded_paths):
+            return True
+        if is_page(url):
+            return False
+        if extension(url) in self.unneeded_types:
+            return True
+        name = path.rsplit("/", 1)[-1]
+        return any(word in self.unneeded_words for word in re.findall(r"[^\W\d_]+", name))
+
+    def kept(self, url: str) -> bool:
+        path = unquote(urlsplit(url).path).lower()
+        return any(path.startswith(prefix.lower()) for prefix in self.kept_paths)
 
     def in_scope(self, url: str | None) -> str | None:
         """The canonical https form of a URL on one of this site's hosts, or None for any other host."""
@@ -63,6 +89,24 @@ SITES = {
         # The home page links a few pages as /index%2Ephp/<path>; by 2026-11-21 that had grown to 375 URLs in three
         # spellings, each a copy of /<path> with the prefix in its links.
         alias_prefixes=("/index.php",),
+        # Not needed (owner, 2026-11-21): pictures, sound, video and e-book copies of publications; partnership,
+        # success-story and grant-recipient pages; advisory-committee records; contact, order-cart and by-language
+        # pages; copies in other languages. Regulations, interpretations, directives, Federal Register notices,
+        # publications, topic pages, news and data files stay.
+        unneeded_types=frozenset(
+            ".jpg .jpeg .png .gif .bmp .tif .tiff .svg .webp .ico .mp3 .wav .m4a .wma .aac .ogg .mp4 .m4v .mov .wmv"
+            " .avi .flv .webm .mpg .mpeg .mobi .epub".split()
+        ),
+        unneeded_paths=(
+            "/alliances/", "/successstories/", "/partnerships/", "/harwoodgrants/", "/advisorycommittee/",
+            "/doc/accsh/", "/contactus/", "/publications/add/", "/publications/bylanguage/",
+        ),
+        unneeded_words=frozenset(
+            "spanish espanol español chinese vietnamese korean portuguese russian haitian creole tagalog arabic hmong"
+            " somali nepali japanese".split()
+        ),
+        # OSHA's own publications are linked from all kinds of pages, including ones not needed.
+        kept_paths=("/sites/default/files/publications/",),
     ),
     "msha": Site(
         name="msha",

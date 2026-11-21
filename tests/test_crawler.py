@@ -391,6 +391,91 @@ def test_waiting_urls_recorded_under_an_alias_are_folded_into_their_canonical_ur
     client.close()
 
 
+UNNEEDED = dict(
+    unneeded_types=frozenset({".jpg", ".mp3", ".epub"}),
+    unneeded_paths=("/partners/", "/grants/"),
+    unneeded_words=frozenset({"spanish", "español"}),
+    kept_paths=("/pubs/",),
+)
+
+
+def test_the_not_needed_rules():
+    site = example_site(**UNNEEDED)
+    for url in ("/partners/acme", "/Grants/fy2016/x", "/photo.JPG", "/psa.mp3", "/book.epub", "/guide-spanish.pdf",
+                "/Curso%20en%20espa%C3%B1ol.pptx", "/files/Training%20-%20Spanish.pptx"):
+        assert site.unneeded(f"{HOST}{url}"), url
+    for url in ("/guide.pdf", "/spanish-speaking-workers", "/standards/1910.1025", "/partnership-program", "/pubs/x.pdf"):
+        assert not site.unneeded(f"{HOST}{url}"), url
+    assert site.kept(f"{HOST}/pubs/OSHA1.pdf") and not site.kept(f"{HOST}/files/OSHA1.pdf")
+
+
+def test_content_the_project_does_not_need_is_recorded_but_not_downloaded(tmp_path):
+    clock = Clock()
+    page = ('<html><body><a href="/partners/acme">a</a> <a href="/photo.jpg">b</a> <a href="/guide-spanish.pdf">c</a>'
+            ' <a href="/guide.pdf">d</a> <a href="/spanish-speaking-workers">e</a></body></html>')
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.path == "/":
+            return httpx.Response(200, text=page, headers=HTML)
+        return httpx.Response(200, text="ok", headers={"content-type": "text/plain"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    crawler = Crawler(example_site(name="needs", sitemaps=(), **UNNEEDED), tmp_path, client, sleep=clock.sleep,
+                      now=lambda: clock.now)
+    crawler.add_known(f"{HOST}/", source="sitemap", in_sitemap=True)
+    crawler.store.commit()
+    assert crawler.crawl()["stopped"] == "done"
+    assert states(crawler) == {
+        f"{HOST}/": ("fetched", None),
+        f"{HOST}/partners/acme": ("skipped", "not_needed"),
+        f"{HOST}/photo.jpg": ("skipped", "not_needed"),
+        f"{HOST}/guide-spanish.pdf": ("skipped", "not_needed"),
+        f"{HOST}/guide.pdf": ("fetched", None),
+        f"{HOST}/spanish-speaking-workers": ("fetched", None),
+    }
+    crawler.store.close()
+    client.close()
+
+
+def test_waiting_urls_the_project_does_not_need_are_skipped_at_start(tmp_path):
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(404)))
+    crawler = Crawler(example_site(name="needs", sitemaps=(), **UNNEEDED), tmp_path, client)
+    rows = {
+        f"{HOST}/grants/fy2016/page": "fetched",  # fetched before the rules: it stays
+        f"{HOST}/grants/fy2017/page": "pending",  # named by a rule
+        f"{HOST}/poster.jpg": "retry",  # named by a rule
+        f"{HOST}/files/deck.pptx": "pending",  # linked only from grant pages
+        f"{HOST}/pubs/OSHA1.pdf": "pending",  # linked only from grant pages, but an agency publication
+        f"{HOST}/files/shared.pdf": "pending",  # also linked from a page that is needed
+        f"{HOST}/files/unlinked.pdf": "pending",  # no recorded link (from a sitemap)
+        f"{HOST}/topic": "pending",  # a page: never skipped for its links alone
+    }
+    for url, state in rows.items():
+        crawler.store.insert_url(url, source="discovered", state=state, now="2026-11-21T12:00:00Z")
+    crawler.store.add_links(f"{HOST}/grants/fy2016/page", [f"{HOST}/files/deck.pptx", f"{HOST}/pubs/OSHA1.pdf",
+                                                           f"{HOST}/files/shared.pdf", f"{HOST}/topic"])
+    crawler.store.add_links(f"{HOST}/index%2Ephp/grants/fy2015/page", [f"{HOST}/files/deck.pptx"])
+    crawler.store.add_links(f"{HOST}/", [f"{HOST}/files/shared.pdf"])
+    crawler.store.commit()
+    crawler.site = example_site(name="needs", sitemaps=(), alias_prefixes=("/index.php",), **UNNEEDED)
+    assert crawler.skip_unneeded() == {"by_rule": 2, "linked_only_from_unneeded": 1}
+    assert {url: states(crawler)[url] for url in rows} == {
+        f"{HOST}/grants/fy2016/page": ("fetched", None),
+        f"{HOST}/grants/fy2017/page": ("skipped", "not_needed"),
+        f"{HOST}/poster.jpg": ("skipped", "not_needed"),
+        f"{HOST}/files/deck.pptx": ("skipped", "not_needed"),
+        f"{HOST}/pubs/OSHA1.pdf": ("pending", None),
+        f"{HOST}/files/shared.pdf": ("pending", None),
+        f"{HOST}/files/unlinked.pdf": ("pending", None),
+        f"{HOST}/topic": ("pending", None),
+    }
+    assert crawler.skip_unneeded() == {"by_rule": 0, "linked_only_from_unneeded": 0}
+    crawler.store.close()
+    client.close()
+
+
 def test_one_crawl_per_site(tmp_path):
     lock_path = tmp_path / "crawl-example.lock"
     with SiteLock(lock_path):

@@ -1,4 +1,4 @@
-from safestart_pipeline.crawl.urls import extension, is_asset, normalize
+from safestart_pipeline.crawl.urls import extension, is_asset, is_page, normalize
 
 BASE = "https://www.example.test/a/x/"
 
@@ -43,3 +43,11 @@ def test_extension_and_page_assets():
     assert not is_asset("https://x.test/briefing.wav")
     assert not is_asset("https://x.test/doc.pdf")
     assert not is_asset("https://x.test/page")
+
+
+def test_pages_and_files():
+    for url in ("https://x.test/a", "https://x.test/a/", "https://x.test/a.html", "https://x.test/old.aspx",
+                "https://x.test/standardnumber/1910/1910.1025"):
+        assert is_page(url), url
+    for url in ("https://x.test/a.pdf", "https://x.test/deck.PPTX", "https://x.test/photo.jpg", "https://x.test/data.zip"):
+        assert not is_page(url), url

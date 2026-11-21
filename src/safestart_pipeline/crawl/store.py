@@ -145,6 +145,9 @@ class Store:
         row = self.db.execute("select coalesce(sum(content_length), 0) from urls where state = 'fetched'").fetchone()
         return int(row[0])
 
+    def linking_pages(self, url: str) -> list[str]:
+        return [row[0] for row in self.db.execute("select from_url from links where to_url = ?", (url,))]
+
     def waiting(self) -> list[sqlite3.Row]:
         marks = ", ".join("?" for _ in WAITING_STATES)
         return self.db.execute(f"select * from urls where state in ({marks})", WAITING_STATES).fetchall()

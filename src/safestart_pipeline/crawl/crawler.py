@@ -2,8 +2,8 @@
 
 Seeds from the site's sitemaps, follows in-scope links and redirects, and gives every URL it learns of a final state:
 fetched (with SHA-256), unchanged (304), redirect, not_found, error (after retries) or skipped (robots, page asset,
-query string, excluded, size limit, discovered-URL limit, alias of another URL). Requests go one at a time, at least
-`Crawl-delay` apart, and stop on a sustained block.
+query string, excluded, size limit, discovered-URL limit, alias of another URL, not needed by the project). Requests
+go one at a time, at least `Crawl-delay` apart, and stop on a sustained block.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from .robots import Robots
 from .sitemaps import parse_sitemap
 from .sites import Site
 from .store import Store
-from .urls import is_asset, normalize
+from .urls import is_asset, is_page, normalize
 
 RETRY_DELAYS = (timedelta(minutes=5), timedelta(minutes=30))  # a third failure is final
 RETRY_STATUSES = frozenset({403, 408, 425, 429, 500, 502, 503, 504})
@@ -165,6 +165,8 @@ class Crawler:
             state, reason = "skipped", "excluded"
         elif is_asset(url):
             state, reason = "skipped", "asset"
+        elif self.site.unneeded(url):
+            state, reason = "skipped", "not_needed"
         elif not in_sitemap and not self.site.follow_query_links and urlsplit(url).query:
             state, reason = "skipped", "query"
         elif not in_sitemap and self.discovered >= self.site.discovered_limit:
@@ -332,6 +334,26 @@ class Crawler:
         self.store.commit()
         return counts
 
+    def skip_unneeded(self) -> dict[str, int]:
+        """Apply the site's not-needed rules to waiting URLs recorded before them: a URL the rules name, and a file
+        every known link to which comes from a page the rules name (unless it lies under the site's kept paths). Pages
+        are never skipped for their links alone, and nothing already downloaded changes."""
+        counts = {"by_rule": 0, "linked_only_from_unneeded": 0}
+        for row in self.store.waiting():
+            url = row["url"]
+            if self.site.unneeded(url):
+                counts["by_rule"] += 1
+            elif not is_page(url) and not self.site.kept(url):
+                pages = [self.site.in_scope(normalize(page)) or page for page in self.store.linking_pages(url)]
+                if not pages or not all(self.site.unneeded(page) for page in pages):
+                    continue
+                counts["linked_only_from_unneeded"] += 1
+            else:
+                continue
+            self.store.update(url, state="skipped", skip_reason="not_needed", next_attempt_at=None)
+        self.store.commit()
+        return counts
+
     # Crawl -------------------------------------------------------------------------------------------------------------
 
     def crawl(self, max_requests: int | None = None, until: datetime | None = None) -> dict[str, object]:
@@ -341,6 +363,9 @@ class Crawler:
         folded = self.fold_aliases()
         if any(folded.values()):
             self.log.info("waiting URLs recorded under an alias, folded into their canonical URL: %s", folded)
+        unneeded = self.skip_unneeded()
+        if any(unneeded.values()):
+            self.log.info("waiting URLs the project does not need, skipped: %s", unneeded)
         requeued = self.requeue_policy_skips()
         if any(requeued.values()):
             self.log.info("queued again under the current download rules: %s", requeued)

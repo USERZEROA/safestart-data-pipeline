@@ -10,6 +10,9 @@ from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 # "asset" and never downloaded. Images, audio and video linked from the sites are content and are downloaded like any
 # other file, so each copy is complete (owner, 2026-11-18).
 ASSET_EXTENSIONS = frozenset(".css .js .mjs .map .woff .woff2 .ttf .otf .eot".split())
+# Extensions of web pages, which can link onward; anything else is a file. A number after the dot names a section
+# ('/1910.1025'), not a file type.
+PAGE_EXTENSIONS = frozenset(("", ".html", ".htm", ".shtml", ".asp", ".aspx", ".php", ".cfm", ".jsp"))
 
 _SAFE_PATH = "/%:@!$&'()*+,;=-._~"
 _SAFE_QUERY = _SAFE_PATH + "?"
@@ -77,3 +80,8 @@ def extension(url: str) -> str:
 
 def is_asset(url: str) -> bool:
     return extension(url) in ASSET_EXTENSIONS
+
+
+def is_page(url: str) -> bool:
+    found = extension(url)
+    return found in PAGE_EXTENSIONS or found[1:].isdigit()
