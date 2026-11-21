@@ -33,7 +33,12 @@ orchestration, analysis and the dashboard).
   `429`/`503` and on repeated `403` responses. A block is never worked around.
 - Every URL the crawler learns of, from a sitemap, a page link or a redirect, ends in a recorded state: fetched (with its
   SHA-256), unchanged, redirect, not found, error after retries, or skipped with a reason (robots, page asset such as a
-  style sheet or script, query string, size limit, or excluded because another source downloads it).
+  style sheet or script, query string, size limit, alias of another URL, or excluded because another source downloads
+  it).
+- Each URL has one spelling (RFC 3986): lower-case host, no fragment or default port, escaped unreserved characters
+  decoded (`%2E` is `.`) and the remaining escapes in upper case. On OSHA, Drupal's `/index.php/<path>` is the page at
+  `/<path>`, and a page reached that way repeats the prefix in all its links, so the prefix is removed. A waiting URL
+  recorded in an older spelling is skipped as "alias" and its canonical URL is queued in its place.
 - Copies are complete: images, audio and video linked from the sites are kept like documents, and a file is skipped
   only above 2 GB or an hour of download, limits that stop a runaway response. `ssp fetch <site> <url> --max-mb <n>`
   downloads such a file on its own under the same robots.txt check and pacing. A crawl first re-queues what an earlier,

@@ -28,6 +28,10 @@ class Site:
     seed_from: tuple[str, ...] = ()
     # Path prefixes (compared without case) that another source already downloads; recorded as skipped "excluded".
     excluded_paths: tuple[str, ...] = ()
+    # Leading path segments the site's software ignores: Drupal answers /index.php/news exactly as /news, and a page
+    # reached that way repeats the prefix in every link, so following them would copy the site once more. Removed from
+    # every URL on the site's hosts.
+    alias_prefixes: tuple[str, ...] = ()
 
     def excluded(self, url: str) -> bool:
         path = urlsplit(url).path.lower()
@@ -40,7 +44,12 @@ class Site:
         parts = urlsplit(url)
         if (parts.hostname or "") not in self.hosts:
             return None
-        return urlunsplit(("https", self.canonical_host, parts.path or "/", parts.query, ""))
+        path = parts.path or "/"
+        for prefix in self.alias_prefixes:
+            if path == prefix or path.startswith(prefix + "/"):
+                path = path[len(prefix):] or "/"
+                break
+        return urlunsplit(("https", self.canonical_host, path, parts.query, ""))
 
 
 SITES = {
@@ -51,6 +60,9 @@ SITES = {
         sitemaps=("https://www.osha.gov/sitemap.xml",),
         min_delay=10.0,
         byte_budget=20 * GB,
+        # The home page links a few pages as /index%2Ephp/<path>; by 2026-11-21 that had grown to 375 URLs in three
+        # spellings, each a copy of /<path> with the prefix in its links.
+        alias_prefixes=("/index.php",),
     ),
     "msha": Site(
         name="msha",

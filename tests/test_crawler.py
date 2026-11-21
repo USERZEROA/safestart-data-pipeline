@@ -10,6 +10,7 @@ from safestart_pipeline.crawl.crawler import BLOCK_PAUSE_SECONDS, MAX_BLOCK_PAUS
 from safestart_pipeline.crawl.locks import SiteLock
 from safestart_pipeline.crawl.sites import Site
 from safestart_pipeline.crawl.store import FINAL_STATES, Store
+from safestart_pipeline.crawl.urls import normalize
 
 HOST = "https://www.example.test"
 ROBOTS = """User-agent: *
@@ -326,6 +327,66 @@ def test_a_host_without_sitemaps_is_seeded_from_another_crawls_links(tmp_path):
     assert crawler.store.get("https://legacy.example.test/old.htm")["discovered_from"] == f"{HOST}/"
     assert crawler.crawl()["stopped"] == "done"
     assert crawler.store.counts() == {"fetched": 3, "skipped": 1}
+    crawler.store.close()
+    client.close()
+
+
+def test_an_alias_prefix_maps_to_the_canonical_path():
+    site = example_site(alias_prefixes=("/index.php",))
+    assert site.in_scope(normalize("http://example.test/index%2Ephp/news?page=2")) == f"{HOST}/news?page=2"
+    assert site.in_scope(f"{HOST}/index.php") == f"{HOST}/"
+    assert site.in_scope(f"{HOST}/index.phpx/a") == f"{HOST}/index.phpx/a"
+    assert site.in_scope(f"{HOST}/docs/index.php/a") == f"{HOST}/docs/index.php/a"
+    assert example_site().in_scope(f"{HOST}/index.php/news") == f"{HOST}/index.php/news"
+
+
+def test_alias_spellings_are_crawled_once_under_the_canonical_url(tmp_path):
+    clock = Clock()
+    # Drupal answers /index.php/<path> as /<path>, and a page reached that way repeats the prefix in its links.
+    page = ('<html><body><a href="/index%2Ephp/news">a</a> <a href="/index%2ephp/news">b</a>'
+            ' <a href="/index.php/about">c</a> <a href="/news">d</a></body></html>')
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.path in ("/", "/news"):
+            return httpx.Response(200, text=page, headers=HTML)
+        return httpx.Response(200, text="ok", headers={"content-type": "text/plain"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    crawler = Crawler(example_site(name="drupal", sitemaps=(), alias_prefixes=("/index.php",)), tmp_path, client,
+                      sleep=clock.sleep, now=lambda: clock.now)
+    crawler.add_known(f"{HOST}/", source="sitemap", in_sitemap=True)
+    crawler.store.commit()
+    assert crawler.crawl()["stopped"] == "done"
+    assert states(crawler) == {
+        f"{HOST}/": ("fetched", None),
+        f"{HOST}/news": ("fetched", None),
+        f"{HOST}/about": ("fetched", None),
+    }
+    crawler.store.close()
+    client.close()
+
+
+def test_waiting_urls_recorded_under_an_alias_are_folded_into_their_canonical_url(tmp_path):
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(404)))
+    crawler = Crawler(example_site(name="drupal", sitemaps=(), alias_prefixes=("/index.php",)), tmp_path, client)
+    for url, state in ((f"{HOST}/index%2Ephp/news", "pending"), (f"{HOST}/index%2ephp/about", "retry"),
+                       (f"{HOST}/index.php/old", "fetched"), (f"{HOST}/news", "fetched")):
+        crawler.store.insert_url(url, source="discovered", state=state, now="2026-11-21T12:00:00Z",
+                                 discovered_from=f"{HOST}/")
+    crawler.store.commit()
+    assert crawler.fold_aliases() == {"alias": 2, "queued": 1}
+    assert states(crawler) == {
+        f"{HOST}/index%2Ephp/news": ("skipped", "alias"),
+        f"{HOST}/index%2ephp/about": ("skipped", "alias"),
+        f"{HOST}/index.php/old": ("fetched", None),  # downloaded earlier: its record stays
+        f"{HOST}/news": ("fetched", None),
+        f"{HOST}/about": ("pending", None),
+    }
+    assert crawler.store.get(f"{HOST}/index%2ephp/about")["location"] == f"{HOST}/about"
+    assert crawler.store.get(f"{HOST}/about")["discovered_from"] == f"{HOST}/"
+    assert crawler.fold_aliases() == {"alias": 0, "queued": 0}
     crawler.store.close()
     client.close()
 

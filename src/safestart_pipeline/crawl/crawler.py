@@ -2,8 +2,8 @@
 
 Seeds from the site's sitemaps, follows in-scope links and redirects, and gives every URL it learns of a final state:
 fetched (with SHA-256), unchanged (304), redirect, not_found, error (after retries) or skipped (robots, page asset,
-query string, excluded, size limit, discovered-URL limit). Requests go one at a time, at least `Crawl-delay` apart,
-and stop on a sustained block.
+query string, excluded, size limit, discovered-URL limit, alias of another URL). Requests go one at a time, at least
+`Crawl-delay` apart, and stop on a sustained block.
 """
 
 from __future__ import annotations
@@ -313,12 +313,34 @@ class Crawler:
         self.store.commit()
         return counts
 
+    def fold_aliases(self) -> dict[str, int]:
+        """Waiting URLs recorded in a form the current URL rules no longer produce (an alias such as /index%2Ephp/news)
+        are recorded as skipped "alias" with their canonical URL as location, and that URL is queued in their place
+        unless already known. URLs that already have an outcome keep their records."""
+        counts = {"alias": 0, "queued": 0}
+        for row in self.store.waiting():
+            url = row["url"]
+            canonical = self.site.in_scope(normalize(url))
+            if canonical is None or canonical == url:
+                continue
+            self.store.update(url, state="skipped", skip_reason="alias", location=canonical, next_attempt_at=None)
+            counts["alias"] += 1
+            if self.store.get(canonical) is None:
+                self.add_known(canonical, source=row["source"], discovered_from=row["discovered_from"],
+                               in_sitemap=bool(row["in_sitemap"]), lastmod=row["sitemap_lastmod"])
+                counts["queued"] += 1
+        self.store.commit()
+        return counts
+
     # Crawl -------------------------------------------------------------------------------------------------------------
 
     def crawl(self, max_requests: int | None = None, until: datetime | None = None) -> dict[str, object]:
         """Work through due URLs until none are left, the request or time limit is reached, the byte budget is used,
         or the site keeps answering like a block."""
         self.ensure_robots()
+        folded = self.fold_aliases()
+        if any(folded.values()):
+            self.log.info("waiting URLs recorded under an alias, folded into their canonical URL: %s", folded)
         requeued = self.requeue_policy_skips()
         if any(requeued.values()):
             self.log.info("queued again under the current download rules: %s", requeued)

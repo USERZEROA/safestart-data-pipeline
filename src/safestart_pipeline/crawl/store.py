@@ -145,6 +145,10 @@ class Store:
         row = self.db.execute("select coalesce(sum(content_length), 0) from urls where state = 'fetched'").fetchone()
         return int(row[0])
 
+    def waiting(self) -> list[sqlite3.Row]:
+        marks = ", ".join("?" for _ in WAITING_STATES)
+        return self.db.execute(f"select * from urls where state in ({marks})", WAITING_STATES).fetchall()
+
     def skipped(self, reasons: tuple[str, ...]) -> list[sqlite3.Row]:
         marks = ", ".join("?" for _ in reasons)
         query = f"select * from urls where state = 'skipped' and skip_reason in ({marks})"
