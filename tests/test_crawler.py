@@ -415,7 +415,8 @@ def test_what_the_osha_crawl_keeps():
     for path in ("/laws-regs/standardinterpretations/1996-10-09", "/laws-regs/federalregister/2022-04-13",
                  "/sites/default/files/laws-regs/federalregister/2022-04-13.pdf", "/enforcement/directives/cpl-02-00-147",
                  "/laws-regs/interlinking/standards/1910.177/federal_register", "/sites/default/files/publications/OSHA4205.pdf",
-                 "/news/newsreleases/trade/11092017", "/sites/default/files/fy15_federal-state_summaries.xlsx"):
+                 "/news/newsreleases/trade/11092017", "/sites/default/files/fy15_federal-state_summaries.xlsx",
+                 "/stateplans/AK"):
         assert not osha.unneeded(base + path), path
     for path in ("/laws-regs/interlinking/standards/1910.177", "/laws-regs/interlinking/standards/1910.177/directives",
                  "/laws-regs/interlinking/standards/1904/standard_interpretations",
@@ -428,7 +429,7 @@ def test_what_the_osha_crawl_keeps():
                  "/laws-regs/interlinking/standards/1910.177/regulations", "/laws-regs/interlinking/standards/1910/all",
                  "/laws-regs/interlinking/standards/1910.66/settlement_agreement",
                  "/enforcement/directives/archive/publicationdate/2017", "/enforcement/directives/archive/lep",
-                 "/news/newsreleases/archive/infodate-m/201603"):
+                 "/news/newsreleases/archive/infodate-m/201603", "/stateplans/famereport/AK"):
         assert osha.unneeded(base + path), path
     assert osha.unneeded_listing(base + "/enforcement/directives/archive/lep")
     assert not osha.unneeded(base + "/enforcement/directives/cpl-2-238c")  # archived or current: decided by its links
