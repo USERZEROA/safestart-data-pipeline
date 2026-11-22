@@ -91,8 +91,10 @@ SITES = {
         alias_prefixes=("/index.php",),
         # Not needed (owner, 2026-11-21): pictures, sound, video and e-book copies of publications; partnership,
         # success-story and grant-recipient pages; advisory-committee records; contact, order-cart and by-language
-        # pages; copies in other languages. Regulations, interpretations, directives, Federal Register notices,
-        # publications, topic pages, news and data files stay.
+        # pages; copies in other languages; OSHA's web copy of CFR text (/laws-regs/regulations/standardnumber/),
+        # since the bulk source holds the complete eCFR titles 29 and 30, verified section by section (the part 2205
+        # page alone links 899 section numbers, 2205.101 to 2205.999). Interpretations, directives, Federal Register
+        # notices, the interlinking pages that lead to them, publications, topic pages, news and data files stay.
         unneeded_types=frozenset(
             ".jpg .jpeg .png .gif .bmp .tif .tiff .svg .webp .ico .mp3 .wav .m4a .wma .aac .ogg .mp4 .m4v .mov .wmv"
             " .avi .flv .webm .mpg .mpeg .mobi .epub".split()
@@ -100,6 +102,7 @@ SITES = {
         unneeded_paths=(
             "/alliances/", "/successstories/", "/partnerships/", "/harwoodgrants/", "/advisorycommittee/",
             "/doc/accsh/", "/contactus/", "/publications/add/", "/publications/bylanguage/",
+            "/laws-regs/regulations/standardnumber/",
         ),
         unneeded_words=frozenset(
             "spanish espanol español chinese vietnamese korean portuguese russian haitian creole tagalog arabic hmong"

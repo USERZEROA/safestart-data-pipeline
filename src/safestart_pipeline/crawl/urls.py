@@ -10,9 +10,14 @@ from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 # "asset" and never downloaded. Images, audio and video linked from the sites are content and are downloaded like any
 # other file, so each copy is complete (owner, 2026-11-18).
 ASSET_EXTENSIONS = frozenset(".css .js .mjs .map .woff .woff2 .ttf .otf .eot".split())
-# Extensions of web pages, which can link onward; anything else is a file. A number after the dot names a section
-# ('/1910.1025'), not a file type.
-PAGE_EXTENSIONS = frozenset(("", ".html", ".htm", ".shtml", ".asp", ".aspx", ".php", ".cfm", ".jsp"))
+# Extensions of downloadable files. Anything else is a web page that can link onward, including what follows a dot in
+# a section's name ('/1910.1025', '/1910.7(b)', '/1910.1001AppC').
+FILE_EXTENSIONS = ASSET_EXTENSIONS | frozenset(
+    ".pdf .doc .docx .docm .dot .rtf .txt .odt .wpd .xls .xlsx .xlsm .csv .ods .ppt .pptx .pps .ppsx .odp .xml .json"
+    " .zip .gz .tgz .tar .7z .rar .exe .msi .dat .mdb .accdb .kml .kmz .dwg .swf .eps .ai .psd .jpg .jpeg .png .gif"
+    " .bmp .tif .tiff .svg .webp .ico .mp3 .wav .m4a .wma .aac .ogg .mp4 .m4v .mov .wmv .avi .flv .webm .mpg .mpeg"
+    " .mobi .epub".split()
+)
 
 _SAFE_PATH = "/%:@!$&'()*+,;=-._~"
 _SAFE_QUERY = _SAFE_PATH + "?"
@@ -83,5 +88,4 @@ def is_asset(url: str) -> bool:
 
 
 def is_page(url: str) -> bool:
-    found = extension(url)
-    return found in PAGE_EXTENSIONS or found[1:].isdigit()
+    return extension(url) not in FILE_EXTENSIONS

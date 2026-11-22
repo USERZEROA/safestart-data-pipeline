@@ -47,7 +47,8 @@ def test_extension_and_page_assets():
 
 def test_pages_and_files():
     for url in ("https://x.test/a", "https://x.test/a/", "https://x.test/a.html", "https://x.test/old.aspx",
-                "https://x.test/standardnumber/1910/1910.1025"):
+                "https://x.test/standardnumber/1910/1910.1025", "https://x.test/interlinking/standards/1910.7(b)",
+                "https://x.test/standardnumber/1910/1910.1001AppC"):
         assert is_page(url), url
     for url in ("https://x.test/a.pdf", "https://x.test/deck.PPTX", "https://x.test/photo.jpg", "https://x.test/data.zip"):
         assert not is_page(url), url

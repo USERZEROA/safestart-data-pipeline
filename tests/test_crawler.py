@@ -8,7 +8,7 @@ import pytest
 from safestart_pipeline.config import USER_AGENT
 from safestart_pipeline.crawl.crawler import BLOCK_PAUSE_SECONDS, MAX_BLOCK_PAUSES, Crawler
 from safestart_pipeline.crawl.locks import SiteLock
-from safestart_pipeline.crawl.sites import Site
+from safestart_pipeline.crawl.sites import SITES, Site
 from safestart_pipeline.crawl.store import FINAL_STATES, Store
 from safestart_pipeline.crawl.urls import normalize
 
@@ -409,6 +409,20 @@ def test_the_not_needed_rules():
     assert site.kept(f"{HOST}/pubs/OSHA1.pdf") and not site.kept(f"{HOST}/files/OSHA1.pdf")
 
 
+def test_what_the_osha_crawl_keeps():
+    osha = SITES["osha"]
+    base = "https://www.osha.gov"
+    for path in ("/laws-regs/standardinterpretations/1996-10-09", "/laws-regs/federalregister/2022-04-13",
+                 "/sites/default/files/laws-regs/federalregister/2022-04-13.pdf", "/enforcement/directives/cpl-02-00-147",
+                 "/laws-regs/interlinking/standards/1910.177/federal_register", "/sites/default/files/publications/OSHA4205.pdf",
+                 "/news/newsreleases/trade/11092017", "/sites/default/files/fy15_federal-state_summaries.xlsx"):
+        assert not osha.unneeded(base + path), path
+    for path in ("/laws-regs/regulations/standardnumber/2205/2205.999", "/alliances/regional/chicago",
+                 "/sites/default/files/StopFalls2022-poster-english.jpg",
+                 "/sites/default/files/publications/HAZARD_ALERT_SPANISH.pdf", "/harwoodgrants/grantmaterials/fy2015/x"):
+        assert osha.unneeded(base + path), path
+
+
 def test_content_the_project_does_not_need_is_recorded_but_not_downloaded(tmp_path):
     clock = Clock()
     page = ('<html><body><a href="/partners/acme">a</a> <a href="/photo.jpg">b</a> <a href="/guide-spanish.pdf">c</a>'
@@ -460,7 +474,7 @@ def test_waiting_urls_the_project_does_not_need_are_skipped_at_start(tmp_path):
     crawler.store.add_links(f"{HOST}/", [f"{HOST}/files/shared.pdf"])
     crawler.store.commit()
     crawler.site = example_site(name="needs", sitemaps=(), alias_prefixes=("/index.php",), **UNNEEDED)
-    assert crawler.skip_unneeded() == {"by_rule": 2, "linked_only_from_unneeded": 1}
+    assert crawler.skip_unneeded() == {"by_rule": 2, "linked_only_from_unneeded": 1, "queued_again": 0}
     assert {url: states(crawler)[url] for url in rows} == {
         f"{HOST}/grants/fy2016/page": ("fetched", None),
         f"{HOST}/grants/fy2017/page": ("skipped", "not_needed"),
@@ -471,7 +485,16 @@ def test_waiting_urls_the_project_does_not_need_are_skipped_at_start(tmp_path):
         f"{HOST}/files/unlinked.pdf": ("pending", None),
         f"{HOST}/topic": ("pending", None),
     }
-    assert crawler.skip_unneeded() == {"by_rule": 0, "linked_only_from_unneeded": 0}
+    assert crawler.skip_unneeded() == {"by_rule": 0, "linked_only_from_unneeded": 0, "queued_again": 0}
+
+    # A needed page linking the skipped file puts it back in the queue at once.
+    crawler.discover(f"{HOST}/topic", b'<html><body><a href="/files/deck.pptx">deck</a></body></html>')
+    assert states(crawler)[f"{HOST}/files/deck.pptx"] == ("pending", None)
+
+    # Rules that change: what they no longer cover is queued again at the next start.
+    crawler.site = example_site(name="needs", sitemaps=(), **{**UNNEEDED, "unneeded_types": frozenset()})
+    assert crawler.skip_unneeded() == {"by_rule": 0, "linked_only_from_unneeded": 0, "queued_again": 1}
+    assert states(crawler)[f"{HOST}/poster.jpg"] == ("pending", None)
     crawler.store.close()
     client.close()
 

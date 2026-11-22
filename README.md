@@ -46,8 +46,9 @@ orchestration, analysis and the dashboard).
 - Since 2026-11-21 the OSHA crawl leaves out what the project does not use, recorded as skipped "not needed" so it can
   be queued again: pictures, sound, video and e-book copies of publications; copies in other languages; partnership,
   success-story and grant-recipient pages, advisory-committee records, contact and order pages, and the files linked
-  only from them (OSHA's own publications excepted). Regulations, interpretations, directives, Federal Register
-  notices, publications, topic pages, news and data files are all downloaded. Files downloaded before stay.
+  only from them (OSHA's own publications excepted); and OSHA's web copy of CFR text, since the bulk source holds the
+  complete eCFR titles 29 and 30. Interpretations, directives, Federal Register notices, the interlinking pages that
+  lead to them, publications, topic pages, news and data files are all downloaded. Files downloaded before stay.
 
 ## Lake
 

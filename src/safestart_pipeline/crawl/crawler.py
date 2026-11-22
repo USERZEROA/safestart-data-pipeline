@@ -154,9 +154,13 @@ class Crawler:
         in_sitemap: bool = False,
         lastmod: str | None = None,
     ) -> None:
-        if self.store.get(url) is not None:
+        existing = self.store.get(url)
+        if existing is not None:
             if in_sitemap:
                 self.store.mark_in_sitemap(url, lastmod)
+            # A file skipped because only unneeded pages linked to it is wanted once a needed page links to it.
+            if existing["skip_reason"] == "not_needed" and not self.why_unneeded(url):
+                self.store.update(url, state="pending", skip_reason=None, attempts=0, error=None, next_attempt_at=None)
             return
         state, reason = "pending", None
         if self.robots is not None and not self.robots.allowed(url):
@@ -334,23 +338,32 @@ class Crawler:
         self.store.commit()
         return counts
 
+    def why_unneeded(self, url: str) -> str | None:
+        """'by_rule' when the site's rules name the URL; 'linked_only_from_unneeded' for a file every known link to
+        which comes from a page the rules name (unless it lies under the kept paths); None when it is needed. Pages are
+        never judged by their links alone."""
+        if self.site.unneeded(url):
+            return "by_rule"
+        if is_page(url) or self.site.kept(url):
+            return None
+        pages = [self.site.in_scope(normalize(page)) or page for page in self.store.linking_pages(url)]
+        if pages and all(self.site.unneeded(page) for page in pages):
+            return "linked_only_from_unneeded"
+        return None
+
     def skip_unneeded(self) -> dict[str, int]:
-        """Apply the site's not-needed rules to waiting URLs recorded before them: a URL the rules name, and a file
-        every known link to which comes from a page the rules name (unless it lies under the site's kept paths). Pages
-        are never skipped for their links alone, and nothing already downloaded changes."""
-        counts = {"by_rule": 0, "linked_only_from_unneeded": 0}
+        """Bring the queue in line with the site's current not-needed rules: waiting URLs they cover are skipped as
+        "not_needed", and URLs skipped so that the rules no longer cover are queued again. Nothing downloaded changes."""
+        counts = {"by_rule": 0, "linked_only_from_unneeded": 0, "queued_again": 0}
         for row in self.store.waiting():
-            url = row["url"]
-            if self.site.unneeded(url):
-                counts["by_rule"] += 1
-            elif not is_page(url) and not self.site.kept(url):
-                pages = [self.site.in_scope(normalize(page)) or page for page in self.store.linking_pages(url)]
-                if not pages or not all(self.site.unneeded(page) for page in pages):
-                    continue
-                counts["linked_only_from_unneeded"] += 1
-            else:
-                continue
-            self.store.update(url, state="skipped", skip_reason="not_needed", next_attempt_at=None)
+            reason = self.why_unneeded(row["url"])
+            if reason:
+                self.store.update(row["url"], state="skipped", skip_reason="not_needed", next_attempt_at=None)
+                counts[reason] += 1
+        for row in self.store.skipped(("not_needed",)):
+            if not self.why_unneeded(row["url"]):
+                self.store.update(row["url"], state="pending", skip_reason=None, attempts=0, error=None, next_attempt_at=None)
+                counts["queued_again"] += 1
         self.store.commit()
         return counts
 
@@ -466,11 +479,9 @@ class Crawler:
                               next_attempt_at=None, fetched_at=iso(now))
 
     def discover(self, page_url: str, content: bytes) -> None:
-        links = extract_links(content, page_url)
-        targets = []
-        for link in links:
-            canonical = self.site.in_scope(link)
-            targets.append(canonical or link)
+        found = [(self.site.in_scope(link), link) for link in extract_links(content, page_url)]
+        # The edges go in first, so that a target's needs are judged with this page's link already known.
+        self.store.add_links(page_url, [canonical or link for canonical, link in found])
+        for canonical, _ in found:
             if canonical and canonical != page_url:
                 self.add_known(canonical, source="discovered", discovered_from=page_url)
-        self.store.add_links(page_url, targets)
