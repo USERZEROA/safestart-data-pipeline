@@ -426,8 +426,11 @@ def test_what_the_osha_crawl_keeps():
                  "/sites/default/files/publications/HAZARD_ALERT_SPANISH.pdf", "/harwoodgrants/grantmaterials/fy2015/x",
                  "/laws-regs/interlinking/standards/1910.7(b)", "/laws-regs/interlinking/standards/1903.19(g)/federal_register",
                  "/laws-regs/interlinking/standards/1910.177/regulations", "/laws-regs/interlinking/standards/1910/all",
-                 "/laws-regs/interlinking/standards/1910.66/settlement_agreement"):
+                 "/laws-regs/interlinking/standards/1910.66/settlement_agreement",
+                 "/enforcement/directives/archive/publicationdate/2017", "/enforcement/directives/archive/lep"):
         assert osha.unneeded(base + path), path
+    assert osha.unneeded_listing(base + "/enforcement/directives/archive/lep")
+    assert not osha.unneeded(base + "/enforcement/directives/cpl-2-238c")  # archived or current: decided by its links
     for path in ("/sites/default/files/publications/OSHA4205.pdf", "/sites/default/files/laws-regs/federalregister/2021-05-20_0.pdf",
                  "/sites/default/files/enforcement/directives/CPL_02-03-011.pdf"):
         assert osha.kept(base + path), path
@@ -484,7 +487,8 @@ def test_waiting_urls_the_project_does_not_need_are_skipped_at_start(tmp_path):
     crawler.store.add_links(f"{HOST}/", [f"{HOST}/files/shared.pdf"])
     crawler.store.commit()
     crawler.site = example_site(name="needs", sitemaps=(), alias_prefixes=("/index.php",), **UNNEEDED)
-    assert crawler.skip_unneeded() == {"by_rule": 2, "linked_only_from_unneeded": 1, "queued_again": 0}
+    assert crawler.skip_unneeded() == {"by_rule": 2, "listed_only_in_unneeded_listing": 0, "linked_only_from_unneeded": 1,
+                                       "queued_again": 0}
     assert {url: states(crawler)[url] for url in rows} == {
         f"{HOST}/grants/fy2016/page": ("fetched", None),
         f"{HOST}/grants/fy2017/page": ("skipped", "not_needed"),
@@ -495,7 +499,8 @@ def test_waiting_urls_the_project_does_not_need_are_skipped_at_start(tmp_path):
         f"{HOST}/files/unlinked.pdf": ("pending", None),
         f"{HOST}/topic": ("pending", None),
     }
-    assert crawler.skip_unneeded() == {"by_rule": 0, "linked_only_from_unneeded": 0, "queued_again": 0}
+    assert crawler.skip_unneeded() == {"by_rule": 0, "listed_only_in_unneeded_listing": 0, "linked_only_from_unneeded": 0,
+                                       "queued_again": 0}
 
     # A needed page linking the skipped file puts it back in the queue at once.
     crawler.discover(f"{HOST}/topic", b'<html><body><a href="/files/deck.pptx">deck</a></body></html>')
@@ -503,8 +508,34 @@ def test_waiting_urls_the_project_does_not_need_are_skipped_at_start(tmp_path):
 
     # Rules that change: what they no longer cover is queued again at the next start.
     crawler.site = example_site(name="needs", sitemaps=(), **{**UNNEEDED, "unneeded_types": frozenset()})
-    assert crawler.skip_unneeded() == {"by_rule": 0, "linked_only_from_unneeded": 0, "queued_again": 1}
+    assert crawler.skip_unneeded() == {"by_rule": 0, "listed_only_in_unneeded_listing": 0, "linked_only_from_unneeded": 0,
+                                       "queued_again": 1}
     assert states(crawler)[f"{HOST}/poster.jpg"] == ("pending", None)
+    crawler.store.close()
+    client.close()
+
+
+def test_entries_only_an_unneeded_listing_links_to_are_skipped(tmp_path):
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(404)))
+    site = example_site(name="archive", sitemaps=(), unneeded_paths=("/archive/",), kept_paths=("/files/",),
+                        unneeded_listings=("/archive/",))
+    crawler = Crawler(site, tmp_path, client)
+    for url in (f"{HOST}/directives/old-1", f"{HOST}/directives/current", f"{HOST}/files/old-1.pdf"):
+        crawler.store.insert_url(url, source="discovered", state="pending", now="2026-11-22T12:00:00Z")
+    crawler.store.add_links(f"{HOST}/archive/2001", [f"{HOST}/directives/old-1", f"{HOST}/directives/current",
+                                                     f"{HOST}/files/old-1.pdf"])
+    crawler.store.add_links(f"{HOST}/directives", [f"{HOST}/directives/current"])
+    crawler.store.commit()
+    assert crawler.skip_unneeded() == {"by_rule": 0, "listed_only_in_unneeded_listing": 2, "linked_only_from_unneeded": 0,
+                                       "queued_again": 0}
+    assert states(crawler) == {
+        f"{HOST}/directives/old-1": ("skipped", "not_needed"),  # a page, judged by the listing that alone links it
+        f"{HOST}/files/old-1.pdf": ("skipped", "not_needed"),  # under a kept path, but only the archive links it
+        f"{HOST}/directives/current": ("pending", None),  # a current page links it too
+    }
+    # A current page that links an archived entry brings it back.
+    crawler.discover(f"{HOST}/directives", b'<html><body><a href="/directives/old-1">old</a></body></html>')
+    assert states(crawler)[f"{HOST}/directives/old-1"] == ("pending", None)
     crawler.store.close()
     client.close()
 

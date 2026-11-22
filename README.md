@@ -47,8 +47,10 @@ orchestration, analysis and the dashboard).
   be queued again: pictures, sound, video and e-book copies of publications; copies in other languages; partnership,
   success-story and grant-recipient pages, advisory-committee records, contact and order pages, and the files linked
   only from them (OSHA's own publications excepted); OSHA's web copy of CFR text, since the bulk source holds the
-  complete eCFR titles 29 and 30; and the paragraph-level interlinking pages and the "regulations", "all" and
-  "settlement agreement" interlinking sub-pages, which led to almost no document not already known. Interpretations,
+  complete eCFR titles 29 and 30; the paragraph-level interlinking pages and the "regulations", "all" and
+  "settlement agreement" interlinking sub-pages, which led to almost no document not already known; and cancelled or
+  expired directives that only the directive archive links to (they share their paths with current ones, so the
+  archive's links decide, and a link from a current page brings an entry back). Interpretations,
   directives, Federal Register notices, the part and section interlinking pages that lead to them, publications, topic
   pages, news and data files are all downloaded. Files downloaded before stay.
 

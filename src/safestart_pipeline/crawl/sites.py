@@ -44,6 +44,9 @@ class Site:
     unneeded_patterns: tuple[str, ...] = ()  # regular expressions searched in the decoded, lower-case path
     unneeded_words: frozenset[str] = frozenset()
     kept_paths: tuple[str, ...] = ()
+    # Listings (path prefixes) whose entries, pages and files alike, are not needed when nothing else links to them,
+    # such as an archive of cancelled documents that share their path with current ones.
+    unneeded_listings: tuple[str, ...] = ()
 
     def excluded(self, url: str) -> bool:
         path = urlsplit(url).path.lower()
@@ -65,6 +68,10 @@ class Site:
     def kept(self, url: str) -> bool:
         path = unquote(urlsplit(url).path).lower()
         return any(path.startswith(prefix.lower()) for prefix in self.kept_paths)
+
+    def unneeded_listing(self, url: str) -> bool:
+        path = unquote(urlsplit(url).path).lower()
+        return any(path.startswith(prefix.lower()) for prefix in self.unneeded_listings)
 
     def in_scope(self, url: str | None) -> str | None:
         """The canonical https form of a URL on one of this site's hosts, or None for any other host."""
@@ -105,7 +112,7 @@ SITES = {
         unneeded_paths=(
             "/alliances/", "/successstories/", "/partnerships/", "/harwoodgrants/", "/advisorycommittee/",
             "/doc/accsh/", "/contactus/", "/publications/add/", "/publications/bylanguage/",
-            "/laws-regs/regulations/standardnumber/",
+            "/laws-regs/regulations/standardnumber/", "/enforcement/directives/archive/",
         ),
         # Interlinking pages exist for every part, section and paragraph of a standard, each with sub-pages per kind
         # of document. By 2026-11-22 about 9,500 paragraph-level pages had been read and had led to 254 documents not
@@ -124,6 +131,10 @@ SITES = {
         kept_paths=(
             "/sites/default/files/publications/", "/sites/default/files/laws-regs/", "/sites/default/files/enforcement/",
         ),
+        # The directive archive lists cancelled and expired directives (by year since 1978, and expired local emphasis
+        # programs) under the same paths as current ones. On 2026-11-22 it had put 1,165 URLs in the queue, 46 of them
+        # also linked from a current page. Entries only the archive links to are not needed.
+        unneeded_listings=("/enforcement/directives/archive/",),
     ),
     "msha": Site(
         name="msha",

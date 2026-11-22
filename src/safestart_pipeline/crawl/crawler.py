@@ -339,14 +339,17 @@ class Crawler:
         return counts
 
     def why_unneeded(self, url: str) -> str | None:
-        """'by_rule' when the site's rules name the URL; 'linked_only_from_unneeded' for a file every known link to
-        which comes from a page the rules name (unless it lies under the kept paths); None when it is needed. Pages are
-        never judged by their links alone."""
+        """'by_rule' when the site's rules name the URL; 'listed_only_in_unneeded_listing' for a page or file that only
+        such a listing links to; 'linked_only_from_unneeded' for a file every known link to which comes from a page the
+        rules name (unless it lies under the kept paths); None when it is needed. Other pages are never judged by their
+        links alone."""
         if self.site.unneeded(url):
             return "by_rule"
+        pages = [self.site.in_scope(normalize(page)) or page for page in self.store.linking_pages(url)]
+        if pages and self.site.unneeded_listings and all(self.site.unneeded_listing(page) for page in pages):
+            return "listed_only_in_unneeded_listing"
         if is_page(url) or self.site.kept(url):
             return None
-        pages = [self.site.in_scope(normalize(page)) or page for page in self.store.linking_pages(url)]
         if pages and all(self.site.unneeded(page) for page in pages):
             return "linked_only_from_unneeded"
         return None
@@ -354,7 +357,7 @@ class Crawler:
     def skip_unneeded(self) -> dict[str, int]:
         """Bring the queue in line with the site's current not-needed rules: waiting URLs they cover are skipped as
         "not_needed", and URLs skipped so that the rules no longer cover are queued again. Nothing downloaded changes."""
-        counts = {"by_rule": 0, "linked_only_from_unneeded": 0, "queued_again": 0}
+        counts = {"by_rule": 0, "listed_only_in_unneeded_listing": 0, "linked_only_from_unneeded": 0, "queued_again": 0}
         for row in self.store.waiting():
             reason = self.why_unneeded(row["url"])
             if reason:
