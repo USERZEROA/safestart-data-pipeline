@@ -417,10 +417,20 @@ def test_what_the_osha_crawl_keeps():
                  "/laws-regs/interlinking/standards/1910.177/federal_register", "/sites/default/files/publications/OSHA4205.pdf",
                  "/news/newsreleases/trade/11092017", "/sites/default/files/fy15_federal-state_summaries.xlsx"):
         assert not osha.unneeded(base + path), path
+    for path in ("/laws-regs/interlinking/standards/1910.177", "/laws-regs/interlinking/standards/1910.177/directives",
+                 "/laws-regs/interlinking/standards/1904/standard_interpretations",
+                 "/laws-regs/interlinking/standards/1902%20Subpart%20A"):
+        assert not osha.unneeded(base + path), path
     for path in ("/laws-regs/regulations/standardnumber/2205/2205.999", "/alliances/regional/chicago",
                  "/sites/default/files/StopFalls2022-poster-english.jpg",
-                 "/sites/default/files/publications/HAZARD_ALERT_SPANISH.pdf", "/harwoodgrants/grantmaterials/fy2015/x"):
+                 "/sites/default/files/publications/HAZARD_ALERT_SPANISH.pdf", "/harwoodgrants/grantmaterials/fy2015/x",
+                 "/laws-regs/interlinking/standards/1910.7(b)", "/laws-regs/interlinking/standards/1903.19(g)/federal_register",
+                 "/laws-regs/interlinking/standards/1910.177/regulations", "/laws-regs/interlinking/standards/1910/all",
+                 "/laws-regs/interlinking/standards/1910.66/settlement_agreement"):
         assert osha.unneeded(base + path), path
+    for path in ("/sites/default/files/publications/OSHA4205.pdf", "/sites/default/files/laws-regs/federalregister/2021-05-20_0.pdf",
+                 "/sites/default/files/enforcement/directives/CPL_02-03-011.pdf"):
+        assert osha.kept(base + path), path
 
 
 def test_content_the_project_does_not_need_is_recorded_but_not_downloaded(tmp_path):

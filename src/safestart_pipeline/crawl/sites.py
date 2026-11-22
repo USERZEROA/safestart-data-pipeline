@@ -41,6 +41,7 @@ class Site:
     # these rules name is not needed either, unless it lies under `kept_paths`.
     unneeded_types: frozenset[str] = frozenset()
     unneeded_paths: tuple[str, ...] = ()
+    unneeded_patterns: tuple[str, ...] = ()  # regular expressions searched in the decoded, lower-case path
     unneeded_words: frozenset[str] = frozenset()
     kept_paths: tuple[str, ...] = ()
 
@@ -51,6 +52,8 @@ class Site:
     def unneeded(self, url: str) -> bool:
         path = unquote(urlsplit(url).path).lower()
         if any(path.startswith(prefix.lower()) for prefix in self.unneeded_paths):
+            return True
+        if any(re.search(pattern, path) for pattern in self.unneeded_patterns):
             return True
         if is_page(url):
             return False
@@ -104,12 +107,23 @@ SITES = {
             "/doc/accsh/", "/contactus/", "/publications/add/", "/publications/bylanguage/",
             "/laws-regs/regulations/standardnumber/",
         ),
+        # Interlinking pages exist for every part, section and paragraph of a standard, each with sub-pages per kind
+        # of document. By 2026-11-22 about 9,500 paragraph-level pages had been read and had led to 254 documents not
+        # already known, and the "regulations", "all" and "settlement_agreement" sub-pages to almost none; the part and
+        # section pages for Federal Register notices, interpretations and directives led to 3,300. Paragraph pages and
+        # those three sub-pages are not needed.
+        unneeded_patterns=(
+            r"^/laws-regs/interlinking/standards/[^/]*\(",
+            r"^/laws-regs/interlinking/standards/.+/(regulations|all|settlement_agreement)/?$",
+        ),
         unneeded_words=frozenset(
             "spanish espanol español chinese vietnamese korean portuguese russian haitian creole tagalog arabic hmong"
             " somali nepali japanese".split()
         ),
-        # OSHA's own publications are linked from all kinds of pages, including ones not needed.
-        kept_paths=("/sites/default/files/publications/",),
+        # OSHA's own publications, Federal Register notices and directives are needed whichever page links to them.
+        kept_paths=(
+            "/sites/default/files/publications/", "/sites/default/files/laws-regs/", "/sites/default/files/enforcement/",
+        ),
     ),
     "msha": Site(
         name="msha",
