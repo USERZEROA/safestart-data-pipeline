@@ -113,6 +113,9 @@ SITES = {
             "/alliances/", "/successstories/", "/partnerships/", "/harwoodgrants/", "/advisorycommittee/",
             "/doc/accsh/", "/contactus/", "/publications/add/", "/publications/bylanguage/",
             "/laws-regs/regulations/standardnumber/", "/enforcement/directives/archive/",
+            # Month pages of past press releases (77 months, 2013 to 2025). Of the 1,248 releases the sitemap listed,
+            # 1,146 are gone (404); current releases are linked from live pages and stay.
+            "/news/newsreleases/archive/",
         ),
         # Interlinking pages exist for every part, section and paragraph of a standard, each with sub-pages per kind
         # of document. By 2026-11-22 about 9,500 paragraph-level pages had been read and had led to 254 documents not
