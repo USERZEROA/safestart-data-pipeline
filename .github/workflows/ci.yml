@@ -1,6 +1,8 @@
 # Lint and unit tests (with a PostgreSQL service for the tests that need one), then the whole stream path in Docker
-# Compose: the image is built, Kafka, PostgreSQL, the initializer, both consumer groups and the dashboard start, and
-# scripts/smoke_test.py sends contract events through Kafka and waits for both consumers' rows in PostgreSQL.
+# Compose: the image is built, Kafka, PostgreSQL, the initializer, both consumer groups and the dashboard start, the
+# watcher's and the orchestrator's entry points load in the image, and scripts/smoke_test.py sends contract events
+# through Kafka and waits for both consumers' rows in PostgreSQL. The watcher and the orchestrator are not started:
+# they would send requests to MSHA, OSHA and the Federal Register.
 name: CI
 
 on:
@@ -60,22 +62,29 @@ jobs:
           version: ${{ env.UV_VERSION }}
           python-version: ${{ env.PYTHON_VERSION }}
           enable-cache: true
+      - run: uv sync --locked --all-extras
       - name: Write .env and the empty data root
         run: python3 scripts/start.py --no-start
       - name: Check the Compose files and the Caddyfile
         run: |
+          docker compose version
           docker compose config --quiet
           PUBLIC_DOMAIN=ci.example.org docker compose -f docker-compose.yml -f docker-compose.public.yml config --quiet
           docker run --rm -e PUBLIC_DOMAIN=203.0.113.7 -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
             caddy:2.11-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       - name: Build the image
         run: docker compose build
-      - name: Start Kafka, PostgreSQL, the initializer, both consumers and the dashboard
-        run: >-
-          docker compose up --detach --wait --wait-timeout 300
-          kafka postgres init storage-consumer analytics-consumer dashboard
+      # Only long-running services are named: Compose starts Kafka, PostgreSQL and the one-shot initializer as their
+      # dependencies, and --wait also waits for those, the initializer until it has exited successfully (it is a
+      # dependency with the condition service_completed_successfully, which Compose v2 waits for rather than failing).
+      - name: Start both consumers and the dashboard, after Kafka, PostgreSQL and the initializer
+        run: docker compose up --detach --wait --wait-timeout 300 storage-consumer analytics-consumer dashboard
+      - name: Load the watcher's and the orchestrator's entry points in the image
+        run: |
+          docker compose run --rm --no-deps watcher python -m safestart_pipeline.watch --help
+          docker compose run --rm --no-deps orchestrator python -m safestart_pipeline.flows --help
       - name: Smoke test through Kafka into PostgreSQL
-        run: uv run --locked --extra stream python scripts/smoke_test.py
+        run: uv run --no-sync python scripts/smoke_test.py
       - name: Service state and logs
         if: failure()
         run: |
