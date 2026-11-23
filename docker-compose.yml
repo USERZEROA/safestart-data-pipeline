@@ -1,0 +1,200 @@
+# The streaming side of the pipeline on one host: Kafka and PostgreSQL, the stream initializer, the replay producer,
+# the storage and analytics consumer groups, the live watchers and the dashboard. `python scripts/start.py` writes .env
+# (a random PostgreSQL password, the data root) and starts it; docs/DEPLOYMENT.md explains each step.
+#
+# Memory limits are sized for a 4 GiB e2-medium: the services that keep running may use 2.9 GiB together (3.0 GiB
+# with the HTTPS gateway of docker-compose.public.yml; the initializer exits before the others start), which leaves
+# about 1 GiB to the system and Docker. Kafka has the largest share: a 384 MiB heap plus the JVM's own memory (the
+# broker measured 320 MiB at rest and 400 MiB while a health check ran). Host ports listen on 127.0.0.1 only; the
+# public overlay adds the one public entrance.
+name: safestart
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+# The data root (lake/ and warehouse/) of the host, read-only in every pipeline service.
+x-data-root: &data-root
+  type: bind
+  source: ${DATA_ROOT:-./data}
+  target: /data
+  read_only: true
+
+# Every pipeline service runs the same image as an unprivileged user without Linux capabilities, and starts once the
+# initializer has created the Kafka topics and the PostgreSQL schema.
+x-app: &app
+  image: safestart-pipeline:local
+  build: .
+  init: true
+  restart: unless-stopped
+  logging: *logging
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  environment: &app-env
+    SAFESTART_DATA_ROOT: /data
+    SAFESTART_KAFKA_BOOTSTRAP: kafka:9092
+    SAFESTART_POSTGRES_URL: postgresql://safestart:${POSTGRES_PASSWORD:?run scripts/start.py}@postgres:5432/safestart
+    SAFESTART_DASHBOARD_URL: http://dashboard:8501
+    TZ: UTC
+  volumes:
+    - *data-root
+  depends_on:
+    init:
+      condition: service_completed_successfully
+
+services:
+  kafka:
+    image: apache/kafka:4.1.2
+    hostname: kafka
+    restart: unless-stopped
+    logging: *logging
+    stop_grace_period: 30s
+    mem_limit: 768m
+    environment:
+      CLUSTER_ID: 8-ONZhA0R9efLHq05Wl_JQ
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # The services use kafka:9092 inside the Compose network; tools on the host use 127.0.0.1:19092 (an IPv4
+      # address, since the host port is not open on IPv6 and "localhost" may try ::1 first).
+      KAFKA_LISTENERS: INTERNAL://:9092,HOST://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,HOST://127.0.0.1:${KAFKA_HOST_PORT:-19092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics come from the initializer, with their partitions; a misspelled topic name fails instead of appearing.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx384m
+    ports:
+      - 127.0.0.1:${KAFKA_HOST_PORT:-19092}:19092
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      # A real request to the broker, from a JVM kept small so the check stays inside the broker's memory limit.
+      test:
+        - CMD-SHELL
+        - >-
+          KAFKA_HEAP_OPTS='-Xms16m -Xmx64m' /opt/kafka/bin/kafka-broker-api-versions.sh
+          --bootstrap-server localhost:9092 >/dev/null 2>&1
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 120s
+      start_interval: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *logging
+    stop_grace_period: 30s
+    mem_limit: 384m
+    shm_size: 128m
+    environment:
+      POSTGRES_USER: safestart
+      POSTGRES_DB: safestart
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/start.py}
+      TZ: UTC
+      PGTZ: UTC
+    # Small settings for a host shared with Kafka and the Python services; the defaults assume a dedicated server.
+    command: >-
+      postgres
+      -c shared_buffers=128MB
+      -c effective_cache_size=512MB
+      -c work_mem=8MB
+      -c maintenance_work_mem=64MB
+      -c max_connections=40
+      -c max_wal_size=1GB
+      -c max_worker_processes=4
+      -c max_parallel_workers=2
+      -c max_parallel_workers_per_gather=1
+    ports:
+      - 127.0.0.1:${POSTGRES_HOST_PORT:-15432}:5432
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U safestart -d safestart"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+
+  # Creates the Kafka topics and the PostgreSQL schema, then exits; every other pipeline service waits for it.
+  init:
+    <<: *app
+    command: ["python", "-m", "safestart_pipeline.stream.init"]
+    restart: "no"
+    mem_limit: 192m
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # Replays the enforcement history from the lake through Kafka. Restarted only after a failure: once the history has
+  # been sent it stays stopped.
+  replay:
+    <<: *app
+    command: ["python", "-m", "safestart_pipeline.stream.replay"]
+    restart: on-failure
+    mem_limit: 384m
+
+  storage-consumer:
+    <<: *app
+    command: ["python", "-m", "safestart_pipeline.stream.storage"]
+    mem_limit: 192m
+
+  analytics-consumer:
+    <<: *app
+    command: ["python", "-m", "safestart_pipeline.stream.analytics"]
+    mem_limit: 256m
+
+  # The live watchers keep what they have seen (sitemap dates, the last Federal Register document, downloaded dataset
+  # versions) in their own volume, since the data root is read-only.
+  watcher:
+    <<: *app
+    command: ["python", "-m", "safestart_pipeline.watch", "loop"]
+    mem_limit: 320m
+    environment:
+      <<: *app-env
+      SAFESTART_WATCH_STATE_DIR: /state
+    volumes:
+      - *data-root
+      - watch-state:/state
+
+  dashboard:
+    <<: *app
+    command: ["streamlit", "run", "/app/src/safestart_pipeline/dashboard/app.py"]
+    mem_limit: 640m
+    environment:
+      <<: *app-env
+      STREAMLIT_SERVER_PORT: "8501"
+      STREAMLIT_SERVER_ADDRESS: 0.0.0.0
+      STREAMLIT_SERVER_HEADLESS: "true"
+      STREAMLIT_SERVER_FILE_WATCHER_TYPE: none
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    ports:
+      - 127.0.0.1:${DASHBOARD_HOST_PORT:-8501}:8501
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8501/_stcore/health", timeout=5)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+      start_interval: 5s
+
+volumes:
+  kafka-data:
+  postgres-data:
+  watch-state:

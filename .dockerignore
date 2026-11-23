@@ -1,0 +1,11 @@
+# An allowlist: the image needs only the package, its lock and the smoke test. Everything else stays out of the build
+# context, above all secrets (.env, pipeline.local.toml), the virtual environment and data.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src/
+!scripts/smoke_test.py
+**/__pycache__
+**/*.py[cod]

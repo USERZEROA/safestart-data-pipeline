@@ -1,0 +1,5 @@
+# Shell scripts and container files run on Linux, whatever line endings the checkout's platform prefers.
+*.sh text eol=lf
+Dockerfile text eol=lf
+Caddyfile text eol=lf
+*.yml text eol=lf
