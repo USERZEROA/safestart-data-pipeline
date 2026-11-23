@@ -14,6 +14,7 @@ from safestart_pipeline.crawl.store import SCHEMA as CRAWL_SCHEMA
 from safestart_pipeline.lake.msha_ogd import object_path
 from safestart_pipeline.warehouse.build import build
 from safestart_pipeline.warehouse.exports import export
+from safestart_pipeline.warehouse.lock import warehouse_lock
 from safestart_pipeline.warehouse.named_queries import (
     markdown,
     query_names,
@@ -433,7 +434,7 @@ def test_a_failed_build_leaves_the_previous_warehouse_in_place(tmp_path):
     parquet.unlink()
     with pytest.raises(FileNotFoundError):
         build(root, target)
-    assert sorted(path.name for path in target.parent.iterdir()) == ["warehouse.duckdb"]
+    assert sorted(path.name for path in target.parent.iterdir()) == ["warehouse.duckdb", "warehouse.duckdb.lock"]
     with duckdb.connect(str(target), read_only=True) as con:
         assert one(con, "select count(*) from violation") == (9,)
 
@@ -442,7 +443,19 @@ def test_a_failed_build_leaves_the_previous_warehouse_in_place(tmp_path):
     summary = build(root, target)
     assert summary["rows"]["document"] == 7
     assert summary["checks"]["crawl_catalog_missing"] == {"rows": 1, "detail": "no crawl catalog for arlweb"}
-    assert sorted(path.name for path in target.parent.iterdir()) == ["warehouse.duckdb"]
+    assert sorted(path.name for path in target.parent.iterdir()) == ["warehouse.duckdb", "warehouse.duckdb.lock"]
+
+
+def test_a_second_writer_fails_at_once_while_a_build_or_export_holds_the_lock(warehouse, tmp_path):
+    target, _, _ = warehouse
+    with warehouse_lock(target):
+        with pytest.raises(RuntimeError, match="another process is building or exporting"):
+            build(tmp_path / "unused", target)
+        with pytest.raises(RuntimeError, match="another process is building or exporting"):
+            export(target, tmp_path / "exports")
+    assert not (tmp_path / "exports").exists()
+    with warehouse_lock(target):  # released by the writer that failed
+        pass
 
 
 def test_federal_register_dates_and_headings_are_read_from_notes():

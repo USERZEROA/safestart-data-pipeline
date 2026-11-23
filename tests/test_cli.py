@@ -7,7 +7,6 @@ import sys
 import pytest
 
 from safestart_pipeline import cli
-from safestart_pipeline.flows.locks import warehouse_lock
 
 
 @pytest.fixture
@@ -15,14 +14,6 @@ def root(monkeypatch, tmp_path):
     monkeypatch.setenv("SAFESTART_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv("SAFESTART_WAREHOUSE_PATH", str(tmp_path / "warehouse" / "safestart.duckdb"))
     return tmp_path
-
-
-def lock_held(target) -> bool:
-    try:
-        with warehouse_lock(target):
-            return False
-    except RuntimeError:
-        return True
 
 
 def test_pipeline_runs_the_batch_flow_once_and_the_model_flow_after_it_on_request(monkeypatch, root):
@@ -36,27 +27,13 @@ def test_pipeline_runs_the_batch_flow_once_and_the_model_flow_after_it_on_reques
     assert calls == [log, (["batch"], True), log, (["batch", "model"], False)]
 
 
-@pytest.mark.parametrize(("argv", "locked"), [
-    (["build"], True),
-    (["export", "--out", "exports"], True),
-    (["query", "top_cited_sections"], False),
-    (["--help"], False),
-])
-def test_warehouse_commands_reach_the_warehouse_module_and_its_writers_hold_the_lock(monkeypatch, root, argv, locked):
+@pytest.mark.parametrize("argv", [["build"], ["export", "--out", "exports"], ["query", "top_cited_sections"],
+                                  ["--help"]])
+def test_warehouse_commands_reach_the_warehouse_module_unchanged(monkeypatch, root, argv):
     calls = []
-    target = root / "warehouse" / "safestart.duckdb"
-    monkeypatch.setattr("safestart_pipeline.warehouse.__main__.main",
-                        lambda args: calls.append((args, lock_held(target))) or 0)
+    monkeypatch.setattr("safestart_pipeline.warehouse.__main__.main", lambda args: calls.append(args) or 0)
     assert cli.main(["warehouse", *argv]) == 0
-    assert calls == [(argv, locked)]
-    assert not lock_held(target)
-
-
-def test_a_warehouse_build_while_another_writer_holds_the_lock_fails_at_once(monkeypatch, root):
-    monkeypatch.setattr("safestart_pipeline.warehouse.__main__.main", lambda args: pytest.fail("built anyway"))
-    with warehouse_lock(root / "warehouse" / "safestart.duckdb"):
-        with pytest.raises(RuntimeError, match="another run is building or exporting"):
-            cli.main(["warehouse", "build"])
+    assert calls == [argv]
 
 
 def test_ml_commands_reach_the_ml_module(monkeypatch, root):

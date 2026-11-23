@@ -23,7 +23,8 @@ import duckdb
 
 from ..acquire.bulk import ECFR_TITLES
 from ..verify import sha256_of
-from .build import LAKE_DATASETS, TIME_FORMAT, connect, one, sql_text, utc_now
+from .build import LAKE_DATASETS, TIME_FORMAT, connect, memory_limit, one, sql_text, utc_now
+from .lock import warehouse_lock
 
 FORMAT = 1
 MINE_PROFILES = """
@@ -89,10 +90,17 @@ def sources(con: duckdb.DuckDBPyConnection) -> dict:
 
 
 def export(warehouse: Path, out_dir: Path) -> dict:
-    """Write the SafeStart exports from a built warehouse into `out_dir`; returns the manifest."""
+    """Write the SafeStart exports from a built warehouse into `out_dir`, while holding the warehouse's lock; returns
+    the manifest."""
+    with warehouse_lock(warehouse):
+        return write_exports(warehouse, out_dir)
+
+
+def write_exports(warehouse: Path, out_dir: Path) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     files = {}
     with connect(warehouse) as con:
+        con.execute(f"SET memory_limit = {sql_text(memory_limit())}")
         for name, sql in FILES.items():
             partial = out_dir / f".{name}.partial"
             rows, = one(con, f"COPY ({sql}) TO {sql_text(partial)} (FORMAT parquet, COMPRESSION zstd)")

@@ -1,4 +1,4 @@
-"""The batch and model flows with every step replaced by a fake (under a temporary Prefect API), the warehouse lock,
+"""The batch and model flows with every step replaced by a fake (under a temporary Prefect API),
 the schedules, and `python -m safestart_pipeline.flows serve|run`."""
 
 import asyncio
@@ -15,7 +15,6 @@ from prefect.testing.utilities import prefect_test_harness
 from safestart_pipeline.flows import __main__ as flows_main
 from safestart_pipeline.flows import model as model_flow
 from safestart_pipeline.flows import pipeline
-from safestart_pipeline.flows.locks import warehouse_lock
 from safestart_pipeline.flows.schedule import MAX_SLEEP_SECONDS, SUNDAY, Schedule, run_on_schedule
 from safestart_pipeline.lake.msha_ogd import LakeBuildError
 
@@ -67,14 +66,6 @@ class Steps:
         return [call[0] for call in self.calls]
 
 
-def lock_held(target) -> bool:
-    try:
-        with warehouse_lock(target):
-            return False
-    except RuntimeError:
-        return True
-
-
 @pytest.fixture
 def batch_steps(monkeypatch, root):
     steps = Steps()
@@ -89,11 +80,11 @@ def batch_steps(monkeypatch, root):
         return {"mines": {"rows": 3, "versions_built": 1}, "accidents": {"rows": 2, "versions_built": 0}}
 
     def build(data_root, target):
-        steps("warehouse", data_root, target, lock_held(target))
+        steps("warehouse", data_root, target)
         return {"warehouse": str(target), "seconds": 1.0, "rows": {"mine": 3}}
 
     def export(warehouse, out):
-        steps("exports", warehouse, out, lock_held(warehouse))
+        steps("exports", warehouse, out)
         return {"files": {"mine_profiles.parquet": {"rows": 3}, "cited_sections.parquet": {"rows": 5}}}
 
     monkeypatch.setattr(pipeline, "acquire_bulk", acquire)
@@ -109,8 +100,8 @@ def batch_steps(monkeypatch, root):
 def test_the_batch_downloads_then_builds_the_lake_the_warehouse_and_the_exports(batch_steps, root):
     summary = pipeline.batch()
     warehouse = root / "warehouse" / "safestart.duckdb"
-    assert batch_steps.calls == [("acquire",), ("lake", root), ("warehouse", root, warehouse, True),
-                                 ("exports", warehouse, root / "exports" / "safestart", True)]
+    assert batch_steps.calls == [("acquire",), ("lake", root), ("warehouse", root, warehouse),
+                                 ("exports", warehouse, root / "exports" / "safestart")]
     assert list(summary) == ["acquire", "lake", "warehouse", "exports"]
     assert summary["acquire"] == {"msha-ogd": 40} and summary["warehouse"]["rows"] == {"mine": 3}
 
@@ -146,14 +137,6 @@ def test_a_failed_warehouse_build_is_retried_then_skips_the_exports_and_fails_th
     with pytest.raises(RuntimeError, match="build-warehouse: .*out of memory"):
         pipeline.batch(download=False)
     assert batch_steps.names == ["lake", "warehouse", "warehouse"]
-
-
-def test_a_run_that_finds_the_warehouse_locked_leaves_the_warehouse_and_the_exports_alone(batch_steps, root):
-    with warehouse_lock(root / "warehouse" / "safestart.duckdb"):
-        with pytest.raises(RuntimeError, match="build-warehouse: .*another run is building or exporting"):
-            pipeline.batch(download=False)
-    assert batch_steps.names == ["lake"]
-    assert not lock_held(root / "warehouse" / "safestart.duckdb")  # the lock goes with the run that held it
 
 
 # The model flow -------------------------------------------------------------------------------------------------------

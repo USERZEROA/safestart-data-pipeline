@@ -16,7 +16,7 @@ from contextlib import ExitStack
 from datetime import timedelta
 from pathlib import Path
 
-from .config import data_root, warehouse_path
+from .config import data_root
 from .crawl.crawler import Crawler, make_client, utc_now
 from .crawl.locks import SiteLock
 from .crawl.sites import SITES
@@ -98,13 +98,9 @@ def verify(root: Path, target: str, *, rehash: bool, live: bool) -> dict:
 
 
 def warehouse(argv: list[str]) -> int:
-    """`python -m safestart_pipeline.warehouse` with these arguments; build and export hold the warehouse lock."""
-    from .flows.locks import warehouse_lock
+    """`python -m safestart_pipeline.warehouse` with these arguments (its build and export hold the warehouse lock)."""
     from .warehouse.__main__ import main as warehouse_main
 
-    if argv and argv[0] in ("build", "export"):
-        with warehouse_lock(warehouse_path()):
-            return warehouse_main(argv)
     return warehouse_main(argv)
 
 

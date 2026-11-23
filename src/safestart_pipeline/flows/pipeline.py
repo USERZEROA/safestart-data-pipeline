@@ -10,8 +10,8 @@ so the failure is visible without leaving the later stages behind:
 - a failed warehouse build keeps the previous warehouse, and the exports, which would only repeat the previous ones,
   are skipped.
 
-The warehouse build and the exports each hold the warehouse lock (locks.py), so two runs never write at once; a run
-that finds it held fails that step and retries it later.
+The warehouse build and the exports each hold the warehouse's lock (warehouse/lock.py), so two writers never write at
+once; a run that finds it held fails that step and retries it later.
 
 Run once with `python -m safestart_pipeline.flows run batch [--no-download]` or `ssp pipeline`.
 """
@@ -24,7 +24,6 @@ from prefect.client.schemas.objects import TaskRun
 
 from ..config import data_root, warehouse_path
 from .acquire import acquire_bulk
-from .locks import warehouse_lock
 
 
 def retry_unless_unbuildable(_task: Task, _run: TaskRun, state: State) -> bool:
@@ -51,8 +50,7 @@ def build_warehouse_task() -> dict:
     from ..warehouse.build import build
 
     target = warehouse_path()
-    with warehouse_lock(target):
-        result = build(data_root(), target)
+    result = build(data_root(), target)
     get_run_logger().info("warehouse %s built in %s s; rows %s", target, result.get("seconds"), result.get("rows"))
     return result
 
@@ -62,8 +60,7 @@ def export_task() -> dict:
     from ..warehouse.exports import export
 
     out = data_root() / "exports" / "safestart"
-    with warehouse_lock(warehouse_path()):
-        manifest = export(warehouse_path(), out)
+    manifest = export(warehouse_path(), out)
     rows = {name: file.get("rows") for name, file in manifest.get("files", {}).items()}
     get_run_logger().info("SafeStart exports in %s: %s", out, rows)
     return manifest

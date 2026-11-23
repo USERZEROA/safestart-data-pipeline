@@ -39,6 +39,7 @@ import polars as pl
 from ..acquire.bulk import ECFR_TITLES
 from ..config import setting
 from ..definitions import FATAL_DEGREE, SIG_SUB, cfr_section_sql, commodity_sql, injury_sql, serious_sql
+from .lock import warehouse_lock
 from .sources import CRAWL_SITES, catalog_rows, ecfr_amended, ecfr_file, ecfr_sections
 
 log = logging.getLogger(__name__)
@@ -336,30 +337,36 @@ def discard(path: Path) -> None:
         item.unlink(missing_ok=True)
 
 
+def memory_limit() -> str:
+    """DuckDB's memory limit for the warehouse's builds and exports (DuckDB's own default is 80% of the host)."""
+    return setting("warehouse_memory_limit", "1GB")
+
+
 def build(data_root: Path, target: Path) -> dict:
     """Build the warehouse from the data root's lake, bulk store and crawl catalogs (all read only) into `target`,
-    replacing it atomically."""
+    replacing it atomically, while holding the warehouse's lock."""
     building = target.with_name(target.name + ".building")
     target.parent.mkdir(parents=True, exist_ok=True)
-    discard(building)
-    started = time.monotonic()
-    try:
-        # The connection closes before the staging folder (DuckDB's spill space too) is removed.
-        with (tempfile.TemporaryDirectory(prefix=f".{target.name}-", dir=target.parent) as staging,
-              duckdb.connect(str(building)) as con):
-            con.execute(f"SET memory_limit = {sql_text(setting('warehouse_memory_limit', '1GB'))}")
-            con.execute("SET preserve_insertion_order = false")
-            con.execute("SET enable_progress_bar = false")
-            con.execute(f"SET temp_directory = {sql_text(Path(staging))}")
-            summary = fill(con, data_root, Path(staging))
-            con.execute("CHECKPOINT")
-    except BaseException:
+    with warehouse_lock(target):
         discard(building)
-        raise
-    try:
-        os.replace(building, target)
-    except PermissionError as problem:
-        raise RuntimeError(f"{target} is open in another process; the new warehouse is at {building}") from problem
+        started = time.monotonic()
+        try:
+            # The connection closes before the staging folder (DuckDB's spill space too) is removed.
+            with (tempfile.TemporaryDirectory(prefix=f".{target.name}-", dir=target.parent) as staging,
+                  duckdb.connect(str(building)) as con):
+                con.execute(f"SET memory_limit = {sql_text(memory_limit())}")
+                con.execute("SET preserve_insertion_order = false")
+                con.execute("SET enable_progress_bar = false")
+                con.execute(f"SET temp_directory = {sql_text(Path(staging))}")
+                summary = fill(con, data_root, Path(staging))
+                con.execute("CHECKPOINT")
+        except BaseException:
+            discard(building)
+            raise
+        try:
+            os.replace(building, target)
+        except PermissionError as problem:
+            raise RuntimeError(f"{target} is open in another process; the new warehouse is at {building}") from problem
     log.info("warehouse built in %.0f s: %s", time.monotonic() - started, target)
     return {"warehouse": str(target), "seconds": round(time.monotonic() - started, 1)} | summary
 
