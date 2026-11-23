@@ -3,6 +3,7 @@ task with retries and its own log. Both read the lake's current versions and wri
 safestart_pipeline.ml train|analyze` writes by default: <data root>/models/accident_risk and <data root>/analysis.
 
 The two steps are independent, so a failed training still writes the analysis; the run is then marked failed at the end.
+The run holds the data root's writer lock throughout (flows/__init__.py), so it never reads a lake a batch is rewriting.
 Run once with `python -m safestart_pipeline.flows run model` or `ssp pipeline --model`.
 """
 
@@ -14,7 +15,7 @@ from prefect import flow, get_run_logger, task
 from prefect.cache_policies import NO_CACHE
 
 from ..config import data_root
-from . import report_progress
+from . import report_progress, writer_lock
 
 
 def lake() -> Path:
@@ -48,12 +49,13 @@ def model() -> dict[str, object]:
     report_progress()
     summary: dict[str, object] = {}
     problems: list[str] = []
-    for step in (train_task, analyze_task):
-        state = step(return_state=True)
-        if state.is_failed():
-            problems.append(f"{step.name}: {state.message}")
-        else:
-            summary[step.name] = state.result()
+    with writer_lock(data_root()):
+        for step in (train_task, analyze_task):
+            state = step(return_state=True)
+            if state.is_failed():
+                problems.append(f"{step.name}: {state.message}")
+            else:
+                summary[step.name] = state.result()
     if problems:
         raise RuntimeError("; ".join(problems))
     return summary

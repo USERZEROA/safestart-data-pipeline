@@ -9,7 +9,11 @@ UTC and Monday 2026-11-23 12:50 UTC). The model flow runs every Sunday at 15:00 
 Prefect Cloud) and executes the runs that API schedules, one at a time. Without PREFECT_API_URL in the environment it
 keeps the same schedule in this process (schedule.py): it sleeps until the next run is due, runs the flow, logs the
 outcome and repeats, so the container works without Prefect Cloud. Either way a failed run is logged and the schedule
-goes on. `run` runs one flow now and prints its outcome.
+goes on; locally, a run that raises before it starts is tried again 15 minutes later, up to three times. `run` runs
+one flow now and prints its outcome.
+
+Run as `python -m`, this module is named "__main__", outside the package's logger that `report_progress` lets through
+at INFO, so it logs under a name of its own in the package.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ from .model import model
 from .pipeline import batch
 from .schedule import SUNDAY, Schedule, run_on_schedule
 
-log = logging.getLogger(__name__)
+log = logging.getLogger(f"{PACKAGE}.flows")
 
 
 @dataclass(frozen=True)

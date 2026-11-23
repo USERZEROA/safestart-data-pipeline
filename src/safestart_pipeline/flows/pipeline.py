@@ -10,8 +10,9 @@ so the failure is visible without leaving the later stages behind:
 - a failed warehouse build keeps the previous warehouse, and the exports, which would only repeat the previous ones,
   are skipped.
 
-The warehouse build and the exports each hold the warehouse's lock (warehouse/lock.py), so two writers never write at
-once; a run that finds it held fails that step and retries it later.
+The run holds the data root's writer lock from start to end (flows/__init__.py), so a second batch or model run fails
+at once instead of writing the same files; the warehouse build and the exports also hold the warehouse's lock
+(warehouse/lock.py) against `ssp warehouse` and the like, and a step that finds it held fails and is retried later.
 
 Run once with `python -m safestart_pipeline.flows run batch [--no-download]` or `ssp pipeline`.
 """
@@ -23,7 +24,7 @@ from prefect.cache_policies import NO_CACHE
 from prefect.client.schemas.objects import TaskRun
 
 from ..config import data_root, warehouse_path
-from . import report_progress
+from . import report_progress, writer_lock
 from .acquire import acquire_bulk
 
 
@@ -76,29 +77,30 @@ def batch(download: bool = True) -> dict[str, object]:
     logger = get_run_logger()
     summary: dict[str, object] = {}
     problems: list[str] = []
-    if download:
-        acquired = acquire_bulk(return_state=True)
-        if acquired.is_failed():
-            problems.append(f"acquire-bulk-files: {acquired.message}")
-            logger.warning("downloads failed, continuing with the copies held: %s", acquired.message)
+    with writer_lock(data_root()):
+        if download:
+            acquired = acquire_bulk(return_state=True)
+            if acquired.is_failed():
+                problems.append(f"acquire-bulk-files: {acquired.message}")
+                logger.warning("downloads failed, continuing with the copies held: %s", acquired.message)
+            else:
+                summary["acquire"] = acquired.result()
+        try:
+            summary["lake"] = build_lake_task()
+        except LakeBuildError as problem:
+            problems.append(f"build-lake: {problem}")
+            logger.warning("lake: %s; the warehouse is built from the versions the lake holds as current", problem)
+        built = build_warehouse_task(return_state=True)
+        if built.is_failed():
+            problems.append(f"build-warehouse: {built.message}")
+            logger.warning("exports skipped: the warehouse and exports already held stay as they are")
         else:
-            summary["acquire"] = acquired.result()
-    try:
-        summary["lake"] = build_lake_task()
-    except LakeBuildError as problem:
-        problems.append(f"build-lake: {problem}")
-        logger.warning("lake: %s; the warehouse is built from the versions the lake holds as current", problem)
-    built = build_warehouse_task(return_state=True)
-    if built.is_failed():
-        problems.append(f"build-warehouse: {built.message}")
-        logger.warning("exports skipped: the warehouse and exports already held stay as they are")
-    else:
-        summary["warehouse"] = built.result()
-        exported = export_task(return_state=True)
-        if exported.is_failed():
-            problems.append(f"export-safestart: {exported.message}")
-        else:
-            summary["exports"] = exported.result()
+            summary["warehouse"] = built.result()
+            exported = export_task(return_state=True)
+            if exported.is_failed():
+                problems.append(f"export-safestart: {exported.message}")
+            else:
+                summary["exports"] = exported.result()
     if problems:
         raise RuntimeError("; ".join(problems))
     return summary

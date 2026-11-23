@@ -5,6 +5,8 @@ import asyncio
 import json
 import logging
 import os
+import runpy
+import sys
 from datetime import UTC, datetime, timedelta, timezone
 from functools import partial
 
@@ -13,6 +15,7 @@ from prefect import flow
 from prefect.server.schemas.schedules import CronSchedule
 from prefect.testing.utilities import prefect_test_harness
 
+from safestart_pipeline.crawl.locks import SiteLock
 from safestart_pipeline.flows import __main__ as flows_main
 from safestart_pipeline.flows import model as model_flow
 from safestart_pipeline.flows import pipeline
@@ -176,6 +179,36 @@ def test_a_failed_training_still_writes_the_analysis_then_fails_the_run(model_st
     assert model_steps.names == ["train", "train", "analyze"]
 
 
+# One writer of the data root ------------------------------------------------------------------------------------------
+
+
+def test_a_batch_or_model_run_fails_at_once_while_another_holds_the_data_root(batch_steps, model_steps, root):
+    with SiteLock(root / "state" / "pipeline.lock"):
+        with pytest.raises(RuntimeError, match="one writer of the data root at a time"):
+            pipeline.batch(download=False)
+        with pytest.raises(RuntimeError, match="one writer of the data root at a time"):
+            model_flow.model()
+    assert batch_steps.calls == [] and model_steps.calls == []
+    pipeline.batch(download=False)  # released with the run that held it
+    assert batch_steps.names == ["lake", "warehouse", "exports"]
+
+
+def test_a_batch_holds_the_data_roots_lock_while_its_steps_run(batch_steps, monkeypatch, root):
+    held = []
+
+    def build_lake(data_root):
+        try:
+            with SiteLock(data_root / "state" / "pipeline.lock"):
+                held.append(False)
+        except RuntimeError:
+            held.append(True)
+        return {}
+
+    monkeypatch.setattr("safestart_pipeline.lake.msha_ogd.build_lake", build_lake)
+    pipeline.batch(download=False)
+    assert held == [True]
+
+
 # Schedules ------------------------------------------------------------------------------------------------------------
 
 
@@ -213,8 +246,8 @@ class Clock:
         self.time += timedelta(seconds=seconds)
 
 
-class Stop(Exception):
-    pass
+class Stop(BaseException):
+    """Ends a scheduler under test, as KeyboardInterrupt ends the real one (an Exception would be retried)."""
 
 
 def scheduled_runs(minutes: dict[str, int], count: int) -> tuple[list[tuple[str, datetime]], Clock]:
@@ -249,6 +282,41 @@ def test_a_run_that_outlasts_its_flows_next_time_skips_that_time():
                     ("batch", datetime(2026, 11, 23, 14, 0, tzinfo=UTC))]
 
 
+def batch_runs(failures: int, count: int) -> list[datetime]:
+    """When the local scheduler starts the daily batch, the first `failures` runs raising before their flow starts (as
+    when Prefect's local API server does not answer in time)."""
+    clock, runs = Clock(SATURDAY_NOON), []
+
+    def run(name: str) -> None:
+        runs.append(clock.now())
+        if len(runs) == count:
+            raise Stop
+        if len(runs) <= failures:
+            raise RuntimeError("Timed out while attempting to connect to ephemeral Prefect API server.")
+
+    with pytest.raises(Stop):
+        run_on_schedule({"batch": DAILY}, run, now=clock.now, sleep=clock.sleep)
+    return runs
+
+
+def at(day: int, hour: int, minute: int = 0) -> datetime:
+    return datetime(2026, 11, day, hour, minute, tzinfo=UTC)
+
+
+def test_a_run_that_raises_is_tried_again_15_minutes_later_and_the_scheduler_goes_on(caplog):
+    assert batch_runs(2, 4) == [at(21, 14), at(21, 14, 15), at(21, 14, 30), at(22, 14)]
+    errors = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert [record.getMessage() for record in errors] == [
+        "batch: the run raised; trying again at 2026-11-21 14:15 UTC (retry 1 of 3)",
+        "batch: the run raised; trying again at 2026-11-21 14:30 UTC (retry 2 of 3)"]
+    assert all(record.exc_info[0] is RuntimeError for record in errors)  # each with its traceback
+
+
+def test_a_run_that_keeps_raising_waits_for_its_next_time_after_three_retries():
+    assert batch_runs(9, 6) == [at(21, 14), at(21, 14, 15), at(21, 14, 30), at(21, 14, 45), at(22, 14),
+                                at(22, 14, 15)]
+
+
 # `python -m safestart_pipeline.flows` ---------------------------------------------------------------------------------
 
 
@@ -278,6 +346,28 @@ def test_a_flow_lets_the_stages_progress_lines_through(batch_steps):
     logging.getLogger("safestart_pipeline").setLevel(logging.WARNING)  # as in a served run's own process
     pipeline.batch(download=False)
     assert logging.getLogger("safestart_pipeline").level == logging.INFO
+
+
+def test_the_entry_points_own_lines_reach_the_log_when_it_runs_as_a_module(monkeypatch, caplog):
+    """`python -m safestart_pipeline.flows` runs __main__.py under the name "__main__". Its own lines ("batch run
+    completed", "stopped") must still reach the log, where Prefect's logging configuration leaves the root logger at
+    WARNING."""
+    def stopped(*args, **kwargs):
+        raise KeyboardInterrupt  # the container is stopped
+
+    monkeypatch.setattr("safestart_pipeline.flows.schedule.run_on_schedule", stopped)
+    monkeypatch.delenv("PREFECT_API_URL", raising=False)
+    monkeypatch.setattr(sys, "argv", ["python -m safestart_pipeline.flows", "serve"])
+    monkeypatch.delitem(sys.modules, "safestart_pipeline.flows.__main__")  # run afresh, as a new process would
+    root, level = logging.getLogger(), logging.getLogger().level
+    root.setLevel(logging.WARNING)
+    try:
+        with pytest.raises(SystemExit) as ended:
+            runpy.run_module("safestart_pipeline.flows", run_name="__main__")  # as `python -m` runs it
+    finally:
+        root.setLevel(level)
+    assert ended.value.code == 0
+    assert [record.getMessage() for record in caplog.records if record.levelno == logging.INFO] == ["stopped"]
 
 
 def test_serve_keeps_the_schedule_in_this_process_without_a_prefect_api(monkeypatch):

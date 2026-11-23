@@ -3,7 +3,7 @@
 `ssp pipeline` runs the batch flow once (and the model flow after it with --model); `ssp warehouse` and `ssp ml` pass
 their arguments to `python -m safestart_pipeline.warehouse` and `python -m safestart_pipeline.ml`. These commands
 import Prefect, DuckDB, Polars or scikit-learn only when they run: the crawler's own environment has only httpx, lxml
-and protego.
+and protego. `ssp lake` holds the data root's writer lock, as the batch and model flows do (flows/__init__.py).
 """
 
 from __future__ import annotations
@@ -151,11 +151,19 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_once(["batch", "model"] if args.model else ["batch"], download=not args.no_download)
     if args.command == "lake":
-        from .lake.msha_ogd import build_lake  # the analysis extra; the crawler's own environment does not need it
+        from .flows import writer_lock
+        from .lake.msha_ogd import DATASETS, LakeBuildError, build_lake  # the analysis extra, not the crawler's
 
+        if unknown := sorted(set(args.only or ()) - set(DATASETS)):
+            lake.error(f"unknown dataset {', '.join(unknown)}; the datasets are {', '.join(DATASETS)}")
         setup_logging(root / "logs" / "lake.log")
-        print(json.dumps({"msha_ogd": build_lake(root, args.only)}, indent=2, sort_keys=True))
-        return 0
+        with writer_lock(root):  # the batch's own lake step must not run at the same time
+            try:
+                results, code = build_lake(root, args.only), 0
+            except LakeBuildError as problem:  # the others were built; each dataset's outcome is printed
+                results, code = problem.results, 1
+        print(json.dumps({"msha_ogd": results}, indent=2, sort_keys=True))
+        return code
     if args.command == "verify":
         print(json.dumps(verify(root, args.target, rehash=args.rehash, live=args.live), indent=2, sort_keys=True))
         return 0

@@ -1,12 +1,16 @@
-"""`ssp pipeline`, `ssp warehouse` and `ssp ml` (what each hands to the flows or to the module it stands for), the
-verify summary, and the packages the command line imports before a command needs them."""
+"""`ssp pipeline`, `ssp warehouse` and `ssp ml` (what each hands to the flows or to the module it stands for),
+`ssp lake`, the verify summary, and the packages the command line imports before a command needs them."""
 
+import json
+import logging
 import subprocess
 import sys
 
 import pytest
 
 from safestart_pipeline import cli
+from safestart_pipeline.crawl.locks import SiteLock
+from test_lake_msha import DEFINITION, hold, mines_zip
 
 
 @pytest.fixture
@@ -48,6 +52,31 @@ def test_the_other_commands_still_refuse_arguments_they_do_not_know(capsys, root
     with pytest.raises(SystemExit) as stopped:
         cli.main(["pipeline", "--fast"])
     assert stopped.value.code == 2 and "unrecognized arguments: --fast" in capsys.readouterr().err
+
+
+def test_lake_refuses_a_dataset_it_does_not_know_before_building_anything(capsys, root):
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["lake", "--only", "mine", "accidents"])
+    error = capsys.readouterr().err
+    assert stopped.value.code == 2 and "unknown dataset mine;" in error and "mines, address_of_record" in error
+    assert not (root / "lake").exists()
+
+
+def test_lake_prints_every_datasets_result_and_fails_when_one_could_not_be_built(capsys, caplog, root, tmp_path):
+    hold(root, {"Mines.zip": mines_zip(tmp_path / "Mines.zip").read_bytes(),
+                "Mines_Definition_File.txt": DEFINITION.encode("cp1252"), "Accidents.zip": b"not a zip file",
+                "Accidents_Definition_File.txt": DEFINITION.encode("cp1252")})
+    caplog.set_level(logging.INFO, logger="safestart_pipeline.lake.msha_ogd")
+    assert cli.main(["lake", "--only", "mines", "accidents"]) == 1
+    printed = json.loads(capsys.readouterr().out)["msha_ogd"]
+    assert printed["mines"]["rows"] == 3 and printed["accidents"]["built"] is False and printed["accidents"]["error"]
+    assert {record.getMessage().split(":")[0] for record in caplog.records
+            if record.name == "safestart_pipeline.lake.msha_ogd"} == {"mines", "accidents"}
+
+
+def test_lake_fails_at_once_while_another_writer_holds_the_data_root(root):
+    with SiteLock(root / "state" / "pipeline.lock"), pytest.raises(RuntimeError, match="one writer of the data root"):
+        cli.main(["lake"])
 
 
 def test_a_verify_summary_keeps_the_counts_and_leaves_out_the_examples(tmp_path):

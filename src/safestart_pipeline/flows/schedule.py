@@ -6,6 +6,11 @@ The local scheduler runs one flow at a time, as `prefect.serve` does with a limi
 model training never compete for the host's memory. A run that ends after another flow's time leaves that flow due, so
 it starts next rather than a week later; a run that outlasts its own flow's next time skips that time rather than
 starting again at once.
+
+A flow that fails returns its failed state, which the caller logs. A run can also raise before its flow has a state:
+Prefect's local API server, which starts with the first run of each process, may not answer in time. The scheduler
+then logs the traceback and keeps the flow due RETRY_DELAY later, RETRIES times, before it waits for the flow's next
+time; it never stops for it, since a restarted process would only find the flow's next time, a day or a week later.
 """
 
 from __future__ import annotations
@@ -19,6 +24,8 @@ from typing import NoReturn
 
 SUNDAY = 6  # as datetime.weekday() counts
 MAX_SLEEP_SECONDS = 900.0  # wake at least this often, so a changed clock (a host resumed from sleep) is noticed
+RETRY_DELAY = timedelta(minutes=15)
+RETRIES = 3
 log = logging.getLogger(__name__)
 
 
@@ -53,16 +60,27 @@ class Schedule:
 def run_on_schedule(schedules: Mapping[str, Schedule], run: Callable[[str], object], *,
                     now: Callable[[], datetime] = utc_now, sleep: Callable[[float], object] = time.sleep) -> NoReturn:
     """Run each named job at its times, one at a time, until interrupted: sleep until the earliest is due, run it, set
-    its next time after the run ends, repeat."""
+    its next time after the run ends, repeat. A job that raises is run again RETRY_DELAY later, up to RETRIES times."""
     due = {name: schedule.next_after(now()) for name, schedule in schedules.items()}
     for name, at in due.items():
         log.info("%s: first run at %s UTC", name, f"{at:%Y-%m-%d %H:%M}")
+    retries = dict.fromkeys(schedules, 0)
     while True:
         name = min(due, key=due.__getitem__)
         wait = (due[name] - now()).total_seconds()
         if wait > 0:
             sleep(min(wait, MAX_SLEEP_SECONDS))
             continue
-        run(name)
+        try:
+            run(name)
+        except Exception:
+            if retries[name] < RETRIES:
+                retries[name] += 1
+                due[name] = now() + RETRY_DELAY
+                log.exception("%s: the run raised; trying again at %s UTC (retry %d of %d)", name,
+                              f"{due[name]:%Y-%m-%d %H:%M}", retries[name], RETRIES)
+                continue
+            log.exception("%s: the run raised again after %d retries", name, RETRIES)
+        retries[name] = 0
         due[name] = schedules[name].next_after(now())
         log.info("%s: next run at %s UTC", name, f"{due[name]:%Y-%m-%d %H:%M}")
