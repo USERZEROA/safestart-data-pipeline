@@ -108,7 +108,8 @@ class Item(NamedTuple):
 
 
 def item(event: Event) -> Item:
-    """Serious: a significant-and-substantial violation, or an accident the replay marked serious."""
+    """Serious: a significant-and-substantial violation, or an accident whose event says it is serious (the replay and
+    the watcher both mark it by definitions.is_serious)."""
     flag = {"violation": "sig_sub", "accident": "serious"}.get(event.kind)
     return Item(event.event_id, date.fromisoformat(event.occurred_at[:10]), event.kind, event.district or "",
                 flag is not None and event.details.get(flag) is True)
