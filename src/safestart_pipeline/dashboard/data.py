@@ -111,9 +111,12 @@ def mine_id_from(text: str) -> str | None:
     return digits.zfill(7) if digits.isdigit() and len(digits) <= 7 else None
 
 
-def find_mines(text: str, limit: int = 20) -> Table:
-    """Mines whose ID is `text` or whose name contains it: the exact ID first, then names starting with it, active
-    mines before closed ones."""
+MINE_MATCHES = 20  # how many matches the mine search lists
+
+
+def find_mines(text: str, limit: int | None = None) -> Table:
+    """Mines whose ID is `text` or whose name contains it, at most MINE_MATCHES: the exact ID first, then names starting
+    with it, active mines before closed ones."""
     return warehouse_query(
         """
         select mine_id, mine_name, state, county, coal_metal, mine_type, status, operator_name
@@ -123,7 +126,7 @@ def find_mines(text: str, limit: int = 20) -> Table:
                  status = 'Active' desc nulls last, mine_name, mine_id
         limit $limit
         """,
-        {"mine_id": mine_id_from(text), "text": text.strip(), "limit": limit},
+        {"mine_id": mine_id_from(text), "text": text.strip(), "limit": limit or MINE_MATCHES},
     )
 
 
@@ -148,9 +151,19 @@ def mine_details(mine_id: str) -> Table:
 
 
 def twelve_months() -> Table:
-    """The window every "12 months" figure covers: up to the newest violation issue date in the warehouse."""
+    """The mine brief's two windows. Every "12 months" figure covers the 12 months up to the newest violation issue
+    date; the hours worked and the injury rate cover four quarters, ending with `rate_last_quarter` (year * 4 + quarter
+    - 1), the newest quarter with reported hours that ends by then, as mart_mine_scorecard takes it (marts.sql)."""
     return _with_times(warehouse_query(
-        "select (max(issue_date) - interval 12 month)::date as since, max(issue_date) as until from violation"
+        """
+        with bounds as (
+            select (max(issue_date) - interval 12 month)::date as since, max(issue_date) as until from violation
+        )
+        select b.since, b.until,
+               (select max(p.cal_yr * 4 + p.cal_qtr - 1) from production_quarter p
+                where last_day(make_date(p.cal_yr, p.cal_qtr * 3, 1)) <= b.until) as rate_last_quarter
+        from bounds b
+        """
     ), "since", "until")
 
 
@@ -259,6 +272,16 @@ def dataset_versions() -> Table:
         order by dataset
         """
     ), "built_at")
+
+
+def document_files() -> Table:
+    """The distinct downloaded files, one per SHA-256 however many URLs led to it, and their size."""
+    return warehouse_query(
+        """
+        select count(*) as files, coalesce(sum(bytes), 0) as bytes
+        from (select sha256, any_value(bytes) as bytes from document where sha256 is not null group by sha256)
+        """
+    )
 
 
 def document_counts() -> Table:

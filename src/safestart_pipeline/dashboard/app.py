@@ -157,6 +157,11 @@ def money(value: Any) -> str:
     return f"${value / 1e6:,.1f}M" if value >= 1e6 else f"${value:,.0f}"
 
 
+def quarter_label(quarter: int) -> str:
+    """A quarter numbered year * 4 + quarter - 1, as people write it: 2026 Q3."""
+    return f"{quarter // 4} Q{quarter % 4 + 1}"
+
+
 def ago(moment: Any, now: datetime) -> str:
     if pd.isna(moment):
         return "never"
@@ -328,7 +333,9 @@ def mine_page() -> None:
         labels = {row.mine_id: " · ".join(part for part in map(plain, (row.mine_name, row.mine_id, row.state,
                                                                         row.status)) if part)
                   for row in frame.itertuples()}
-        mine_id = st.selectbox(f"{len(frame)} mines match", list(labels), format_func=labels.get)
+        label = (f"The first {len(frame)} matches; type more of the name to narrow them"
+                 if len(frame) >= data.MINE_MATCHES else f"{len(frame)} mines match")
+        mine_id = st.selectbox(label, list(labels), format_func=labels.get)
     mine_brief(mine_id)
 
 
@@ -348,8 +355,14 @@ def mine_brief(mine_id: str) -> None:
     st.caption(" · ".join(md(fact) for fact in facts if fact))
     window = warehouse(data.twelve_months)
     if not window.problem and not window.empty and not pd.isna(window.frame.iloc[0]["until"]):
-        since, until = window.frame.iloc[0]["since"], window.frame.iloc[0]["until"]
-        st.caption(f"Figures cover the 12 months from {since:%Y-%m-%d} to {until:%Y-%m-%d}, the newest records.")
+        row = window.frame.iloc[0]
+        text = (f"Inspections, violations, penalties and accidents cover the 12 months from {row['since']:%Y-%m-%d} "
+                f"to {row['until']:%Y-%m-%d}, the newest records")
+        if not pd.isna(row["rate_last_quarter"]):
+            last = int(row["rate_last_quarter"])
+            text += (f"; hours worked and the injury rate cover {quarter_label(last - 3)} to {quarter_label(last)}, "
+                     "the newest quarters with reported hours")
+        st.caption(text + ".")
 
     with st.container(horizontal=True, gap="small"):
         tile("Inspections", count(mine["inspections_12m"]))
@@ -413,8 +426,12 @@ def sources_page() -> None:
     st.subheader("Downloaded documents", anchor=False)
     documents = warehouse(data.document_counts)
     if shown(documents, "No downloaded documents recorded in the warehouse."):
-        total, size = int(documents.frame["documents"].sum()), float(documents.frame["bytes"].sum())
-        st.caption(f"{total:,} documents ({size / 1e9:,.1f} GB) downloaded from the MSHA and OSHA websites.")
+        total = int(documents.frame["documents"].sum())
+        files = warehouse(data.document_files)
+        distinct = ("" if files.problem or files.empty else
+                    f": {int(files.frame.iloc[0]['files']):,} distinct files, "
+                    f"{float(files.frame.iloc[0]['bytes']) / 1e9:,.1f} GB")
+        st.caption(f"{total:,} URLs downloaded from the MSHA and OSHA websites{distinct}.")
         st.altair_chart(charts.documents(documents.frame), width="stretch")
 
     st.subheader("Live source checks", anchor=False)

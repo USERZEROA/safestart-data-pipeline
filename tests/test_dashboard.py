@@ -102,7 +102,7 @@ insert into document values
   false),
  ('https://www.osha.gov/', 'osha', 'fetched', 'page', 'text/html', 61000, 'a3', '2026-11-21 08:00:00', true),
  ('https://www.osha.gov/b.png', 'osha', 'skipped', 'other', null, null, null, null, false),
- ('https://arlweb.msha.gov/c.pdf', 'arlweb', 'fetched', 'pdf', 'application/pdf', 800000, 'a4', '2026-11-19 09:00:00',
+ ('https://arlweb.msha.gov/c.pdf', 'arlweb', 'fetched', 'pdf', 'application/pdf', 1200000, 'a2', '2026-11-19 09:00:00',
   false);
 insert into dataset_version values
  ('violations', '47b242d1616ee0d7', 3100000, '2026-11-22 15:40:00', false),
@@ -229,7 +229,7 @@ def test_every_page_renders_from_the_warehouse_without_postgres(stores):
     assert dashboard.CREW_USE in text_of(shown["Mine brief"])
     sources = text_of(shown["Sources"])
     assert "7943d78c6aba1c23" in sources and "47b242d1616ee0d7" not in sources
-    assert "4 documents" in sources  # the skipped image has no stored copy
+    assert "4 URLs downloaded" in sources  # the skipped image has no stored copy
     assert chart_count(shown["Sources"]) == 1
 
 
@@ -293,6 +293,8 @@ def test_a_mine_brief_from_a_name(stores):
     assert choice.label == "2 mines match" and choice.value == "4609612"  # the active mine first
     text = text_of(app)
     assert "Highwall Park Surface Mine" in text
+    assert ("cover the 12 months from 2025-11-21 to 2026-11-21, the newest records; hours worked and the injury rate "
+            "cover 2025 Q4 to 2026 Q3, the newest quarters with reported hours.") in text
     for tile in ("Inspections: 2", "Violations: 3", "S&S violations: 2", "Accidents: 1", "Serious accidents: 1",
                  "Hours worked: 88,500", "Injury rate: 2.26"):
         assert tile in text
@@ -308,6 +310,17 @@ def test_a_mine_brief_from_a_name(stores):
     text = text_of(app)
     assert "No citations at this mine in the 12 months." in text
     assert "No accidents on record for this mine." in text
+
+
+def test_a_search_with_more_matches_than_it_lists_says_so(stores, monkeypatch):
+    monkeypatch.setattr(data, "MINE_MATCHES", 2)
+    choice = run_page("Mine brief", mine="highwall").selectbox[0]
+    assert choice.label == "The first 2 matches; type more of the name to narrow them"
+
+
+def test_the_sources_page_counts_urls_and_distinct_files(stores):
+    text = text_of(run_page("Sources"))
+    assert "4 URLs downloaded from the MSHA and OSHA websites: 3 distinct files, 0.0 GB." in text
 
 
 def test_a_mine_brief_from_an_id_as_msha_writes_it(stores):
@@ -373,6 +386,7 @@ def test_warehouse_queries_follow_the_contract(stores):
     assert data.find_mines("HIGHWALL").frame["mine_id"].tolist() == ["4609612", "4601234"]
     window = data.twelve_months().frame.iloc[0]
     assert (window["since"], window["until"]) == (pd.Timestamp("2025-11-21"), pd.Timestamp("2026-11-21"))
+    assert window["rate_last_quarter"] == 2026 * 4 + 2  # 2026 Q3, the newest quarter ending by 2026-11-21
     sections = data.mine_sections("4609612").frame
     assert sections[["cfr_section", "citations", "ss_citations"]].values.tolist() == [["75.400", 2, 2],
                                                                                     ["77.1605", 1, 0]]
@@ -385,7 +399,8 @@ def test_warehouse_queries_follow_the_contract(stores):
     assert data.national_injury_rate("M").frame["year"].tolist() == [2026]
     versions = data.dataset_versions().frame.set_index("dataset")
     assert versions.loc["violations", ["versions", "version"]].tolist() == [2, "7943d78c6aba1c23"]
-    assert data.document_counts().frame["documents"].sum() == 4
+    assert data.document_counts().frame["documents"].sum() == 4  # URLs
+    assert data.document_files().frame.iloc[0].tolist() == [3, 52000 + 1200000 + 61000]  # one PDF behind two URLs
     assert set(data.district_years().frame["district"]) == {"C04", "M3"}
 
 
