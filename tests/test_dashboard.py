@@ -1,13 +1,14 @@
 """The dashboard renders every page from a tiny warehouse shaped like the contract, with PostgreSQL absent, present
 (through stand-in queries) or real, and its data layer turns each missing store into a message.
 
-The PostgreSQL test runs only when SAFESTART_TEST_POSTGRES_URL names a throwaway database: it replaces the `stream`
-schema there with `stream/schema.sql` and synthetic events.
+The PostgreSQL test runs when TEST_DATABASE_URL names a database, as the consumers' tests do: it replaces the `stream`
+schema there with `stream/schema.sql` and synthetic events, and drops it at the end.
 """
 
 from __future__ import annotations
 
 import os
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from streamlit.testing.v1 import AppTest
 
 from safestart_pipeline.dashboard import app as dashboard
 from safestart_pipeline.dashboard import charts, data
+from safestart_pipeline.definitions import injury_sql
 from safestart_pipeline.stream.events import ENFORCEMENT_KINDS, KINDS, Event
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "safestart_pipeline"
@@ -68,7 +70,7 @@ inspections as (select mine_id, count(*) as n from inspection, bounds
 violations as (select mine_id, count(*) as n, count(*) filter (where sig_sub) as ss, sum(proposed_penalty) as penalty
                from violation, bounds where issue_date > since and issue_date <= until group by mine_id),
 accidents as (select mine_id, count(*) as n, count(*) filter (where serious) as serious,
-                     sum(no_injuries) filter (where degree_injury_cd between '01' and '06') as injuries
+                     sum(no_injuries) filter (where INJURY) as injuries
               from accident, bounds where accident_date > since and accident_date <= until group by mine_id),
 hours as (select mine_id, sum(hours_worked) as hours from production_quarter, bounds
           where make_date(cal_yr, cal_qtr * 3, 1) > since and make_date(cal_yr, cal_qtr * 3 - 2, 1) <= until
@@ -99,7 +101,7 @@ group by all;
 
 create view mart_injury_rate as
 with injuries as (select year(accident_date) as year, coal_metal, sum(no_injuries) as injuries from accident
-                  where degree_injury_cd between '01' and '06' and accident_date is not null group by all),
+                  where INJURY and accident_date is not null group by all),
 hours as (select p.cal_yr as year, m.coal_metal, sum(p.hours_worked) as hours_worked
           from production_quarter as p join mine as m using (mine_id) group by all)
 select year, coal_metal, coalesce(injuries, 0) as injuries, hours_worked,
@@ -118,7 +120,7 @@ from (select m.district, year(i.begin_date) as year, 1 as inspections, 0 as viol
       select m.district, year(a.accident_date), 0, 0, 0, 1 from accident as a join mine as m using (mine_id))
 where district is not null and year is not null
 group by all;
-"""
+""".replace("INJURY", injury_sql())  # the shared rule of what counts as an injury
 ROWS = """
 insert into mine values
  ('4609612', 'Highwall Park Surface Mine', 'C', 'Surface', 'Active', '2010-05-01', 'WV', 'Boone', 'C04',
@@ -352,6 +354,14 @@ def test_stream_pages_render_events_forecasts_and_checks(stream_rows):
     assert sources.dataframe[-1].value["age"].tolist() == ["5 minutes ago", "just now"]
 
 
+def test_duckdb_spills_into_a_folder_of_this_process_not_beside_the_read_only_warehouse(stores):
+    settings = data.warehouse_query("select current_setting('temp_directory') as spill,"
+                                    " current_setting('memory_limit') as memory").frame.iloc[0]
+    spill = Path(settings["spill"])
+    assert spill.parent == Path(tempfile.gettempdir()) and spill.name.endswith(str(os.getpid()))
+    assert stores not in spill.parents and settings["memory"] == "192.0 MiB"
+
+
 def test_the_warehouse_is_read_only_and_problems_become_messages(stores, monkeypatch):
     assert data.warehouse_query("select count(*) as n from mine").frame["n"].item() == 3
     assert "could not answer" in data.warehouse_query("insert into mine (mine_id) values ('1')").problem
@@ -430,10 +440,24 @@ def test_charts_keep_an_entitys_color_whatever_else_is_shown():
         assert chart.to_dict()["$schema"].startswith("https://vega.github.io/schema/vega-lite/")
 
 
-@pytest.mark.skipif(not os.environ.get("SAFESTART_TEST_POSTGRES_URL"),
-                    reason="set SAFESTART_TEST_POSTGRES_URL to a throwaway PostgreSQL database")
-def test_stream_queries_run_on_postgresql(stores, monkeypatch):
-    url = os.environ["SAFESTART_TEST_POSTGRES_URL"]
+@pytest.fixture
+def stream_database():
+    """A fresh `stream` schema in TEST_DATABASE_URL, committed, since the dashboard reads it over connections of its
+    own, and dropped again afterwards. Yields the URL and a connection in autocommit mode."""
+    url = os.environ.get("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("set TEST_DATABASE_URL to run the PostgreSQL tests")
+    with psycopg.connect(url, autocommit=True) as connection:
+        connection.execute("drop schema if exists stream cascade")
+        connection.execute((PACKAGE / "stream" / "schema.sql").read_text(encoding="utf-8"))
+        try:
+            yield url, connection
+        finally:
+            connection.execute("drop schema stream cascade")
+
+
+def test_stream_queries_run_on_postgresql(stores, stream_database, monkeypatch):
+    url, connection = stream_database
     events = [
         Event.new(kind="violation", key="V1", mode="replay", occurred_at=date(2026, 10, 2), mine_id="4609612",
                   district="C04", state="WV", coal_metal="C", title="S&S violation of 30 CFR 75.400",
@@ -443,28 +467,25 @@ def test_stream_queries_run_on_postgresql(stores, monkeypatch):
         Event.new(kind="regulation", key="2026-25001", mode="live", occurred_at="2026-11-23T14:05:00-05:00",
                   title="MSHA: Respirable crystalline silica; correction"),
     ]
-    with psycopg.connect(url, autocommit=True) as connection:
-        connection.execute("drop schema if exists stream cascade")
-        connection.execute((PACKAGE / "stream" / "schema.sql").read_text(encoding="utf-8"))
-        for offset, event in enumerate(events):
-            connection.execute(
-                "insert into stream.events values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s)",
-                (event.event_id, event.schema_version, event.kind, event.mode, event.occurred_at, event.emitted_at,
-                 event.mine_id, event.district, event.state, event.coal_metal, event.title, Jsonb(event.details),
-                 Jsonb(event.source), event.topic, offset))
-        connection.execute("""
-            insert into stream.daily_counts (day, kind, district, events, serious) values
-              ('2026-10-01', 'violation', 'C04', 5, 2), ('2026-10-02', 'violation', 'C04', 7, 3),
-              ('2026-10-02', 'violation', '', 1, 0), ('2026-10-09', 'violation', 'C04', 4, 1)""")
-        connection.execute("""
-            insert into stream.forecasts (day, kind, district, observed, predicted, residual, anomaly, method) values
-              ('2026-10-01', 'violation', 'C04', 5, 6, -1, false, 'ewma'),
-              ('2026-10-02', 'violation', 'C04', 17, 6.5, 10.5, true, 'ewma')""")
-        connection.execute("""
-            insert into stream.source_checks (source, checked_at, status, found, note) values
-              ('federal_register', now() - interval '2 hours', 'ok', 2, ''),
-              ('federal_register', now() - interval '5 minutes', 'unchanged', 0, ''),
-              ('msha_ogd', now() - interval '30 hours', 'error', 0, 'timeout')""")
+    for offset, event in enumerate(events):
+        connection.execute(
+            "insert into stream.events values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s)",
+            (event.event_id, event.schema_version, event.kind, event.mode, event.occurred_at, event.emitted_at,
+             event.mine_id, event.district, event.state, event.coal_metal, event.title, Jsonb(event.details),
+             Jsonb(event.source), event.topic, offset))
+    connection.execute("""
+        insert into stream.daily_counts (day, kind, district, events, serious) values
+          ('2026-10-01', 'violation', 'C04', 5, 2), ('2026-10-02', 'violation', 'C04', 7, 3),
+          ('2026-10-02', 'violation', '', 1, 0), ('2026-10-09', 'violation', 'C04', 4, 1)""")
+    connection.execute("""
+        insert into stream.forecasts (day, kind, district, observed, predicted, residual, anomaly, method) values
+          ('2026-10-01', 'violation', 'C04', 5, 6, -1, false, 'ewma'),
+          ('2026-10-02', 'violation', 'C04', 17, 6.5, 10.5, true, 'ewma')""")
+    connection.execute("""
+        insert into stream.source_checks (source, checked_at, status, found, note) values
+          ('federal_register', now() - interval '2 hours', 'ok', 2, ''),
+          ('federal_register', now() - interval '5 minutes', 'unchanged', 0, ''),
+          ('msha_ogd', now() - interval '30 hours', 'error', 0, 'timeout')""")
     monkeypatch.setenv("SAFESTART_POSTGRES_URL", url)
 
     assert data.event_counts().frame.set_index("kind")["events"].to_dict() == {

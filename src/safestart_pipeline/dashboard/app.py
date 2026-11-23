@@ -30,6 +30,7 @@ from safestart_pipeline.dashboard.charts import (
     KIND_ORDER,
     NO_DISTRICT,
 )
+from safestart_pipeline.definitions import SERIOUS_DEGREES
 from safestart_pipeline.stream.events import ENFORCEMENT_KINDS
 
 PAGES = ("Live", "Enforcement", "Standards", "Mine brief", "Sources")
@@ -47,6 +48,8 @@ CREW_USE = (
     "Before a shift, the crew lead opens the mine's brief: the standards inspectors cite most here and the latest "
     "accidents become the hazards the crew checks first in SafeStart's pre-shift assessment."
 )
+SERIOUS_HELP = (f"Degree of injury {SERIOUS_DEGREES[0]} to {SERIOUS_DEGREES[-1]}: a death, a permanent disability, or "
+                "days away from work or of restricted work.")
 MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]<>#$~|])")  # emphasis, code, links, HTML, headings, LaTeX, tables
 LINE_MARKER = re.compile(r"^(\s*)(?:([-+=])|(\d+)([.)]))", re.MULTILINE)  # list items and rules at a line start
 SECTION_COLUMNS = {
@@ -333,8 +336,7 @@ def mine_brief(mine_id: str) -> None:
         tile("S&S violations", count(mine["ss_violations_12m"]))
         tile("Penalties proposed", money(mine["proposed_penalty_12m"]))
         tile("Accidents", count(mine["accidents_12m"]))
-        tile("Serious accidents", count(mine["serious_accidents_12m"]),
-             help="Fatal, or with days away from work or restricted work.")
+        tile("Serious accidents", count(mine["serious_accidents_12m"]), help=SERIOUS_HELP)
         tile("Hours worked", count(mine["hours_worked_12m"]))
         injury_rate_tile(mine)
 

@@ -5,7 +5,9 @@ not been built, a table or view is not there yet, PostgreSQL cannot be reached).
 chart would be, so a store that is down or not built yet empties only the panels that need it.
 
 The warehouse is opened read-only for each query. The build writes a new file and swaps it in, so a short-lived
-connection always reads the newest complete warehouse and never holds an old one open. PostgreSQL sessions are
+connection always reads the newest complete warehouse and never holds an old one open. DuckDB would spill a query that
+outgrows its memory limit into a folder beside the database file, which the containers mount read-only, so this
+process gives it a folder of its own in the system's temporary folder. PostgreSQL sessions are
 read-only too, with a connect timeout and a statement timeout, so an absent or slow store cannot stall a page or load
 the small host; once PostgreSQL has refused a connection, it is reported unreachable for a few seconds without trying
 again, so a page with several panels waits for one timeout, not one per panel. Messages name the store's host and
@@ -17,7 +19,9 @@ built from an older snapshot still describes a full year.
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -37,8 +41,11 @@ STREAM_INIT = "python -m safestart_pipeline.stream.init"
 CONNECT_TIMEOUT_SECONDS = 3
 STATEMENT_TIMEOUT_MS = 15_000
 RETRY_AFTER_SECONDS = 10
-# The dashboard shares the 4 GB host with Kafka and PostgreSQL; marts aggregate millions of rows in well under this.
-WAREHOUSE_SETTINGS = {"memory_limit": "1GB", "threads": 2}
+# Under half of the dashboard container's 448 MiB (docker-compose.yml), the rest being Streamlit's. On the real
+# warehouse (3.1 million violations) every page rendered in under a second and the process peaked at 300 MiB, DuckDB
+# never coming near its limit or spilling.
+WAREHOUSE_SETTINGS = {"memory_limit": "192MiB", "threads": 2,
+                      "temp_directory": str(Path(tempfile.gettempdir()) / f"safestart-dashboard-{os.getpid()}")}
 GRAINS = frozenset({"day", "week", "month"})
 
 

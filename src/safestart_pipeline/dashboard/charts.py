@@ -2,7 +2,7 @@
 
 Colors follow the entity, never its rank: each event kind and each commodity has a fixed hue from a categorical set
 whose neighbors stay distinguishable under color-vision deficiency, and severity uses reserved status colors (serious
-for S&S violations and lost-time accidents, critical for anomalies) that never stand for a series. A chart with one
+for S&S violations and serious accidents, critical for anomalies) that never stand for a series. A chart with one
 series uses the first hue and no legend; a chart with more carries a legend, so color never carries meaning alone.
 Every axis names its unit and every mark has a tooltip.
 """
@@ -15,7 +15,7 @@ import pandas as pd
 BLUE, ORANGE, AQUA, YELLOW, MAGENTA, GREEN, VIOLET = (
     "#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6")
 CATEGORICAL = (BLUE, ORANGE, AQUA, YELLOW, MAGENTA, GREEN, VIOLET)
-SERIOUS = "#ec835a"  # status color: S&S violations, fatal or lost-time accidents
+SERIOUS = "#ec835a"  # status color: S&S violations and serious accidents (definitions.py)
 CRITICAL = "#d03b3b"  # status color: anomalies
 MUTED = "#898781"  # forecasts and folded "other" categories
 SEQUENTIAL = ("#cde2fb", "#104281")  # one hue, light to dark, for magnitudes
