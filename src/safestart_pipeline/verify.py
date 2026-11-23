@@ -7,7 +7,9 @@ check, is it still the file the source lists today, and does each eCFR title hol
 structure lists.
 
 Reading never changes a crawl's state. Live checks obey robots.txt and wait between requests to each host, and they
-follow a redirect one hop at a time under the same rules (watch/polite.py does the same for the watchers).
+follow a redirect one hop at a time under the same rules (watch/polite.py does the same for the watchers). A live
+request that fails or answers with an error status is recorded in the report and named in the verdict; the rest of the
+report is still written, so one unavailable page never costs the rehash of every file.
 """
 
 from __future__ import annotations
@@ -36,6 +38,10 @@ WAITING = ("pending", "retry")
 ECFR_API = "https://www.ecfr.gov/api/versioner/v1"
 DASHES = str.maketrans({"–": " - ", "—": " - "})
 MAX_REDIRECTS = 5
+GONE = (404, 410)
+# What a live request may end in besides an answer: a transport error, a refusal by robots.txt, an answer that is not
+# what was asked for (an error status, JSON or HTML that does not parse).
+LIVE_ERRORS = (httpx.HTTPError, PermissionError, ValueError, KeyError, etree.LxmlError)
 
 
 def read_only(path: Path) -> sqlite3.Connection:
@@ -110,6 +116,13 @@ class Polite:
                 return response
             url = urljoin(url, response.headers["location"])
         raise httpx.TooManyRedirects(f"more than {MAX_REDIRECTS} redirects, the last to {url}")
+
+
+def successful(answer: httpx.Response) -> httpx.Response:
+    """The answer if its status is 2xx; ValueError otherwise, so an error page is never read as data."""
+    if not answer.is_success:
+        raise ValueError(f"HTTP {answer.status_code} from {answer.url}")
+    return answer
 
 
 # Crawls ---------------------------------------------------------------------------------------------------------------
@@ -277,13 +290,17 @@ def verify_bulk(data_root: Path, *, rehash: bool = True, live: Polite | None = N
     reasons = [f"{len(problems)} files missing, unverified or damaged: {', '.join(problems[:10])}"] if problems else []
     listing = report.get("msha_listing_today")
     if listing:
-        if listing["new"]:
+        if listing.get("error"):
+            reasons.append(f"MSHA's open-data page not compared today: {listing['error']}")
+        if listing.get("new"):
             reasons.append(f"{len(listing['new'])} files listed today that we do not hold")
-        if listing["gone"]:
+        if listing.get("gone"):
             reasons.append(f"{len(listing['gone'])} held files no longer served")
-        if listing["changed"]:
+        if listing.get("changed"):
             reasons.append(f"{len(listing['changed'])} files changed size since our download"
                            " (refresh with the acquire flow)")
+        if listing.get("errors"):
+            reasons.append(f"{len(listing['errors'])} held files not checked today: {'; '.join(listing['errors'][:3])}")
     for title in report.get("ecfr_today", []):
         if title.get("error"):
             reasons.append(f"title {title['title']}: {title['error']}")
@@ -297,15 +314,26 @@ def verify_bulk(data_root: Path, *, rehash: bool = True, live: Polite | None = N
 
 
 def compare_listing(held: list[dict], live: Polite) -> dict:
-    """The MSHA open-data page today against the files we hold: new or delisted files, and files republished since."""
-    page = live.request("GET", MSHA_LISTING)
-    listed = msha_dataset_links(page.content, MSHA_LISTING)
+    """The MSHA open-data page today against the files we hold: new or delisted files, and files republished since. A
+    page that cannot be read is an error rather than an empty listing, which would show every held file as delisted;
+    a held file that cannot be asked about is named under errors."""
+    try:
+        listed = msha_dataset_links(successful(live.request("GET", MSHA_LISTING)).content, MSHA_LISTING)
+        if not listed:
+            raise ValueError("it lists no data sets; its layout may have changed")
+    except LIVE_ERRORS as problem:
+        return {"error": str(problem)[:300]}
     ours = {entry["url"]: entry for entry in held}
-    changed, rewritten, gone = [], [], []
+    changed, rewritten, gone, errors = [], [], [], []
     for url, entry in ours.items():
-        answer = live.request("HEAD", url)
-        if answer.status_code >= 400:
-            gone.append(entry["name"])
+        try:
+            answer = live.request("HEAD", url)
+            if answer.status_code in GONE:
+                gone.append(entry["name"])
+                continue
+            successful(answer)
+        except LIVE_ERRORS as problem:
+            errors.append(f"{entry['name']}: {problem}"[:300])
             continue
         size, modified = answer.headers.get("content-length"), answer.headers.get("last-modified")
         record = {"name": entry["name"], "ours": [entry["content_length"], entry["last_modified"]],
@@ -316,7 +344,7 @@ def compare_listing(held: list[dict], live: Polite) -> dict:
             rewritten.append(record)  # MSHA rewrites its files daily; the same size usually means the same data
     return {"listed_today": len(listed), "held": len(ours), "new": sorted(url for url in listed if url not in ours),
             "delisted": sorted(entry["name"] for url, entry in ours.items() if url not in listed), "gone": gone,
-            "changed": changed, "rewritten_same_size": rewritten}
+            "changed": changed, "rewritten_same_size": rewritten, "errors": errors}
 
 
 def sections_in(path: Path) -> tuple[set[str], str | None]:
@@ -336,33 +364,55 @@ def clean_section(number: str) -> str:
     return " ".join(number.replace("§", "").translate(DASHES).split())
 
 
-def compare_ecfr_title(title: int, data_root: Path, db: sqlite3.Connection, live: Polite) -> dict:
-    """One title: the sections the official eCFR structure lists today against those in our file, and its currency."""
-    url = f"https://www.govinfo.gov/bulkdata/ECFR/title-{title}/ECFR-title{title}.xml"
-    row = db.execute("select sha256, last_modified from files where url = ?", (url,)).fetchone()
-    if row is None or not row["sha256"]:
-        return {"title": title, "error": "not downloaded"}
-    ours, amended = sections_in(object_path(data_root, "bulk", row["sha256"]))
-    titles = {item["number"]: item for item in live.request("GET", f"{ECFR_API}/titles.json").json()["titles"]}
-    info = titles[title]
-    structure = live.request("GET", f"{ECFR_API}/structure/{info['up_to_date_as_of']}/title-{title}.json").json()
+def official_sections(structure: dict) -> dict[str, bool]:
+    """Every section of an eCFR structure document, and whether it is reserved."""
     official, stack = {}, [structure]
     while stack:
         node = stack.pop()
         if node.get("type") == "section":
             official[clean_section(str(node.get("identifier") or ""))] = bool(node.get("reserved"))
         stack.extend(node.get("children") or [])
-    source_today = live.request("HEAD", url).headers.get("last-modified")
+    return official
+
+
+def compare_ecfr_title(title: int, data_root: Path, db: sqlite3.Connection, live: Polite) -> dict:
+    """One title: the sections the official eCFR structure lists today against those in our file, and its currency.
+    What a failed request leaves undone is named under error; the rest is compared all the same."""
+    url = f"https://www.govinfo.gov/bulkdata/ECFR/title-{title}/ECFR-title{title}.xml"
+    row = db.execute("select sha256, last_modified from files where url = ?", (url,)).fetchone()
+    if row is None or not row["sha256"]:
+        return {"title": title, "error": "not downloaded"}
+    ours, amended = sections_in(object_path(data_root, "bulk", row["sha256"]))
     our_date = parse_amddate(amended)
-    return {"title": title, "official_sections": len(official), "official_reserved": sum(official.values()),
-            "our_sections": len(ours), "missing_sections": len(set(official) - ours),
-            "missing_examples": sorted(set(official) - ours)[:EXAMPLES], "extra_sections": len(ours - set(official)),
-            "extra_examples": sorted(ours - set(official))[:EXAMPLES], "our_amended": our_date or amended,
-            "ecfr_latest_amended_on": info.get("latest_amended_on"),
-            "ecfr_up_to_date_as_of": info.get("up_to_date_as_of"),
-            "behind": bool(our_date and info.get("latest_amended_on") and our_date < info["latest_amended_on"]),
-            "our_last_modified": row["last_modified"], "source_last_modified_today": source_today,
-            "source_newer": bool(source_today and row["last_modified"] and source_today != row["last_modified"])}
+    result: dict = {"title": title, "our_sections": len(ours), "our_amended": our_date or amended,
+                    "our_last_modified": row["last_modified"]}
+    errors = []
+    try:
+        titles = successful(live.request("GET", f"{ECFR_API}/titles.json")).json()["titles"]
+        info = {item["number"]: item for item in titles}[title]
+        structure = f"{ECFR_API}/structure/{info['up_to_date_as_of']}/title-{title}.json"
+        official = official_sections(successful(live.request("GET", structure)).json())
+    except LIVE_ERRORS as problem:
+        errors.append(f"eCFR API: {problem}")
+    else:
+        result |= {"official_sections": len(official), "official_reserved": sum(official.values()),
+                   "missing_sections": len(set(official) - ours),
+                   "missing_examples": sorted(set(official) - ours)[:EXAMPLES],
+                   "extra_sections": len(ours - set(official)),
+                   "extra_examples": sorted(ours - set(official))[:EXAMPLES],
+                   "ecfr_latest_amended_on": info.get("latest_amended_on"),
+                   "ecfr_up_to_date_as_of": info.get("up_to_date_as_of"),
+                   "behind": bool(our_date and info.get("latest_amended_on") and our_date < info["latest_amended_on"])}
+    try:
+        source_today = successful(live.request("HEAD", url)).headers.get("last-modified")
+    except LIVE_ERRORS as problem:
+        errors.append(f"govinfo: {problem}")
+    else:
+        result |= {"source_last_modified_today": source_today,
+                   "source_newer": bool(source_today and row["last_modified"] and source_today != row["last_modified"])}
+    if errors:
+        result["error"] = "; ".join(errors)[:500]
+    return result
 
 
 def parse_amddate(value: str | None) -> str | None:

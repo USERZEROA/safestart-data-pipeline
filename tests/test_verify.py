@@ -218,6 +218,59 @@ def test_bulk_files_are_checked_against_todays_sources(tmp_path):
     client.close()
 
 
+def answering(changes):
+    """ecfr_handler, except for the requests named: (method, URL ending) -> a function of the request that answers or
+    raises."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        for (method, ending), outcome in changes.items():
+            if request.method == method and str(request.url).endswith(ending):
+                return outcome(request)
+        return ecfr_handler(request)
+
+    return handler
+
+
+def unavailable(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(503, text="<html>Service Unavailable</html>", headers={"content-type": "text/html"})
+
+
+def timed_out(request: httpx.Request) -> httpx.Response:
+    raise httpx.ReadTimeout("timed out", request=request)
+
+
+def hold_ecfr_and_mines(tmp_path):
+    held(tmp_path, "https://www.govinfo.gov/bulkdata/ECFR/title-29/ECFR-title29.xml", ECFR_XML.encode(),
+         "ECFR-title29.xml", "ecfr-govinfo", GOVINFO_DATE)
+    held(tmp_path, "https://arlweb.msha.gov/OpenGovernmentData/DataSets/Mines.zip", MINES, "Mines.zip", "msha-ogd",
+         "Tue, 17 Nov 2026 13:54:23 GMT")
+
+
+def test_a_failed_live_request_is_reported_and_the_rest_of_the_report_is_kept(tmp_path):
+    hold_ecfr_and_mines(tmp_path)
+    changes = {("GET", "/titles.json"): unavailable, ("HEAD", "/Mines.zip"): timed_out}
+    with httpx.Client(transport=httpx.MockTransport(answering(changes))) as client:
+        report = verify_bulk(tmp_path, live=Polite(client, sleep=lambda seconds: None))
+    assert report["problems"] == [] and all(entry["hash_ok"] for entry in report["files"])  # the rehash is kept
+    listing = report["msha_listing_today"]
+    assert listing["errors"] == ["Mines.zip: timed out"] and listing["gone"] == [] and listing["listed_today"] == 2
+    title29 = report["ecfr_today"][0]
+    assert title29["error"].startswith("eCFR API: HTTP 503") and "official_sections" not in title29
+    assert (title29["our_sections"], title29["source_newer"]) == (2, False)  # govinfo still answered
+    reasons = report["verdict"]["reasons"]
+    assert "1 held files not checked today: Mines.zip: timed out" in reasons
+    assert any(reason.startswith("title 29: eCFR API: HTTP 503") for reason in reasons)
+
+
+def test_a_listing_page_that_cannot_be_read_is_an_error_not_an_empty_listing(tmp_path):
+    hold_ecfr_and_mines(tmp_path)
+    with httpx.Client(transport=httpx.MockTransport(answering({("GET", "/OGIMSHA.asp"): unavailable}))) as client:
+        report = verify_bulk(tmp_path, live=Polite(client, sleep=lambda seconds: None))
+    error = "HTTP 503 from https://arlweb.msha.gov/OpenGovernmentData/OGIMSHA.asp"
+    assert report["msha_listing_today"] == {"error": error}  # not an empty listing with every file delisted
+    assert f"MSHA's open-data page not compared today: {error}" in report["verdict"]["reasons"]
+    assert report["ecfr_today"][0]["missing_sections"] == 1  # the eCFR comparison still ran
+
+
 def test_a_damaged_bulk_file_is_a_problem(tmp_path):
     held(tmp_path, "https://arlweb.msha.gov/OpenGovernmentData/DataSets/Mines.zip", MINES, "Mines.zip", "msha-ogd", "x")
     store = BulkStore(tmp_path / "state" / "bulk.sqlite")
