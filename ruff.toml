@@ -1,0 +1,20 @@
+# Ruff's default rules at the repository's line length of 120. Line length itself is left to review (E501 is not
+# selected); the ignores below are conventions this code base follows on purpose.
+line-length = 120
+target-version = "py312"
+# Tests import each other as top-level modules (`import test_crawler`), so they sort as first-party code.
+src = ["src", "tests"]
+
+[lint]
+ignore = [
+    "C408",    # dict(name=value) for keyword-shaped option bundles
+    "SIM905",  # "a b c".split() for short word lists
+    "TRY004",  # validation raises ValueError for every invalid input, wrong types included
+]
+
+[lint.per-file-ignores]
+# Fixtures are unpacked whole so each test shows what they hold; fixture files are written as text, then encoded; a
+# nested `with pytest.raises` marks the one statement expected to fail.
+"tests/**" = ["RUF059", "UP012", "SIM117"]
+# The shared event contract is kept byte for byte while the components that depend on it are built.
+"src/safestart_pipeline/stream/events.py" = ["UP035", "FURB162"]

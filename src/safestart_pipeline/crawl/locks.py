@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Self
 
 
 class SiteLock:
@@ -11,9 +12,9 @@ class SiteLock:
         self.path = path
         self.handle = None
 
-    def __enter__(self) -> SiteLock:
+    def __enter__(self) -> Self:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = open(self.path, "a+b")  # noqa: SIM115 - held for the lifetime of the crawl
+        self.handle = open(self.path, "a+b")  # held for the lifetime of the crawl
         try:
             self._lock()
         except OSError as problem:

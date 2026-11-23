@@ -10,7 +10,12 @@ import pytest
 
 from safestart_pipeline.acquire.bulk import BulkStore
 from safestart_pipeline.lake.msha_ogd import (
-    LakeBuildError, build_dataset, build_lake, object_path, read_definitions, split_record,
+    LakeBuildError,
+    build_dataset,
+    build_lake,
+    object_path,
+    read_definitions,
+    split_record,
 )
 
 MINES_TXT = (
