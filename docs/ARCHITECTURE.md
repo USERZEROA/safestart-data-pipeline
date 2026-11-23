@@ -10,15 +10,15 @@ flowchart LR
         OGD[MSHA open data: 20 datasets] ; ECFR[eCFR titles 29 and 30] ; FR[Federal Register API]
     end
     subgraph Batch["Batch (Prefect)"]
-        CRAWL[Polite crawlers] --> RAW[(Raw object store\ncontent-addressed)]
-        ACQ[Bulk acquire\nevery version kept] --> RAW
-        RAW --> LAKE[(Parquet lake\none file per version)]
-        LAKE --> WH[(DuckDB warehouse\nERD + marts)]
+        CRAWL[Polite crawlers] --> RAW[(Raw object store<br/>content-addressed)]
+        ACQ[Bulk acquire<br/>every version kept] --> RAW
+        RAW --> LAKE[(Parquet lake<br/>one file per version)]
+        LAKE --> WH[(DuckDB warehouse<br/>ERD + marts)]
     end
     subgraph Streaming
         REPLAY[Replay producer] --> K{{Kafka}}
         WATCH[Live watchers] --> K
-        K --> STORE[Storage consumer] --> PG[(PostgreSQL\nstream schema)]
+        K --> STORE[Storage consumer] --> PG[(PostgreSQL<br/>stream schema)]
         K --> ANALYTICS[Analytics consumer] --> PG
     end
     MSHA & ARL & OSHA --> CRAWL
