@@ -1,0 +1,86 @@
+# Lint and unit tests (with a PostgreSQL service for the tests that need one), then the whole stream path in Docker
+# Compose: the image is built, Kafka, PostgreSQL, the initializer, both consumer groups and the dashboard start, and
+# scripts/smoke_test.py sends contract events through Kafka and waits for both consumers' rows in PostgreSQL.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.12.6"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  test:
+    name: Lint and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: safestart
+          POSTGRES_PASSWORD: safestart
+          POSTGRES_DB: safestart_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U safestart -d safestart_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql://safestart:safestart@127.0.0.1:5432/safestart_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked --all-extras
+      - run: uv run ruff check
+      - run: uv run pytest
+
+  stack:
+    name: Compose stack end to end
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      - name: Write .env and the empty data root
+        run: python3 scripts/start.py --no-start
+      - name: Check the Compose files and the Caddyfile
+        run: |
+          docker compose config --quiet
+          PUBLIC_DOMAIN=ci.example.org docker compose -f docker-compose.yml -f docker-compose.public.yml config --quiet
+          docker run --rm -e PUBLIC_DOMAIN=203.0.113.7 -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.11-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Build the image
+        run: docker compose build
+      - name: Start Kafka, PostgreSQL, the initializer, both consumers and the dashboard
+        run: >-
+          docker compose up --detach --wait --wait-timeout 300
+          kafka postgres init storage-consumer analytics-consumer dashboard
+      - name: Smoke test through Kafka into PostgreSQL
+        run: uv run --locked --extra stream python scripts/smoke_test.py
+      - name: Service state and logs
+        if: failure()
+        run: |
+          docker compose ps --all
+          docker compose logs --no-color --timestamps --tail 300
+      - name: Remove the stack
+        if: always()
+        run: docker compose down --volumes --remove-orphans
