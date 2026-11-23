@@ -24,6 +24,7 @@ from safestart_pipeline.warehouse.sources import fr_dates, kind_of, section_head
 
 D = date.fromisoformat
 M1, M2, M3 = "0100001", "0100002", "0100003"
+UNLISTED = "0100009"  # a mine missing from the mines file
 MINES = pl.DataFrame({
     "mine_id": [M1, M2, M3], "current_mine_name": ["Deep Coal No. 1", "Silver Pit", "Old Strip"],
     "coal_metal_ind": ["C", "M", "C"], "current_mine_type": ["Underground", "Surface", "Surface"],
@@ -36,16 +37,17 @@ MINES = pl.DataFrame({
     "current_controller_id": ["C1", "C2", None], "current_controller_name": ["Coal Co", "Silver Co", None],
     "current_operator_id": ["O1", "O2", None], "current_operator_name": ["Coal Op", "Silver Op", None],
 })
-# Event 1000001 is listed twice, once per controller, as one event is in MSHA's file.
+# Event 1000001 is listed twice, once per controller, as one event is in MSHA's file. Event 1000003 carries the metal
+# flag though its mine is a coal mine.
 INSPECTIONS = pl.DataFrame({
     "event_no": ["1000001", "1000001", "1000002", "1000003"], "mine_id": [M1, M1, M2, M1],
     "inspection_begin_dt": [D("2026-03-01"), D("2026-03-01"), D("2024-06-01"), D("2025-12-01")],
     "inspection_end_dt": [D("2026-03-05"), D("2026-03-05"), D("2024-06-02"), None],
     "activity_code": ["E01", "E01", "E01", "E02"], "activity": ["Regular inspection"] * 3 + ["Spot inspection"],
-    "coal_metal_ind": ["C", "C", "M", "C"], "controller_id": ["C1", "C9", "C2", "C1"],
+    "coal_metal_ind": ["C", "C", "M", "M"], "controller_id": ["C1", "C9", "C2", "C1"],
 })
 # Violation V3 is listed twice, once per contest docket. V6 is the newest (the 12-month anchor) and names an
-# inspection that is not in the file.
+# inspection that is not in the file. V7 carries the coal flag though its mine is a metal mine.
 VIOLATION_ROWS = [
     # violation_no, event_no, mine_id, issued, part_section, sig_sub, proposed_penalty, coal_metal, docket_no
     ("V1", "1000001", M1, "2026-03-02", "75.400", "Y", 5000.0, "C", None),
@@ -55,7 +57,7 @@ VIOLATION_ROWS = [
     ("V4", "1000003", M1, "2025-12-02", "77.403-ag", "N", 100.0, "C", None),
     ("V5", "1000002", M2, "2024-06-01", "56.14107(a)", "Y", 2000.0, "M", None),
     ("V6", "9999999", M2, "2026-06-30", "56.14107(a)", None, None, "M", None),
-    ("V7", "1000002", M2, "2024-06-01", None, "N", 60.0, "M", None),
+    ("V7", "1000002", M2, "2024-06-01", None, "N", 60.0, "C", None),
     ("V8", "1000003", M1, "2026-01-15", "1.1", "N", 50.0, "C", None),
     ("V9", "1000003", M1, "2026-01-16", "Sec. 103(a)", None, None, "C", None),
 ]
@@ -70,29 +72,32 @@ VIOLATIONS = pl.DataFrame({
     "mine_type": ["Underground"] * len(VIOLATION_ROWS), "docket_no": [row[8] for row in VIOLATION_ROWS],
 }, schema_overrides={"amount_paid": pl.Float64, "termination_dt": pl.Date})
 ACCIDENT_ROWS = [
-    # document_no, mine_id, date, degree, days_lost, days_restrict, classification, contractor_id
-    ("A1", M1, "2026-02-10", "01", None, None, "POWERED HAULAGE", None),  # fatal
-    ("A2", M1, "2026-04-15", "03", 0, None, "HANDLING OF MATERIALS", None),  # days away, count not yet filled in
-    ("A3", M1, "2026-05-20", "06", 0, 0, "SLIP OR FALL OF PERSON", None),  # no lost or restricted days
-    ("A4", M1, "2026-05-21", "05", 0, 4, "MACHINERY", "CTR1"),  # a contractor's employee
-    ("A5", M2, "2025-01-10", "00", None, None, "OTHER", None),  # accident only, no injury
-    ("A6", M1, "2026-07-15", "06", 0, 0, "MACHINERY", None),  # after the newest violation date
+    # document_no, mine_id, date, degree, days_lost, days_restrict, classification, contractor_id, coal_metal
+    ("A1", M1, "2026-02-10", "01", None, None, "POWERED HAULAGE", None, "C"),  # fatal
+    ("A2", M1, "2026-04-15", "03", 0, None, "HANDLING OF MATERIALS", None, "C"),  # days away, not yet counted
+    ("A3", M1, "2026-05-20", "06", 0, 3, "SLIP OR FALL OF PERSON", None, "C"),  # degree 06 despite restricted days
+    ("A4", M1, "2026-05-21", "05", 0, 4, "MACHINERY", "CTR1", "C"),  # a contractor's employee
+    ("A5", M2, "2025-01-10", "00", None, None, "OTHER", None, "M"),  # accident only, no injury
+    ("A6", M1, "2026-07-15", "02", None, None, "MACHINERY", None, "C"),  # a disability after the newest violation
+    ("A7", M2, "2026-03-01", "07", 30, None, "DISORDERS (PHYSICAL AGENTS)", None, "C"),  # an illness, flagged coal
 ]
 ACCIDENTS = pl.DataFrame({
     "document_no": [row[0] for row in ACCIDENT_ROWS], "mine_id": [row[1] for row in ACCIDENT_ROWS],
     "accident_dt": [D(row[2]) for row in ACCIDENT_ROWS], "degree_injury_cd": [row[3] for row in ACCIDENT_ROWS],
     "degree_injury": ["(description)"] * len(ACCIDENT_ROWS), "classification": [row[6] for row in ACCIDENT_ROWS],
-    "accident_type": ["(type)"] * len(ACCIDENT_ROWS), "no_injuries": [1, 1, 1, 1, 0, 1],
+    "accident_type": ["(type)"] * len(ACCIDENT_ROWS), "no_injuries": [1, 1, 1, 1, 0, 1, 1],
     "days_lost": [row[4] for row in ACCIDENT_ROWS], "days_restrict": [row[5] for row in ACCIDENT_ROWS],
-    "subunit": ["UNDERGROUND"] * 4 + ["STRIP, QUARY, OPEN PIT", "UNDERGROUND"],
-    "narrative": ["(narrative)"] * len(ACCIDENT_ROWS), "coal_metal_ind": ["C", "C", "C", "C", "M", "C"],
+    "subunit": ["UNDERGROUND"] * 4 + ["STRIP, QUARY, OPEN PIT", "UNDERGROUND", "MILL OPERATION/PREPARATION PLANT"],
+    "narrative": ["(narrative)"] * len(ACCIDENT_ROWS), "coal_metal_ind": [row[8] for row in ACCIDENT_ROWS],
     "contractor_id": [row[7] for row in ACCIDENT_ROWS],
 }, schema_overrides={"days_lost": pl.Int64, "days_restrict": pl.Int64})
+# The first quarter of M1 (a coal mine) is reported with the metal flag; the unlisted mine's report keeps its own.
 QUARTERS = [(2025, 3), (2025, 4), (2026, 1), (2026, 2), (2026, 3)]
 PRODUCTION = pl.DataFrame({
-    "mine_id": [M1] * 5 + [M2], "cal_yr": [year for year, _ in QUARTERS] + [2026],
-    "cal_qtr": [quarter for _, quarter in QUARTERS] + [1], "subunit_cd": ["01"] * 5 + ["03"],
-    "avg_employee_cnt": [25.0] * 6, "hours_worked": [50_000] * 5 + [10_000], "coal_production": [1000] * 5 + [0],
+    "mine_id": [M1] * 5 + [M2, UNLISTED], "cal_yr": [year for year, _ in QUARTERS] + [2026, 2026],
+    "cal_qtr": [quarter for _, quarter in QUARTERS] + [1, 2], "subunit_cd": ["01"] * 5 + ["03", "03"],
+    "avg_employee_cnt": [25.0] * 7, "hours_worked": [50_000] * 5 + [10_000, 5_000],
+    "coal_production": [1000] * 5 + [0, 0], "coal_metal_ind": ["M", "C", "C", "C", "C", "M", "M"],
 })
 TITLE_30 = """<?xml version="1.0" encoding="UTF-8" ?>
 <DLPSTEXTCLASS><HEADER><FILEDESC><TITLESTMT><TITLE>Title 30: Mineral Resources</TITLE></TITLESTMT></FILEDESC></HEADER>
@@ -137,7 +142,8 @@ CATALOGS = {
         # url, state, content_type, content_length, in_sitemap
         ("https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.1200", "fetched",
          "text/html; charset=utf-8", 50_000, 1),
-        ("https://www.osha.gov/sites/default/files/publications/OSHA3514.pdf", "fetched", "application/pdf", 2_000_000, 1),
+        ("https://www.osha.gov/sites/default/files/publications/OSHA3514.pdf", "fetched", "application/pdf",
+         2_000_000, 1),
         ("https://www.osha.gov/data/inspections.zip", "skipped", None, None, 0),
         ("https://www.osha.gov/files/report.xlsx", "not_found", None, None, 0),
         ("https://www.osha.gov/images/photo.jpg", "skipped", None, None, 0),
@@ -161,7 +167,7 @@ CONTRACT = {
                  "injury_illness negligence proposed_penalty amount_paid termination_date coal_metal mine_type",
     "accident": "document_no mine_id accident_date degree_injury_cd degree_injury serious classification "
                 "accident_type no_injuries days_lost days_restrict subunit narrative coal_metal contractor_id",
-    "production_quarter": "mine_id cal_yr cal_qtr subunit_cd avg_employees hours_worked coal_production",
+    "production_quarter": "mine_id cal_yr cal_qtr subunit_cd avg_employees hours_worked coal_production coal_metal",
     "cfr_section": "section title part heading text amended_on",
     "document": "url site state kind content_type bytes sha256 fetched_at in_sitemap",
     "dataset_version": "dataset version rows built_at is_current",
@@ -248,7 +254,7 @@ def test_the_warehouse_has_the_contract_tables_views_and_keys(warehouse):
         "select table_name, constraint_column_names from duckdb_constraints() where constraint_type = 'PRIMARY KEY'"
     ).fetchall() if table in KEYS}
     assert keys == {table: sorted(columns) for table, columns in KEYS.items()}
-    assert summary["rows"] == {"mine": 3, "inspection": 3, "violation": 9, "accident": 6, "production_quarter": 6,
+    assert summary["rows"] == {"mine": 3, "inspection": 3, "violation": 9, "accident": 7, "production_quarter": 7,
                                "cfr_section": 8, "document": 10, "dataset_version": 6}
     assert one(con, "select data_type from information_schema.columns where table_name = 'mart_mine_scorecard'"
                     " and column_name = 'top_sections_12m'") == ("VARCHAR[]",)
@@ -271,6 +277,7 @@ def test_references_citations_and_coordinates_are_checked(warehouse):
     _, summary, con = warehouse
     checks = {name: check["rows"] for name, check in summary["checks"].items()}
     assert checks["reference:violation.event_no"] == 1 and checks["reference:violation.mine_id"] == 0
+    assert checks["reference:production_quarter.mine_id"] == 1  # the unlisted mine
     assert checks["cited_section_not_in_title_30"] == 1  # 77.403
     assert checks["part_section_not_parsed"] == 1  # "Sec. 103(a)"
     assert checks["section_number_in_both_titles"] == 1  # 1.1
@@ -289,8 +296,34 @@ def test_violations_and_accidents_get_their_derived_columns(warehouse):
         "V7": None, "V8": "1.1", "V9": None}
     assert dict(con.execute("select violation_no, sig_sub from violation where violation_no in ('V1', 'V2', 'V6')")
                 .fetchall()) == {"V1": True, "V2": False, "V6": None}
+    # Serious by the degree of injury alone: 01-05, whatever the day counts say.
     assert dict(con.execute("select document_no, serious from accident").fetchall()) == {
-        "A1": True, "A2": True, "A3": False, "A4": True, "A5": False, "A6": False}
+        "A1": True, "A2": True, "A3": False, "A4": True, "A5": False, "A6": True, "A7": False}
+    # The rules the SQL files use are macros made from the shared definitions.
+    assert one(con, "select is_fatal('01'), is_fatal('02'), is_injury('06'), is_injury('07'), is_injury(null)") == (
+        True, False, True, False, False)
+
+
+def test_a_mines_records_count_under_the_mines_commodity(warehouse):
+    _, summary, con = warehouse
+    flags = {row[0]: row[1] for row in con.execute("""
+        select 'inspection ' || event_no, coal_metal from inspection
+        union all select 'violation ' || violation_no, coal_metal from violation
+        union all select 'accident ' || document_no, coal_metal from accident
+        union all select concat_ws(' ', 'production', mine_id, cal_yr, cal_qtr), coal_metal from production_quarter
+    """).fetchall()}
+    assert (flags["inspection 1000003"], flags["violation V7"], flags["accident A7"]) == ("C", "M", "M")
+    assert (flags[f"production {M1} 2025 3"], flags[f"production {UNLISTED} 2026 2"]) == ("C", "M")
+    checks = {name: check for name, check in summary["checks"].items() if name.startswith("commodity_differs")}
+    assert checks == {
+        "commodity_differs_from_mine:inspection": {"rows": 1, "detail": "counted under their mine's flag: "
+                                                                        "1 flagged M at C mines"},
+        "commodity_differs_from_mine:violation": {"rows": 1, "detail": "counted under their mine's flag: "
+                                                                       "1 flagged C at M mines"},
+        "commodity_differs_from_mine:accident": {"rows": 1, "detail": "counted under their mine's flag: "
+                                                                      "1 flagged C at M mines"},
+        "commodity_differs_from_mine:production_quarter": {"rows": 1, "detail": "counted under their mine's flag: "
+                                                                                "1 flagged M at C mines"}}
 
 
 def test_cfr_sections_hold_heading_text_and_the_date_their_text_last_changed(warehouse):
@@ -319,8 +352,8 @@ def test_documents_get_a_kind_from_their_url(warehouse):
     assert kinds == [("arlweb", "data", 1), ("arlweb", "other", 1), ("arlweb", "page", 1), ("msha", "page", 1),
                      ("msha", "pdf", 1), ("osha", "data", 1), ("osha", "office", 1), ("osha", "other", 1),
                      ("osha", "page", 1), ("osha", "pdf", 1)]
-    assert one(con, "select content_type, fetched_at, in_sitemap from document where url = 'https://www.msha.gov/'") == (
-        "text/html", datetime(2026, 11, 18, 0, 22, 55), True)
+    assert one(con, "select content_type, fetched_at, in_sitemap from document where url = ?",
+               "https://www.msha.gov/") == ("text/html", datetime(2026, 11, 18, 0, 22, 55), True)
     assert con.execute("select dataset, is_current from dataset_version where dataset = 'violations' order by built_at"
                        ).fetchall() == [("violations", False), ("violations", True)]
 
@@ -333,14 +366,17 @@ def test_the_marts_count_the_12_months_up_to_the_newest_violation(warehouse):
     ).fetchall()}
     # Window (2025-06-30, 2026-06-30]; the injury rate pairs the four quarters 2025Q3-2026Q2 with their injuries.
     assert card[M1] == (2, 6, 2, 6450.0, 4, 3, 200_000.0, 3.0, ["75.400", "1.1", "75.1100-3", "77.403"])
-    assert card[M2] == (0, 1, 0, 0.0, 0, 0, 10_000.0, 0.0, ["56.14107"])
+    assert card[M2] == (0, 1, 0, 0.0, 1, 0, 10_000.0, 0.0, ["56.14107"])  # an illness: neither serious nor an injury
     assert card[M3] == (0, 0, 0, 0.0, 0, 0, 0.0, None, [])
+    # V7, flagged coal, counts under its metal mine.
     assert con.execute("select * from mart_ss_trend order by year, coal_metal").fetchall() == [
         (2024, "M", 2, 1, 0.5), (2025, "C", 1, 0, 0.0), (2026, "C", 5, 2, 0.4), (2026, "M", 1, 0, 0.0)]
+    # Hours count under their mine's commodity, the unlisted mine's under its own flag.
     rates = {(row[0], row[1]): row[2:] for row in con.execute("select * from mart_injury_rate").fetchall()}
     assert rates == {(2025, "C"): (0, 100_000.0, 0.0), (2026, "C"): (4, 150_000.0, pytest.approx(16 / 3)),
-                     (2026, "M"): (0, 10_000.0, 0.0)}
-    assert one(con, "select * from mart_district_year where district = 'C04' and year = 2026") == ("C04", 2026, 1, 5, 2, 5)
+                     (2026, "M"): (0, 15_000.0, 0.0)}
+    assert one(con, "select * from mart_district_year where district = 'C04' and year = 2026") == (
+        "C04", 2026, 1, 5, 2, 5)
     assert one(con, "select * from mart_top_cited_sections where cfr_section = '75.400'") == (
         "75.400", "Accumulation of combustible materials.", 2, 1, 0.5, 5300.0, date(2026, 3, 2))
 
@@ -354,6 +390,7 @@ def test_every_named_query_states_its_question_and_runs(warehouse):
         assert markdown(columns, rows).startswith("| " + columns[0])
     columns, rows = run_query(target, "web_corpus_by_site_kind")
     assert sum(row[columns.index("urls")] for row in rows) == 10
+    assert run_query(target, "fatal_accident_types")[1] == [("POWERED HAULAGE", 1, 0, 1, 1.0)]
     assert markdown(["year", "violations", "share", "sections"], [(2026, 12345, 0.25, ["75.400", "1.1"])]).split(
         "\n") == ["| year | violations | share | sections |", "|---:|---:|---:|---|",
                   "| 2026 | 12,345 | 0.25 | 75.400, 1.1 |"]
@@ -409,8 +446,8 @@ def test_a_failed_build_leaves_the_previous_warehouse_in_place(tmp_path):
 
 
 def test_federal_register_dates_and_headings_are_read_from_notes():
-    assert fr_dates("[61 FR 55527, Oct. 25, 1996, as amended at 80 FR 52987, Sept. 2, 2015; 1 FR 1, June 31, 2000]") == [
-        date(1996, 10, 25), date(2015, 9, 2)]
+    notes = "[61 FR 55527, Oct. 25, 1996, as amended at 80 FR 52987, Sept. 2, 2015; 1 FR 1, June 31, 2000]"
+    assert fr_dates(notes) == [date(1996, 10, 25), date(2015, 9, 2)]
     assert fr_dates("39 FR 23997, June 28, 1974, unless otherwise noted.") == [date(1974, 6, 28)]
     assert section_heading("§ 75.400   Accumulation of\n combustible materials.", "§ 75.400") == (
         "Accumulation of combustible materials.")

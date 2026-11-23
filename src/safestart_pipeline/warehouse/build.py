@@ -10,8 +10,14 @@ so a reader (the dashboard, an export) sees the previous warehouse or the new on
 Keys are PRIMARY KEY constraints. MSHA's files repeat a few keys (a violation listed once per contest docket, an
 inspection once per controller); the build loads one copy of each, chosen deterministically, and writes every copy to
 duplicate_row, so a repeated key is reported rather than dropped unseen. build_check records every rule the build
-verified (unique keys, references between tables, citations without regulation text, dropped coordinates) with the
-number of rows it affected.
+verified (unique keys, references between tables, records whose own coal/metal flag is not their mine's, citations
+without regulation text, dropped coordinates) with the number of rows it affected.
+
+The derived columns follow the rules every component shares (definitions.py): an accident's `serious` is its degree of
+injury, a violation's `cfr_section` is the section its citation names, and the `coal_metal` of an inspection, a
+violation, an accident or a production report is its mine's flag (its own only when the mine is missing), so a mine's
+records all count under one commodity. The marts and the named queries are plain SQL files, so the build stores the
+rules they need as SQL macros made from the same definitions.
 """
 
 from __future__ import annotations
@@ -32,11 +38,12 @@ import polars as pl
 
 from ..acquire.bulk import ECFR_TITLES
 from ..config import setting
+from ..definitions import FATAL_DEGREE, SIG_SUB, cfr_section_sql, commodity_sql, injury_sql, serious_sql
 from .sources import CRAWL_SITES, catalog_rows, ecfr_amended, ecfr_file, ecfr_sections
 
 log = logging.getLogger(__name__)
 HERE = Path(__file__).parent
-FORMAT = 1
+FORMAT = 2
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 STAGE_BATCH = 20_000
 LAKE_DATASETS = ("mines", "inspections", "violations", "accidents", "mines_prod_quarterly")
@@ -45,10 +52,13 @@ TABLES = ("mine", "inspection", "violation", "accident", "production_quarter", "
 # A mine's coordinates are kept only within the U.S. and its territories as MSHA writes them (every longitude
 # negative, Guam's included); the rest (a longitude of -0.0003, a latitude of 90.99) are typing errors.
 PLAUSIBLE = "TRY_CAST(latitude AS DOUBLE) BETWEEN -15 AND 72 AND TRY_CAST(longitude AS DOUBLE) BETWEEN -180 AND -60"
-# Fatal, or with lost or restricted work days: by the day counts, or by a degree of injury that means days away from
-# work or restricted activity (03, 04, 05) before the counts are filled in.
-SERIOUS = ("coalesce(degree_injury_cd IN ('01', '03', '04', '05'), false) OR coalesce(days_lost, 0) > 0"
-           " OR coalesce(days_restrict, 0) > 0")
+# MSHA's S&S designation as a boolean by the shared mapping; null where no designation applies.
+SIG_SUB_SQL = "CASE sig_sub " + " ".join(f"WHEN '{code}' THEN {value}" for code, value in SIG_SUB.items()) + " END"
+# Joined to a mine's records, the mine's coal/metal flag as `mine_flag` (null when the mine is missing).
+MINE_FLAG = "LEFT JOIN (SELECT mine_id, coal_metal AS mine_flag FROM mine) USING (mine_id)"
+# The rules the marts and the named queries apply, stored in the warehouse as macros, so plain SQL (an analyst's too)
+# states none of them again.
+MACROS = {"is_fatal(degree)": f"coalesce(degree = '{FATAL_DEGREE}', false)", "is_injury(degree)": injury_sql("degree")}
 SECTION_SCHEMA = {"section": pl.String, "title": pl.Int32, "part": pl.Int32, "heading": pl.String, "text": pl.String,
                   "amended_on": pl.Date}
 DOCUMENT_SCHEMA = {"url": pl.String, "site": pl.String, "state": pl.String, "kind": pl.String,
@@ -58,13 +68,15 @@ DOCUMENT_SCHEMA = {"url": pl.String, "site": pl.String, "state": pl.String, "kin
 
 @dataclass(frozen=True)
 class Load:
-    """How one table is filled: its source relation, its key (named alike in source and table), and the SELECT list
-    that turns a source row into a table row."""
+    """How one table is filled: its source relation, its key (named alike in source and table), the SELECT list that
+    turns a source row into a table row, and, for a mine's records, the source column with the record's own coal/metal
+    flag (the table's `coal_metal` is the mine's flag, this one only when the mine is missing)."""
 
     table: str
     source: str
     key: tuple[str, ...]
     columns: str
+    own_flag: str | None = None
 
 
 LOADS = (
@@ -77,22 +89,22 @@ LOADS = (
         current_controller_id AS controller_id, current_controller_name AS controller_name,
         current_operator_id AS operator_id, current_operator_name AS operator_name"""),
     Load("inspection", "src_inspections", ("event_no",), """
-        event_no, mine_id, inspection_begin_dt AS begin_date, inspection_end_dt AS end_date, activity_code, activity,
-        coal_metal_ind AS coal_metal"""),
-    Load("violation", "src_violations", ("violation_no",), r"""
+        event_no, mine_id, inspection_begin_dt AS begin_date, inspection_end_dt AS end_date, activity_code, activity""",
+         own_flag="coal_metal_ind"),
+    Load("violation", "src_violations", ("violation_no",), f"""
         violation_no, event_no, mine_id, violation_issue_dt AS issue_date, violation_occur_dt AS occur_date,
-        part_section, nullif(regexp_extract(part_section, '^\d+\.\d+(-\d+)?'), '') AS cfr_section,
-        CASE sig_sub WHEN 'Y' THEN true WHEN 'N' THEN false END AS sig_sub, likelihood,
+        part_section, {cfr_section_sql("part_section")} AS cfr_section, {SIG_SUB_SQL} AS sig_sub, likelihood,
         inj_illness AS injury_illness, negligence, proposed_penalty, amount_paid, termination_dt AS termination_date,
-        coal_metal_ind AS coal_metal, mine_type"""),
+        mine_type""", own_flag="coal_metal_ind"),
     Load("accident", "src_accidents", ("document_no",), f"""
-        document_no, mine_id, accident_dt AS accident_date, degree_injury_cd, degree_injury, {SERIOUS} AS serious,
-        classification, accident_type, no_injuries::INTEGER AS no_injuries, days_lost::INTEGER AS days_lost,
-        days_restrict::INTEGER AS days_restrict, subunit, narrative, coal_metal_ind AS coal_metal, contractor_id"""),
+        document_no, mine_id, accident_dt AS accident_date, degree_injury_cd, degree_injury,
+        {serious_sql("degree_injury_cd")} AS serious, classification, accident_type,
+        no_injuries::INTEGER AS no_injuries, days_lost::INTEGER AS days_lost, days_restrict::INTEGER AS days_restrict,
+        subunit, narrative, contractor_id""", own_flag="coal_metal_ind"),
     Load("production_quarter", "src_mines_prod_quarterly", ("mine_id", "cal_yr", "cal_qtr", "subunit_cd"), """
         mine_id, cal_yr::INTEGER AS cal_yr, cal_qtr::INTEGER AS cal_qtr, subunit_cd,
         avg_employee_cnt::DOUBLE AS avg_employees, hours_worked::DOUBLE AS hours_worked,
-        coal_production::DOUBLE AS coal_production"""),
+        coal_production::DOUBLE AS coal_production""", own_flag="coal_metal_ind"),
     Load("cfr_section", "src_cfr_section", ("title", "section"), "section, title, part, heading, text, amended_on"),
     Load("document", "src_document", ("url",), f"""
         url, site, state, kind, content_type, bytes, sha256,
@@ -198,9 +210,19 @@ def stage(rows: Iterable[tuple], schema: dict[str, pl.DataType], folder: Path, n
     return count
 
 
-def load(con: duckdb.DuckDBPyConnection, spec: Load) -> dict:
+def table_rows(spec: Load, relation: str) -> str:
+    """The SELECT that turns rows with the source's columns into the table's rows; a mine's records get the commodity
+    of definitions.commodity_sql, the mine's flag before their own."""
+    if spec.own_flag is None:
+        return f"SELECT {spec.columns} FROM {relation}"
+    flag = commodity_sql("mine_flag", spec.own_flag)
+    return f"SELECT {spec.columns}, {flag} AS coal_metal FROM {relation} {MINE_FLAG}"
+
+
+def load(con: duckdb.DuckDBPyConnection, spec: Load) -> list[dict]:
     """Fill one table with one row per key. Every copy of a repeated key goes to duplicate_row; the first copy in the
-    order of its full source row (as JSON) is loaded. Returns the table's unique-key check."""
+    order of its full source row (as JSON) is loaded. Returns the table's checks: its unique key and, for a mine's
+    records, those whose own coal/metal flag is not their mine's."""
     key = ", ".join(spec.key)
     con.execute(f"CREATE OR REPLACE TEMP TABLE dup_keys AS SELECT {key} FROM {spec.source} GROUP BY ALL "
                 "HAVING count(*) > 1")
@@ -211,16 +233,34 @@ def load(con: duckdb.DuckDBPyConnection, spec: Load) -> dict:
         FROM {spec.source} s SEMI JOIN dup_keys USING ({key})""")
     con.execute(f"INSERT INTO duplicate_row SELECT {sql_text(spec.table)}, concat_ws('|', {key}), copy_no, "
                 "copy_no = 1, source_row FROM dup_rows")
-    con.execute(f"INSERT INTO {spec.table} BY NAME SELECT {spec.columns} FROM {spec.source} "
-                f"ANTI JOIN dup_keys USING ({key})")
-    con.execute(f"INSERT INTO {spec.table} BY NAME SELECT {spec.columns} FROM dup_rows WHERE copy_no = 1")
+    # The source rows loaded: every row of a unique key and the first copy of a repeated one.
+    con.execute(f"""
+        CREATE OR REPLACE TEMP VIEW kept AS
+        SELECT * FROM {spec.source} ANTI JOIN dup_keys USING ({key})
+        UNION ALL BY NAME SELECT * EXCLUDE (copy_no, source_row) FROM dup_rows WHERE copy_no = 1""")
+    con.execute(f"INSERT INTO {spec.table} BY NAME {table_rows(spec, 'kept')}")
     keys, copies = one(con, "SELECT count(*) FILTER (WHERE copy_no = 1), count(*) FILTER (WHERE copy_no > 1) "
                             "FROM dup_rows")
-    differing, = one(con, f"SELECT count(*) FROM (SELECT {key} FROM (SELECT DISTINCT {spec.columns} FROM dup_rows) "
-                          "GROUP BY ALL HAVING count(*) > 1)")
+    differing, = one(con, f"SELECT count(*) FROM (SELECT {key} FROM (SELECT DISTINCT * FROM "
+                          f"({table_rows(spec, 'dup_rows')})) GROUP BY ALL HAVING count(*) > 1)")
     detail = (f"{copies} extra copies of {keys} repeated keys not loaded (every copy is in duplicate_row); the copies "
               f"of {differing} keys differ in this table's columns") if keys else "every key is unique"
-    return {"name": f"unique_key:{spec.table}", "table_name": spec.table, "rows": keys, "detail": detail}
+    checks = [{"name": f"unique_key:{spec.table}", "table_name": spec.table, "rows": keys, "detail": detail}]
+    if spec.own_flag:
+        checks.append(commodity_check(con, spec))
+    return checks
+
+
+def commodity_check(con: duckdb.DuckDBPyConnection, spec: Load) -> dict:
+    """The loaded records whose own coal/metal flag is not their mine's (they count under the mine's), by flag."""
+    rows, groups = one(con, f"""
+        SELECT coalesce(sum(n), 0)::BIGINT,
+               string_agg(concat(n, ' flagged ', own, ' at ', mine_flag, ' mines'), ', ' ORDER BY own)
+        FROM (SELECT {spec.own_flag} AS own, mine_flag, count(*) AS n FROM kept {MINE_FLAG}
+              WHERE {commodity_sql("mine_flag", spec.own_flag)} <> {spec.own_flag} GROUP BY ALL)""")
+    detail = f"counted under their mine's flag: {groups}" if rows else "every record's own flag is its mine's"
+    return {"name": f"commodity_differs_from_mine:{spec.table}", "table_name": spec.table, "rows": rows,
+            "detail": detail}
 
 
 def reference_check(con: duckdb.DuckDBPyConnection, child: str, column: str, parent: str, parent_column: str) -> dict:
@@ -263,13 +303,13 @@ def stage_sources(con: duckdb.DuckDBPyConnection, data_root: Path, staging: Path
 
 
 def fill(con: duckdb.DuckDBPyConnection, data_root: Path, staging: Path) -> dict:
-    """Create and fill every table, check them, and create the marts."""
+    """Create and fill every table, check them, and create the macros and the marts."""
     con.execute((HERE / "schema.sql").read_text(encoding="utf-8"))
     info = {"built_at": utc_now(), "format": str(FORMAT)} | stage_sources(con, data_root, staging)
     checks = []
     for spec in LOADS:
         started = time.monotonic()
-        checks.append(load(con, spec))
+        checks += load(con, spec)
         log.info("loaded %s in %.1f s", spec.table, time.monotonic() - started)
     con.executemany("INSERT INTO dataset_version VALUES (?, ?, ?, ?, ?)",
                     dataset_versions(data_root / "lake" / "msha_ogd"))
@@ -283,6 +323,8 @@ def fill(con: duckdb.DuckDBPyConnection, data_root: Path, staging: Path) -> dict
                        "detail": f"no crawl catalog for {info['crawl.missing']}"})
     con.executemany("INSERT INTO build_check VALUES (?, ?, ?, ?)",
                     [(check["name"], check["table_name"], check["rows"], check["detail"]) for check in checks])
+    for signature, body in MACROS.items():
+        con.execute(f"CREATE MACRO {signature} AS {body}")
     con.execute((HERE / "marts.sql").read_text(encoding="utf-8"))
     counts = {table: one(con, f"SELECT count(*) FROM {table}")[0] for table in TABLES}
     return {"built_at": info["built_at"], "rows": counts,

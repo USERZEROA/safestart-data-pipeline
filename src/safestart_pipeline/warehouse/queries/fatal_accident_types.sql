@@ -11,6 +11,6 @@ SELECT
     count(*) AS fatalities,
     round(count(*) / sum(count(*)) OVER (), 3) AS share
 FROM accident a, bounds b
-WHERE a.degree_injury_cd = '01' AND a.accident_date > b.day - INTERVAL 10 YEAR
+WHERE is_fatal(a.degree_injury_cd) AND a.accident_date > b.day - INTERVAL 10 YEAR
 GROUP BY ALL
 ORDER BY fatalities DESC, classification;

@@ -1,5 +1,7 @@
 -- The warehouse's tables (docs/ERD.md describes each). Keys are PRIMARY KEY constraints; a source row a key rejects is
 -- kept in duplicate_row, and every rule the build checked is recorded in build_check, so nothing is dropped unseen.
+-- The coal_metal of a mine's records (inspection, violation, accident, production_quarter) is the commodity of their
+-- mine by the shared rule (definitions.commodity_sql), not the flag each record carries.
 
 CREATE TABLE mine (
     mine_id VARCHAR PRIMARY KEY,
@@ -70,6 +72,8 @@ CREATE TABLE accident (
     contractor_id VARCHAR
 );
 
+-- coal_metal is beyond the contract too: an injury rate divides a commodity's injuries by the hours worked under the
+-- same commodity, so the hours need their mine's commodity like the injuries.
 CREATE TABLE production_quarter (
     mine_id VARCHAR NOT NULL,
     cal_yr INTEGER NOT NULL,
@@ -78,6 +82,7 @@ CREATE TABLE production_quarter (
     avg_employees DOUBLE,
     hours_worked DOUBLE,
     coal_production DOUBLE,
+    coal_metal VARCHAR CHECK (coal_metal IN ('C', 'M')),
     PRIMARY KEY (mine_id, cal_yr, cal_qtr, subunit_cd)
 );
 

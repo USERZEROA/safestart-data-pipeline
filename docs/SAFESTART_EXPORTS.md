@@ -13,7 +13,12 @@ The export reads the warehouse read-only and writes three files into one folder.
 temporary name and renamed into place, and `manifest.json` is written last, so a manifest always describes complete
 files. An importer reads the manifest first, checks each file's `sha256`, and refuses a `format` it does not know.
 
-On 2026-11-23 the export took 2 seconds: 92,129 mine profiles (1.4 MB) and 1,789 cited sections (0.4 MB).
+On 2026-11-23 the export took half a second: 92,129 mine profiles (1.5 MB) and 1,789 cited sections (0.4 MB).
+
+The figures count by the definitions every pipeline component shares (`definitions.py`, docs/ERD.md), so a number in
+SafeStart matches the same number on the pipeline's dashboard: a serious accident is degree of injury 01 to 05, an
+injury is degree 01 to 06, a cited section is the section without its paragraph, and a mine's violations, accidents
+and hours all count under the mine's own commodity.
 
 ## mine_profiles.parquet
 
@@ -30,9 +35,9 @@ newest violation in the data (`window_12m` in the manifest), not the export date
 | `inspections_12m` | BIGINT | inspections begun in the 12 months |
 | `violations_12m`, `ss_violations_12m` | BIGINT | citations and orders issued, and those designated significant and substantial |
 | `proposed_penalty_12m` | DOUBLE | penalties proposed for them, in dollars (recent ones may not be assessed yet) |
-| `accidents_12m`, `serious_accidents_12m` | BIGINT | accident, injury and illness reports; those fatal or with lost or restricted days |
+| `accidents_12m`, `serious_accidents_12m` | BIGINT | accident, injury and illness reports; the serious ones: a death, a permanent disability, or days away from work or restricted (degree 01 to 05), whatever the day counts |
 | `hours_worked_12m` | DOUBLE | the operator's employee hours in the four latest reported quarters |
-| `injury_rate_12m` | DOUBLE | the operator's employees' reportable injuries per 200,000 hours in those quarters; null without hours |
+| `injury_rate_12m` | DOUBLE | the operator's employees' injuries (degree 01 to 06) per 200,000 hours in those quarters; null without hours |
 | `top_sections_12m` | LIST(STRUCT(section VARCHAR, heading VARCHAR)) | up to five most cited sections in the 12 months, most cited first, with their title 30 headings (null heading: not in today's CFR) |
 
 How SafeStart uses it:

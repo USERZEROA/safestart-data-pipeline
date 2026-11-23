@@ -32,8 +32,8 @@ CRAWL_SITES = ("osha", "msha", "arlweb")
 PDF = frozenset({".pdf"})
 OFFICE = frozenset({".doc", ".docx", ".docm", ".dot", ".rtf", ".odt", ".wpd", ".xls", ".xlsx", ".xlsm", ".ods", ".ppt",
                     ".pptx", ".pps", ".ppsx", ".odp", ".vsd", ".vss"})
-DATA = frozenset({".csv", ".txt", ".xml", ".json", ".zip", ".gz", ".tgz", ".tar", ".7z", ".rar", ".dat", ".mdb", ".accdb",
-                  ".db", ".kml", ".kmz"})
+DATA = frozenset({".csv", ".txt", ".xml", ".json", ".zip", ".gz", ".tgz", ".tar", ".7z", ".rar", ".dat", ".mdb",
+                  ".accdb", ".db", ".kml", ".kmz"})
 # Files the crawler's extension list does not name (it treats them as pages that might link onward).
 OTHER_FILES = frozenset({".wvx", ".avif"})
 # Parts of a section that are not its text: the heading (kept on its own), the provenance notes, and eCFR's links to an
@@ -50,7 +50,7 @@ def read_only(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
 
 
-# eCFR ------------------------------------------------------------------------------------------------------------------
+# eCFR -----------------------------------------------------------------------------------------------------------------
 
 
 def ecfr_file(data_root: Path, title: int) -> tuple[Path, str]:
@@ -147,7 +147,7 @@ def ecfr_amended(path: Path) -> str | None:
     return None
 
 
-# Crawl catalogs ---------------------------------------------------------------------------------------------------------
+# Crawl catalogs -------------------------------------------------------------------------------------------------------
 
 
 def kind_of(url: str) -> str:

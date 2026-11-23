@@ -7,10 +7,17 @@ the govinfo eCFR XML of titles 29 and 30 in the bulk store, and the three crawl 
 warehouse or the new one, never a half-built file.
 
 DuckDB rather than PostgreSQL holds the history because the questions are analytical scans over millions of rows on a
-4 GB host: DuckDB streams the lake's Parquet through SQL without a server, and the real build (3.1 million violations,
-2.8 million production rows) takes about 50 to 80 seconds with a peak working set of about 1 GB (the DuckDB memory
-limit is `SAFESTART_WAREHOUSE_MEMORY_LIMIT`, default `1GB`). PostgreSQL keeps only the live event stream
-(`stream/schema.sql`).
+4 GB host: DuckDB streams the lake's Parquet through SQL without a server. The real build of 2026-11-23 (3.1 million
+violations, 2.8 million production rows) took 30 seconds on a workstation with a peak working set of 1.1 GB (the
+DuckDB memory limit is `SAFESTART_WAREHOUSE_MEMORY_LIMIT`, default `1GB`) and wrote a 643 MB file. PostgreSQL keeps
+only the live event stream (`stream/schema.sql`).
+
+The derived columns follow the definitions every component shares (`src/safestart_pipeline/definitions.py`), so the
+warehouse, the stream, the model and the dashboard count the same things: an accident is serious when its degree of
+injury is 01 to 05, an injury is degree 01 to 06, a violation's cited section is the section its citation names
+without the paragraph, and the commodity (`coal_metal`) of an inspection, violation, accident or production report is
+its mine's. The marts and the named queries are plain SQL, so the build stores the rules they apply as macros made from
+the same definitions, `is_fatal(degree)` and `is_injury(degree)`; an analyst's own SQL can call them too.
 
 ```mermaid
 erDiagram
@@ -47,7 +54,7 @@ erDiagram
         DATE end_date
         VARCHAR activity_code
         VARCHAR activity
-        VARCHAR coal_metal
+        VARCHAR coal_metal "its mine's"
     }
     violation {
         VARCHAR violation_no PK
@@ -64,7 +71,7 @@ erDiagram
         DOUBLE proposed_penalty
         DOUBLE amount_paid
         DATE termination_date
-        VARCHAR coal_metal
+        VARCHAR coal_metal "its mine's"
         VARCHAR mine_type
     }
     accident {
@@ -73,7 +80,7 @@ erDiagram
         DATE accident_date
         VARCHAR degree_injury_cd
         VARCHAR degree_injury
-        BOOLEAN serious "fatal, lost or restricted days"
+        BOOLEAN serious "degree of injury 01 to 05"
         VARCHAR classification
         VARCHAR accident_type
         INTEGER no_injuries
@@ -81,7 +88,7 @@ erDiagram
         INTEGER days_restrict
         VARCHAR subunit
         VARCHAR narrative
-        VARCHAR coal_metal
+        VARCHAR coal_metal "its mine's"
         VARCHAR contractor_id "null for the operator's own employees"
     }
     production_quarter {
@@ -92,6 +99,7 @@ erDiagram
         DOUBLE avg_employees
         DOUBLE hours_worked
         DOUBLE coal_production
+        VARCHAR coal_metal "its mine's"
     }
     cfr_section {
         INTEGER title PK "29 or 30"
@@ -142,29 +150,42 @@ mines with coordinates hold typing errors (a longitude of -0.0003, a latitude of
 
 One row per inspection or other enforcement event (`event_no`), from the lake's `inspections`. MSHA's file lists event
 4165469 twice, once per controller; the warehouse keeps one copy (both are identical in these columns) and both are in
-`duplicate_row`.
+`duplicate_row`. `coal_metal` is the mine's commodity, which every inspection's own flag matches.
 
 ### violation (3,115,805 rows)
 
-One row per citation or order, from the lake's `violations`. `cfr_section` is `part_section` without its paragraph
-suffix: the leading `part.section` number with any `-n` suffix, which is a section of its own in the CFR
-(`56.14107(a)` is `56.14107`, `75.1100-2(b)` is `75.1100-2`, the mistyped `77.403-ag` is `77.403`); 3,081,904 rows have
-one, the rest cite no section. `sig_sub` is true for an S&S violation, false when the inspector marked it not S&S, and
-null when no designation applies (48,534 rows, almost all orders and safeguards). MSHA's file lists 51 violations twice,
-once per contest docket; the copies are identical in these columns, so one is kept and both are in `duplicate_row`.
+One row per citation or order, from the lake's `violations`. `cfr_section` is the section the citation names, by the
+shared rule: the leading `part.section` number with any `-n` suffix, which is a section of its own in the CFR, without
+the paragraph (`56.14107(a)` is `56.14107`, `75.1100-2(b)` is `75.1100-2`, `56.5001(a)/.5005` is `56.5001`, the
+mistyped `77.403-ag` is `77.403`); 3,081,904 rows have one, the rest cite no section. `sig_sub` is true for an S&S
+violation, false when the inspector marked it not S&S, and null when no designation applies (48,534 rows, almost all
+orders and safeguards). MSHA's file lists 51 violations twice, once per contest docket; the copies are identical in
+these columns, so one is kept and both are in `duplicate_row`.
+
+`coal_metal` is the mine's commodity, not the flag the violation carries: 89,673 violations carry the other one (67,619
+flagged coal at metal and non-metal mines, 22,054 the reverse), almost all issued since 2019 (5,700 to 13,500 a year,
+fewer than 200 a year before), and count under their mine's, so a mine's violations, accidents and hours share one
+commodity.
 
 ### accident (276,013 rows)
 
 One row per accident, injury or illness report (one person per report), from the lake's `accidents`. `serious` is
-true when the accident was fatal or cost lost or restricted work days: degree of injury `01` (fatality), any
-`days_lost` or `days_restrict`, or degree `03`, `04` or `05`, which mean days away from work or restricted activity even
-before the day counts are filled in (160,872 rows). `contractor_id` goes beyond the warehouse contract: an injury rate
-over the hours mine operators report must leave out contractors' employees, whose hours are reported separately.
+true when the degree of injury is `01` to `05`: a death, a permanent disability, or days away from work or of
+restricted activity (157,657 rows). The day counts play no part: the degree is set when the accident is reported,
+while the counts arrive once the miner is back at work, and counts also appear on illnesses and other cases that are
+not injuries. Compared with also counting every report with lost or restricted days, the rule adds 866 permanent
+disabilities without counts and leaves out 4,081 reports with counts (3,542 occupational illnesses, 430 natural
+causes, 47 non-employees, 6 other cases, 56 without a degree). `coal_metal` is the mine's commodity, which every
+accident's own flag matches. `contractor_id` goes beyond the warehouse contract: an injury rate over the hours mine
+operators report must leave out contractors' employees, whose hours are reported separately.
 
 ### production_quarter (2,784,528 rows)
 
 Employment, hours and coal production per mine, calendar quarter and subunit (underground, surface, mill, office ...),
 from the lake's `mines_prod_quarterly` (2000 to 2026 Q3). The hours are those of the mine operator's employees.
+`coal_metal` goes beyond the contract too: the mine's commodity, so an injury rate divides a commodity's injuries by
+the hours worked under the same commodity. 784 reports carry the other flag (766 flagged coal at metal and non-metal
+mines, 18 the reverse) and count under their mine's.
 
 ### cfr_section (13,216 rows)
 
@@ -198,8 +219,10 @@ marks the version the lake serves (the one the warehouse was built from, for the
 
 Views over the tables, so they always agree with them; each answers in under 0.2 seconds on the real warehouse.
 "12m" is the 12 months up to the newest violation issue date in the data (here 2025-11-22 to 2026-11-21), not today's
-date. An injury in a rate is a reportable injury (degree `01` to `06`) to a mine operator's employee, the people whose
-hours `production_quarter` holds, and a rate pairs a quarter's injuries with the same quarter's hours.
+date. An injury in a rate is an injury by the shared rule (`is_injury`, degree `01` to `06`) to a mine operator's
+employee, the people whose hours `production_quarter` holds, and a rate pairs a quarter's injuries with the same
+quarter's hours. A commodity's violations, injuries and hours are those whose `coal_metal`, their mine's, is that
+commodity.
 
 | View | One row per | Columns |
 |---|---|---|
@@ -216,15 +239,20 @@ the window's end (2025 Q4 to 2026 Q3 here), since hours are reported per quarter
 
 | Table | Holds |
 |---|---|
-| `build_info` | `built_at`, the format version, each eCFR title's SHA-256 and amendment date, the crawl catalogs read |
+| `build_info` | `built_at`, the format version (2 since the shared definitions), each eCFR title's SHA-256 and amendment date, the crawl catalogs read |
 | `build_check` | every rule the build verified, with the rows it affected and a detail (below) |
 | `duplicate_row` | every copy of every repeated key, as its full source row in JSON, the loaded copy flagged `kept` |
+
+The warehouse also holds the macros `is_fatal(degree)` and `is_injury(degree)`, the shared rules for plain SQL.
 
 The checks of the 2026-11-23 build:
 
 | Check | Rows | Detail |
 |---|---:|---|
 | `unique_key:<table>` | 1 (inspection), 51 (violation), 0 elsewhere | repeated keys; their copies are identical in the warehouse's columns |
+| `commodity_differs_from_mine:violation` | 89,673 | violations whose own flag is not their mine's (67,619 coal at metal and non-metal mines, 22,054 the reverse); they count under the mine's |
+| `commodity_differs_from_mine:production_quarter` | 784 | production reports whose own flag is not their mine's (766 coal at metal and non-metal mines, 18 the reverse) |
+| `commodity_differs_from_mine:<table>` | 0 (inspection, accident) | every inspection's and accident's own flag is its mine's |
 | `reference:violation.event_no` | 103 | violations whose inspection is not in the inspection file (`6929559`, `F00332A` ...) |
 | `reference:<table>.mine_id` | 0 | every mine referred to is in `mine` |
 | `cited_section_not_in_title_30` | 5,040 | 103 cited numbers have no text in today's title 30 (`75.383`, `70.207`, `75.1101-23` ...) |

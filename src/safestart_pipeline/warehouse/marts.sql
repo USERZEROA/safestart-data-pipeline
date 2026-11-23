@@ -4,8 +4,9 @@
 -- from an older download describes that download's last year. Hours are reported per calendar quarter, so an injury
 -- rate pairs a quarter's injuries with the same quarter's hours: the yearly rate counts only quarters with reported
 -- hours, and the 12-month rate uses the four latest quarters with reported hours that end by the window's end.
--- An injury here is a reportable injury to a mine operator's employee (degree of injury 01 to 06, no contractor), the
--- people whose hours production_quarter holds; the rate is per 200,000 hours (100 full-time workers for a year).
+-- An injury here is an injury by the shared rule (the is_injury macro the build makes from definitions.py) to a mine
+-- operator's employee (no contractor), the people whose hours production_quarter holds; the rate is per 200,000 hours
+-- (100 full-time workers for a year). A record counts under its coal_metal, which is its mine's commodity.
 
 CREATE VIEW mart_top_cited_sections AS
 SELECT
@@ -63,7 +64,7 @@ WITH bounds AS (
 ), injuries AS (
     SELECT a.mine_id, count(*) AS injuries
     FROM accident a, rate_quarters r
-    WHERE a.degree_injury_cd IN ('01', '02', '03', '04', '05', '06') AND a.contractor_id IS NULL
+    WHERE is_injury(a.degree_injury_cd) AND a.contractor_id IS NULL
       AND year(a.accident_date) * 4 + quarter(a.accident_date) - 1 BETWEEN r.last_quarter - 3 AND r.last_quarter
     GROUP BY a.mine_id
 )
@@ -99,16 +100,14 @@ GROUP BY year(issue_date), coal_metal;
 
 CREATE VIEW mart_injury_rate AS
 WITH hours AS (
-    SELECT p.cal_yr AS year, p.cal_qtr AS quarter, m.coal_metal, sum(p.hours_worked) AS hours_worked
+    SELECT p.cal_yr AS year, p.cal_qtr AS quarter, p.coal_metal, sum(p.hours_worked) AS hours_worked
     FROM production_quarter p
-    JOIN mine m ON m.mine_id = p.mine_id
-    GROUP BY p.cal_yr, p.cal_qtr, m.coal_metal
+    GROUP BY p.cal_yr, p.cal_qtr, p.coal_metal
 ), injuries AS (
-    SELECT year(a.accident_date) AS year, quarter(a.accident_date) AS quarter, m.coal_metal, count(*) AS injuries
+    SELECT year(a.accident_date) AS year, quarter(a.accident_date) AS quarter, a.coal_metal, count(*) AS injuries
     FROM accident a
-    JOIN mine m ON m.mine_id = a.mine_id
-    WHERE a.degree_injury_cd IN ('01', '02', '03', '04', '05', '06') AND a.contractor_id IS NULL
-    GROUP BY year(a.accident_date), quarter(a.accident_date), m.coal_metal
+    WHERE is_injury(a.degree_injury_cd) AND a.contractor_id IS NULL
+    GROUP BY year(a.accident_date), quarter(a.accident_date), a.coal_metal
 )
 SELECT
     h.year,

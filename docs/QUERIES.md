@@ -12,6 +12,10 @@ The results below come from the warehouse built on 2026-11-23 from the lake's cu
 and the crawl catalogs as of 2026-11-23. "Last 12 months" means up to the newest violation, 2026-11-21; "last
 ten years" up to the newest accident. Each query ran in under 0.2 seconds.
 
+The queries count by the definitions every component shares (`definitions.py`, docs/ERD.md): a fatality is degree of
+injury 01 and an injury 01 to 06 (the warehouse's `is_fatal` and `is_injury` macros), a serious accident is degree 01
+to 05 whatever its day counts, and a record's commodity is its mine's.
+
 ## Which standards do MSHA inspectors cite most often, and what do they require?
 
 `queries/top_cited_sections.sql`. The most cited standards are the conditions crews most often leave uncontrolled, so
@@ -72,38 +76,41 @@ only as the reserved range 70.206-70.207: a link to the current text cannot expl
 `queries/ss_share_trend.sql`. An S&S violation is one the inspector judged reasonably likely to cause a serious injury;
 a falling share means fewer of the conditions cited are the dangerous kind.
 
-The S&S share of coal violations fell from 41.6% in 2000 to 17.6% in 2026, and at metal and non-metal mines from 30.5%
-to 17.5%; since about 2015 the two commodities move together.
+The S&S share of coal violations fell from 41.6% in 2000 to 19.0% in 2026, and at metal and non-metal mines from 30.5%
+to 16.7%; since 2012 the two shares stay within 2.5 points of each other. Each violation counts under its mine's
+commodity: since 2019, 5,700 to 13,500 violations a year carry the other commodity's flag, mostly coal-flagged
+citations at metal and non-metal mines, and counting them by that flag would add 8% to 26% to coal's violations in
+those years.
 
 | year | coal_violations | coal_ss_share | mnm_violations | mnm_ss_share |
 |---:|---:|---:|---:|---:|
-| 2000 | 55,829 | 0.416 | 60,933 | 0.305 |
-| 2001 | 66,544 | 0.4 | 58,118 | 0.273 |
-| 2002 | 56,218 | 0.38 | 48,184 | 0.255 |
-| 2003 | 55,796 | 0.388 | 52,867 | 0.241 |
-| 2004 | 62,865 | 0.408 | 56,210 | 0.235 |
-| 2005 | 68,046 | 0.387 | 58,711 | 0.229 |
-| 2006 | 76,264 | 0.386 | 62,371 | 0.23 |
-| 2007 | 83,097 | 0.341 | 59,900 | 0.214 |
-| 2008 | 105,520 | 0.314 | 66,718 | 0.206 |
-| 2009 | 100,489 | 0.297 | 71,098 | 0.29 |
-| 2010 | 95,270 | 0.316 | 73,690 | 0.314 |
-| 2011 | 92,133 | 0.309 | 63,242 | 0.255 |
-| 2012 | 77,958 | 0.271 | 60,064 | 0.251 |
-| 2013 | 62,566 | 0.26 | 54,947 | 0.237 |
-| 2014 | 61,962 | 0.246 | 58,487 | 0.237 |
-| 2015 | 48,504 | 0.229 | 58,263 | 0.243 |
-| 2016 | 39,937 | 0.208 | 56,398 | 0.224 |
-| 2017 | 46,208 | 0.207 | 57,742 | 0.215 |
-| 2018 | 46,217 | 0.206 | 50,602 | 0.203 |
-| 2019 | 46,392 | 0.19 | 52,067 | 0.197 |
-| 2020 | 35,366 | 0.177 | 41,785 | 0.18 |
-| 2021 | 35,434 | 0.191 | 41,128 | 0.189 |
-| 2022 | 42,223 | 0.197 | 45,059 | 0.185 |
-| 2023 | 45,234 | 0.185 | 49,703 | 0.188 |
-| 2024 | 44,646 | 0.181 | 49,153 | 0.173 |
-| 2025 | 37,834 | 0.166 | 45,997 | 0.174 |
-| 2026 | 31,927 | 0.176 | 41,846 | 0.175 |
+| 2000 | 55,818 | 0.416 | 60,944 | 0.305 |
+| 2001 | 66,533 | 0.4 | 58,129 | 0.273 |
+| 2002 | 56,213 | 0.38 | 48,189 | 0.255 |
+| 2003 | 55,793 | 0.388 | 52,870 | 0.241 |
+| 2004 | 62,850 | 0.408 | 56,225 | 0.235 |
+| 2005 | 68,033 | 0.387 | 58,724 | 0.229 |
+| 2006 | 76,238 | 0.386 | 62,397 | 0.23 |
+| 2007 | 83,076 | 0.341 | 59,921 | 0.214 |
+| 2008 | 105,497 | 0.314 | 66,741 | 0.206 |
+| 2009 | 100,473 | 0.296 | 71,114 | 0.29 |
+| 2010 | 95,256 | 0.316 | 73,704 | 0.314 |
+| 2011 | 92,116 | 0.309 | 63,259 | 0.255 |
+| 2012 | 77,948 | 0.271 | 60,074 | 0.251 |
+| 2013 | 62,553 | 0.26 | 54,960 | 0.237 |
+| 2014 | 61,956 | 0.246 | 58,493 | 0.237 |
+| 2015 | 48,498 | 0.229 | 58,269 | 0.243 |
+| 2016 | 39,924 | 0.208 | 56,411 | 0.224 |
+| 2017 | 46,198 | 0.207 | 57,752 | 0.215 |
+| 2018 | 46,114 | 0.206 | 50,705 | 0.203 |
+| 2019 | 42,856 | 0.19 | 55,603 | 0.196 |
+| 2020 | 28,117 | 0.173 | 49,034 | 0.181 |
+| 2021 | 28,942 | 0.184 | 47,620 | 0.194 |
+| 2022 | 36,172 | 0.196 | 51,110 | 0.187 |
+| 2023 | 38,698 | 0.187 | 56,239 | 0.186 |
+| 2024 | 38,653 | 0.188 | 55,146 | 0.17 |
+| 2025 | 32,820 | 0.174 | 51,011 | 0.168 |
+| 2026 | 27,569 | 0.19 | 46,204 | 0.167 |
 
 ## How many reportable injuries to mine employees occur per 200,000 hours worked (100 full-time workers for a year), by year, in coal and in metal and non-metal mines?
 
@@ -177,36 +184,38 @@ highwall kill more coal miners (12) than any classification but those two.
 address; ranking by serious outcomes rather than counts alone shows where a missed control hurts people most.
 
 Handling materials has the most accidents and the most serious ones; powered haulage causes the most deaths (27), and
-falls of roof are frequent but mostly not serious (26%).
+falls of roof are frequent but mostly not serious (26%). Illnesses are reported as accidents but are never serious,
+since only an injury's degree makes an accident serious: none of the 443 cases of dust disease of the lungs or the 334
+repeated-trauma disorders counts, whatever days away from work they cost.
 
 | classification | accidents | serious | fatal | serious_share |
 |---|---:|---:|---:|---:|
-| HANDLING OF MATERIALS | 4,758 | 3,481 | 0 | 0.732 |
+| HANDLING OF MATERIALS | 4,758 | 3,491 | 0 | 0.734 |
 | SLIP OR FALL OF PERSON | 1,946 | 1,696 | 0 | 0.872 |
-| MACHINERY | 1,692 | 1,153 | 10 | 0.681 |
-| POWERED HAULAGE | 1,191 | 971 | 27 | 0.815 |
-| FALL OF ROOF OR BACK | 3,387 | 880 | 9 | 0.26 |
-| HANDTOOLS (NONPOWERED) | 1,378 | 627 | 0 | 0.455 |
-| FALL OF FACE/RIB/PILLAR/SIDE/HIGHWALL | 346 | 291 | 9 | 0.841 |
+| MACHINERY | 1,692 | 1,162 | 10 | 0.687 |
+| POWERED HAULAGE | 1,191 | 976 | 27 | 0.819 |
+| FALL OF ROOF OR BACK | 3,387 | 884 | 9 | 0.261 |
+| HANDTOOLS (NONPOWERED) | 1,378 | 631 | 0 | 0.458 |
+| FALL OF FACE/RIB/PILLAR/SIDE/HIGHWALL | 346 | 292 | 9 | 0.844 |
 | STEPPING OR KNEELING ON OBJECT | 226 | 216 | 0 | 0.956 |
-| DISORDERS (REPEATED TRAUMA) | 334 | 191 | 0 | 0.572 |
-| OTHER | 218 | 172 | 1 | 0.789 |
+| OTHER | 218 | 163 | 1 | 0.748 |
 | STRIKING OR BUMPING | 190 | 98 | 0 | 0.516 |
 | EXPLODING VESSELS UNDER PRESSURE | 97 | 73 | 0 | 0.753 |
 | ELECTRICAL | 92 | 68 | 3 | 0.739 |
 | FALLING/SLIDING/ROLLING MATERIALS | 93 | 62 | 0 | 0.667 |
 | NONPOWERED HAULAGE | 23 | 19 | 0 | 0.826 |
-| ALL OTHER OCCUPATIONAL ILLNESSES | 18 | 14 | 0 | 0.778 |
-| DISORDERS (PHYSICAL AGENTS) | 17 | 8 | 0 | 0.471 |
-| OCCUPATIONAL SKIN DISEASES | 9 | 7 | 0 | 0.778 |
 | HOISTING | 379 | 5 | 0 | 0.013 |
 | FIRE | 39 | 5 | 0 | 0.128 |
-| DUST DISEASE OF LUNGS | 443 | 4 | 0 | 0.009 |
 | IGNITION OR EXPLOSION OF GAS OR DUST | 101 | 3 | 0 | 0.03 |
 | INUNDATION | 73 | 3 | 1 | 0.041 |
-| POISONING (TOXIC MATERIALS) | 4 | 2 | 0 | 0.5 |
 | EXPLOSIVES AND BREAKING AGENTS | 2 | 1 | 0 | 0.5 |
+| DUST DISEASE OF LUNGS | 443 | 0 | 0 | 0 |
+| DISORDERS (REPEATED TRAUMA) | 334 | 0 | 0 | 0 |
 | ENTRAPMENT | 76 | 0 | 0 | 0 |
+| ALL OTHER OCCUPATIONAL ILLNESSES | 18 | 0 | 0 | 0 |
+| DISORDERS (PHYSICAL AGENTS) | 17 | 0 | 0 | 0 |
+| OCCUPATIONAL SKIN DISEASES | 9 | 0 | 0 | 0 |
+| POISONING (TOXIC MATERIALS) | 4 | 0 | 0 | 0 |
 | IMPOUNDMENT | 1 | 0 | 0 | 0 |
 
 ## What penalty does MSHA propose per S&S violation in each district, over the last three years of data?
@@ -238,7 +247,7 @@ C07. Every median is far below its mean: a few large penalties raise the average
 `queries/riskiest_active_mines.sql`. This is the scorecard SafeStart shows before a shift; where S&S citations and
 injuries are both high, a thorough pre-shift assessment matters most.
 
-All fifteen are underground coal mines. Marshall County Mine (WV) combines 154 S&S violations with 151 serious accidents
+All fifteen are underground coal mines. Marshall County Mine (WV) combines 154 S&S violations with 147 serious accidents
 and an injury rate of 13.85, more than four times the coal average of about 3; No 7 Mine (AL) has the most S&S
 violations but a rate of 1.5.
 
@@ -247,18 +256,18 @@ violations but a rate of 1.5.
 | 0101401 | No 7 Mine | AL | C | Underground | 108 | 727 | 233 | 8 | 1.5 | 75.400, 75.202, 75.220 |
 | 0100851 | Oak Grove Mine | AL | C | Underground | 133 | 788 | 209 | 46 | 8.9 | 75.400, 75.220, 75.202 |
 | 1517216 | CARDINAL | KY | C | Underground | 99 | 613 | 165 | 29 | 6.32 | 75.220, 75.370, 75.517 |
-| 4601437 | MARSHALL COUNTY MINE | WV | C | Underground | 160 | 1,074 | 154 | 151 | 13.85 | 75.400, 75.333, 75.202 |
-| 4609522 | ROAD FORK #52 MINE | WV | C | Underground | 114 | 800 | 153 | 13 | 4.73 | 75.370, 75.400, 75.342 |
+| 4601437 | MARSHALL COUNTY MINE | WV | C | Underground | 160 | 1,074 | 154 | 147 | 13.85 | 75.400, 75.333, 75.202 |
+| 4609522 | ROAD FORK #52 MINE | WV | C | Underground | 114 | 800 | 153 | 12 | 4.73 | 75.370, 75.400, 75.342 |
 | 0102901 | Shoal Creek Mine | AL | C | Underground | 96 | 497 | 146 | 4 | 1.46 | 75.400, 75.202, 75.333 |
 | 0101247 | No 4 Mine | AL | C | Underground | 96 | 510 | 143 | 9 | 2.1 | 75.202, 75.400, 75.220 |
 | 4609029 | Mountaineer II Mine | WV | C | Underground | 99 | 613 | 122 | 8 | 2.5 | 75.400, 75.512, 75.370 |
-| 4601433 | Marion County Mine | WV | C | Underground | 154 | 552 | 122 | 56 | 8.75 | 75.400, 75.1403, 75.202 |
+| 4601433 | Marion County Mine | WV | C | Underground | 154 | 552 | 122 | 57 | 8.75 | 75.400, 75.1403, 75.202 |
 | 1103147 | Prairie Eagle-Underground | IL | C | Underground | 51 | 498 | 107 | 13 | 6.74 | 75.503, 75.400, 75.220 |
-| 1103189 | MC#1 Mine | IL | C | Underground | 84 | 389 | 98 | 14 | 6.88 | 75.400, 75.370, 75.1731 |
-| 4404856 | Buchanan Mine #1 | VA | C | Underground | 93 | 497 | 94 | 20 | 3.12 | 75.400, 75.370, 75.403 |
+| 1103189 | MC#1 Mine | IL | C | Underground | 84 | 389 | 98 | 13 | 6.88 | 75.400, 75.370, 75.1731 |
+| 4404856 | Buchanan Mine #1 | VA | C | Underground | 93 | 497 | 94 | 22 | 3.12 | 75.400, 75.370, 75.403 |
 | 4605437 | Speed Mine | WV | C | Underground | 90 | 344 | 94 | 3 | 1.48 | 75.370, 75.400, 75.202 |
 | 0103448 | Blue Creek Mine No. 1 | AL | C | Underground | 89 | 288 | 94 | 7 | 1.88 | 75.202, 75.400, 75.220 |
-| 1502709 | Henderson County Mine | KY | C | Underground | 12 | 366 | 87 | 33 | 9.76 | 75.517, 75.503, 75.604 |
+| 1502709 | Henderson County Mine | KY | C | Underground | 12 | 366 | 87 | 34 | 9.76 | 75.517, 75.503, 75.604 |
 
 ## Which mines' violation counts rose the most in the last 12 months compared with the 12 months before?
 
