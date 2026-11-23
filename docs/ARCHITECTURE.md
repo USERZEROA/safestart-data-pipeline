@@ -111,8 +111,10 @@ record becomes the same event whichever path finds it.
 | `regulation` | Federal Register document number | `agency`, `document_number`, `type`, `html_url`, `publication_date` |
 
 A page_change key holds the change and the lastmod, so a change is reported once while a later edit of the same page is
-reported again. An event is serious, for the counts, when it is a violation with `sig_sub` true or an accident with
-`serious` true.
+reported again; a page the crawl never recorded is `added` once, and a later lastmod of it is `changed`. An event is
+serious, for the counts, when it is a violation with `sig_sub` true or an accident with `serious` true. A replayed
+event's `source` holds its dataset, the lake version it was read from and `through`, the last source day of its replay
+pass, which the analytics consumer's clock reads.
 
 ## Streaming
 
@@ -120,7 +122,10 @@ reported again. An event is serious, for the counts, when it is a violation with
   107(a) orders and accidents, one month at a time in source-time order. `--start` (default 2024-01-01) and `--until`
   bound the source days; `--day-seconds` (default 5) is the wall time of one source day, 0 sending as fast as the
   broker takes them; `--max-rate` caps the events per second; `--loop` starts again from `--start` after the newest
-  record, and the unchanged event ids keep the consumers from storing or counting anything twice.
+  record, and the unchanged event ids keep the consumers from storing or counting anything twice. Each event carries
+  the last source day of its pass (`source.through`), known before the first is sent. Without a lake (a data root the
+  orchestrator's first batch has not filled yet) the replay says so once and looks again every 5 minutes, honoring a
+  stop, instead of failing and being restarted over and over; Compose restarts it only after a failure.
 - **Storage consumer** (group `safestart-storage`): every valid event into `stream.events`, keyed by `event_id`, with
   the topic, partition and offset where it first arrived. Offsets are committed after the database transaction.
 - **Analytics consumer** (group `safestart-analytics`): counts per source day, kind and district into
@@ -130,19 +135,33 @@ reported again. An event is serious, for the counts, when it is a violation with
 - **Forecasts** (`stream.forecasts`, method `ewma-weekday(alpha=0.1,weeks=26,k=3.0)`): enforcement follows the work
   week, so each day of a series (kind, district) is forecast one step ahead from the same weekday in the previous 26
   weeks by an exponentially weighted moving average (smoothing 0.1). The residual is observed minus predicted; a day is
-  an anomaly when the residual exceeds three scales, the scale being the weighted standard deviation of those weeks but
-  at least that of a Poisson count and at least 1, and only after four weeks of history. A day is forecast once every
-  partition has moved past it, and a late event recomputes the forecasts that depend on its day. Evaluated on the
-  lake's 52 enforcement series (4 kinds by 13 districts, January 2024 to November 2026): a mean absolute error of 3.65
-  events per series-day, against 7.1 for the best plain day-to-day EWMA and 3.9 to 4.0 for shorter memories; 1.5% of
-  the judged series-days are flagged, such as 2024-05-22, when MSHA opened 1,664 Special Emphasis Program inspections.
+  an anomaly when |observed - predicted| exceeds three scales, so unusually low days such as public holidays are
+  flagged as well as high ones, the scale being the weighted standard deviation of those weeks but at least that of a
+  Poisson count (the square root of the forecast) and at least 1, and only after four weeks of history. A late event
+  recomputes the forecasts that depend on its day. Evaluated on the lake's 52 enforcement series (4 kinds by 13
+  districts, January 2024 to November 2026): a mean absolute error of 3.65 events per series-day, against 6.3 for the
+  best plain day-to-day EWMA (smoothing 1, yesterday's count; 7.1 with smoothing 0.1) and 3.9 to 4.0 for shorter
+  memories; 1.5% of the judged series-days are flagged, such as 2024-05-22, when MSHA opened 1,664 Special Emphasis
+  Program inspections.
+- **The forecasts' clock**: a day is forecast once every partition has moved past it or been read to its end. While
+  a replay pass is under way (the topic has not carried its stamped last day yet), a partition stands at its newest
+  replayed day, and the watchers' live events, often far ahead of the replay, are counted but never move the clock;
+  once the pass has reached its last day, a partition stands at the newer of its replayed and live days, so the days
+  the watchers find afterwards are forecast without a restart. An empty store waits for the replay's first event on
+  `msha.enforcement`; `safety.sources`, which no replay feeds, follows its live days throughout.
+  `scripts/smoke_test.py` dates its synthetic events on the stream's first day, so they never move the clock.
 - **Watchers** (`python -m safestart_pipeline.watch once|loop`): new dataset versions every 6 hours (record diffs of
-  consecutive lake versions), MSHA's sitemaps every 6 hours and OSHA's once a day (against the crawl inventories, never
-  while that site's crawl runs), the Federal Register every hour. Every request obeys robots.txt and the host's pacing,
-  redirects included (`watch/polite.py`). Their state (`SAFESTART_WATCH_STATE`, a small SQLite file) remembers every
-  event published, the versions compared and when each source was checked; the version check spills DuckDB's overflow
-  into a folder beside it. They log to standard error and to `SAFESTART_WATCH_LOG` unless it is `-`. Every check is
-  recorded in `stream.source_checks`.
+  consecutive lake versions), MSHA's sitemaps every 6 hours and OSHA's once a day (against the crawl inventories, not
+  while that site's crawl runs), the Federal Register every hour. A version in which too many records look new (its
+  keys or format changed) is refused: an error in that check, nothing announced, and the baseline of the next
+  version. Where the watcher can write the data root's state folder it holds the crawl's lock while it reads a site's
+  sitemaps; where it cannot (the containers, whose file locks do not reach a crawl on the host either), it skips a
+  site while that crawl's inventory, its `-wal` or a download in progress (`raw/<site>/objects/tmp`) changed in the
+  last 15 minutes. Every request obeys robots.txt and the host's pacing, redirects and failed requests included
+  (`watch/polite.py`). Their state (`SAFESTART_WATCH_STATE`, a small SQLite file) remembers every event published, the
+  versions compared (refused ones marked) and when each source was checked; the version check spills DuckDB's
+  overflow into a folder beside it. They log to standard error and to `SAFESTART_WATCH_LOG` unless it is `-`. Every
+  check is recorded in `stream.source_checks`.
 
 ## Stores
 
@@ -179,7 +198,7 @@ lines reach their Prefect logs through `PREFECT_LOGGING_EXTRA_LOGGERS`.
 | `python -m safestart_pipeline.stream.init` | Creates the Kafka topics and the PostgreSQL schema |
 | `python -m safestart_pipeline.stream.replay` | Replays enforcement history through Kafka |
 | `python -m safestart_pipeline.stream.storage` / `.analytics` | The two consumer groups |
-| `python -m safestart_pipeline.watch` | Runs the live watchers on their schedules |
+| `python -m safestart_pipeline.watch once\|loop` | Runs the due live watchers once, or on their schedules |
 | `python -m safestart_pipeline.flows serve` | Runs the batch and model flows on their schedules |
 | `python -m safestart_pipeline.ml train` | Builds features and trains the accident-risk model |
 | `streamlit run src/safestart_pipeline/dashboard/app.py` | The dashboard |
@@ -188,8 +207,10 @@ lines reach their Prefect logs through `PREFECT_LOGGING_EXTRA_LOGGERS`.
 
 `docker-compose.yml` runs every service above on one host from one image, and `docs/DEPLOYMENT.md` explains it. Every
 service mounts the data root read-only at `/data` except the orchestrator; the watchers keep their state in a volume
-of their own and log to standard error, which Docker keeps and rotates. Where the data root is read-only no crawl can
-run, so the sitemap watcher asks a site without the crawl's lock there.
+of their own and log to standard error, which Docker keeps and rotates. A read-only mount does not mean that no crawl
+runs: on a workstation the crawls run on the host into the folder the stack mounts. The containerized sitemap watcher
+cannot take the crawl's lock there, and a file lock would not cross Docker Desktop's file sharing anyway, so it skips
+a site whose crawl wrote its inventory or a download in the last 15 minutes (see Watchers).
 
 ## Constraints
 
