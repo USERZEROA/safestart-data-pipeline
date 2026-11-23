@@ -69,6 +69,27 @@ def test_an_unreachable_robots_txt_allows_nothing_and_a_missing_one_everything()
     assert missing.get("https://www.example.test/page").status == 200
 
 
+@pytest.mark.parametrize("failure, raised", [("/reset", httpx.RemoteProtocolError), ("/big", ValueError)])
+def test_a_failed_request_still_paces_the_next_one_to_its_host(failure, raised):
+    """A watcher moves on to the next sitemap after a failure; that request must still wait the Crawl-delay."""
+    clock, sent = Clock(), []
+
+    def handler(request):
+        sent.append((request.url.path, clock.now))
+        if request.url.path == "/reset":
+            raise httpx.RemoteProtocolError("peer closed the connection", request=request)
+        if request.url.path == "/big":
+            return httpx.Response(200, content=b"x" * 2048)
+        return site(request)
+
+    client = polite(handler, clock, max_bytes=1024)
+    with pytest.raises(raised):
+        client.get(f"https://www.example.test{failure}")
+    assert client.get("https://www.example.test/new").status == 200
+    assert [path for path, _ in sent] == ["/robots.txt", failure, "/new"]
+    assert sent[2][1] - sent[1][1] == 5.0  # the Crawl-delay after the failure, as after an answer
+
+
 def test_redirect_loops_and_oversized_answers_are_refused():
     with pytest.raises(httpx.TooManyRedirects):
         polite(site, Clock()).get("https://www.example.test/loop")

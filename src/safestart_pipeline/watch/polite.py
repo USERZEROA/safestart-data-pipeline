@@ -1,9 +1,11 @@
 """Paced GETs that obey robots.txt, for the watchers' few requests to websites and APIs.
 
 Each request must be allowed by its host's robots.txt (read once per check, with crawl/robots.py) and waits at least the
-caller's delay, or the host's Crawl-delay when that is longer, after the previous request to the same host. Redirects
-are followed one hop at a time under the same rules, so a redirect never skips the wait: OSHA's sitemap.xml redirects,
-and OSHA asks for 10 seconds between requests. A response is read up to a size limit.
+caller's delay, or the host's Crawl-delay when that is longer, after the previous request to the same host has ended,
+whether it was answered or failed (a refused connection, a broken answer, one over the size limit): a caller that
+moves on to the next sitemap after a failure still waits. Redirects are followed one hop at a time under the same
+rules, so a redirect never skips the wait: OSHA's sitemap.xml redirects, and OSHA asks for 10 seconds between
+requests. A response is read up to a size limit.
 """
 
 from __future__ import annotations
@@ -58,9 +60,11 @@ class PoliteClient:
             wait = self.last[host] + max(self.min_delay, rules.crawl_delay() or 0.0) - self.clock()
             if wait > 0:
                 self.sleep(wait)
-            with self.client.stream("GET", url, follow_redirects=False) as response:
-                content = self._read(response, url)
-            self._sent(host)
+            try:
+                with self.client.stream("GET", url, follow_redirects=False) as response:
+                    content = self._read(response, url)
+            finally:
+                self._sent(host)
             if not response.is_redirect:
                 return Answer(url, response.status_code, content)
             url = urljoin(url, response.headers["location"])
