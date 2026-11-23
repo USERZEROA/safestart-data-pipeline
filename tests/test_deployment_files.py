@@ -30,10 +30,10 @@ MIB = {"k": 1 / 1024, "m": 1, "g": 1024}
 # MiB. An e2-medium's memory, the swap file deploy/gcp/startup.sh adds, and what the system and Docker keep.
 RAM, SWAP, SYSTEM = 4096, 2048, 1024
 ONE_OFF = {"init", "replay"}  # they exit once their work is done
-# Peaks measured in the image on the real lake (peak resident memory, MiB): training the model with two threads, 1,350,
+# Peaks measured in the image on the real lake (peak resident memory, MiB): training the model with two threads, 1,380,
 # with Prefect and its local server beside it, 400; the watcher comparing two versions of the 3.1 million violations
 # with DuckDB held to 256 MB, 343.
-ORCHESTRATOR_PEAK = 1350 + 400
+ORCHESTRATOR_PEAK = 1380 + 400
 WATCHER_PEAK = 343
 
 

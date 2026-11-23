@@ -8,9 +8,9 @@
 # running may use 2.6 GiB together, the HTTPS gateway of docker-compose.public.yml included, so they never need swap.
 # Kafka has the largest share of them: a 384 MiB heap plus the JVM's own memory (the broker measured 320 MiB at rest
 # and 400 MiB while a health check ran). The orchestrator's limit covers its largest run, the weekly model training
-# (1.35 GiB measured in this image with two threads) beside Prefect (0.4 GiB with its local server); with it and the
-# replay, which runs once after a start, at their limits as well, the host may swap but never runs out of memory. Host
-# ports listen on 127.0.0.1 only; the public overlay adds the one public entrance.
+# (up to 1,380 MiB measured in this image with two threads) beside Prefect (0.4 GiB with its local server); with it and
+# the replay, which runs once after a start, at their limits as well, the host may swap but never runs out of memory.
+# Host ports listen on 127.0.0.1 only; the public overlay adds the one public entrance.
 name: safestart
 
 x-logging: &logging

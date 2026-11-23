@@ -27,12 +27,12 @@ mounts the data root at `/data`, read-only, except the orchestrator, which runs 
 - Memory is budgeted for an e2-medium (4 GiB) with a 2 GiB swap file, leaving 1 GiB to the system and Docker
   (`tests/test_deployment_files.py` holds the files to it). The services that keep running may use 2.6 GiB together,
   the gateway included, so they never need swap. The orchestrator's limit covers its largest run, the weekly model
-  training, which peaked at 1.35 GiB in this image with two threads, beside Prefect and its local server (0.4 GiB);
-  with it and the replay at their limits as well, the host may swap but never runs out of memory. Measured in the
-  image on the real lake: the warehouse build peaks at 1.0 GiB, the watcher's comparison of two versions of the 3.1
-  million violations at 343 MiB (DuckDB held to 256 MB), and the dashboard at 300 MiB rendering every page from the real warehouse. At rest,
-  Kafka, PostgreSQL, both consumers, the dashboard and the orchestrator used about 600 MiB together, 370 MiB of it
-  Kafka's.
+  training, which peaked at up to 1,380 MiB in this image with two threads, beside Prefect and its local server
+  (0.4 GiB); with it and the replay at their limits as well, the host may swap but never runs out of memory. Measured
+  in the image on the real lake: the warehouse build peaks at 1.0 GiB, the watcher's comparison of two versions of the
+  3.1 million violations at 343 MiB (DuckDB held to 256 MB), and the dashboard at 300 MiB rendering every page from the
+  real warehouse. At rest, Kafka, PostgreSQL, both consumers, the dashboard and the orchestrator used about 600 MiB
+  together, 370 MiB of it Kafka's.
 - The services start in order: Kafka and PostgreSQL until healthy, then `init`, then the stream services. `init` runs
   once per start and the replay is restarted only after a failure; every other service restarts unless stopped. The
   orchestrator runs only with its Compose profile (`COMPOSE_PROFILES=orchestrator`), since it writes the data root;
@@ -92,7 +92,8 @@ Then:
 - End-to-end check: `uv run --extra stream python scripts/smoke_test.py` sends four synthetic events of a district
   named after the run through Kafka, waits until the storage consumer has stored each one and the analytics consumer
   has counted each one exactly once, checks the dashboard, and removes its rows again, the counted-event ledger
-  included.
+  included. The events are dated on the stream's first source day (today on an empty store), so they never move the
+  analytics consumer's clock.
 - State and logs: `docker compose ps`, `docker compose logs -f replay`, `docker compose logs -f watcher`.
 - One writer of the data root at a time. A batch or model run, whoever starts it, and `ssp lake` hold the data root's
   writer lock (`state/pipeline.lock`) from start to end, so a second one started meanwhile, by hand or by the
@@ -100,6 +101,8 @@ Then:
   container, but file locks do not reach across Docker Desktop's file sharing: on a workstation that runs the
   orchestrator and also runs the batch or the model by hand on the host (`ssp pipeline`, `python -m
   safestart_pipeline.flows run`) on the same folder, stop the orchestrator first (`docker compose stop orchestrator`).
+  For the same reason the containerized sitemap watcher cannot see a host crawl's lock; it leaves a site alone while
+  that site's crawl has written its inventory or a download in the last 15 minutes.
 - Stop with `docker compose stop` or `docker compose down`; `docker compose down --volumes` also deletes Kafka's log,
   the stream store and the watcher state (the next start creates them again with the password in `.env`).
 
