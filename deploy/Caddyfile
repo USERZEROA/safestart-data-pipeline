@@ -1,0 +1,29 @@
+# HTTPS in front of the dashboard (docker-compose.public.yml). PUBLIC_DOMAIN is a domain name or the server's public
+# IPv4 address. Let's Encrypt's short-lived profile certifies both, for six days at a time, and Caddy renews the
+# certificate on its own; it is the only profile that covers an IP address.
+{
+	# A browser opening https://<IP address> sends no server name, so Caddy answers with this site's certificate.
+	default_sni {$PUBLIC_DOMAIN}
+	# The firewall admits TCP only, so HTTP/3 (QUIC over UDP) is not offered.
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$PUBLIC_DOMAIN} {
+	encode zstd gzip
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+			profile shortlived
+		}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+	# Streamlit's page and its WebSocket connection.
+	reverse_proxy dashboard:8501
+}

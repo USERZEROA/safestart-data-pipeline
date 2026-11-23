@@ -1,0 +1,32 @@
+# The public entrance of a server: Caddy serves the dashboard over HTTPS on ports 80 and 443 for PUBLIC_DOMAIN, a
+# domain name or the server's public IPv4 address, with a certificate it obtains and renews itself (deploy/Caddyfile).
+# `python scripts/start.py --public-domain <host>` adds this file to docker-compose.yml.
+services:
+  gateway:
+    image: caddy:2.11-alpine
+    restart: unless-stopped
+    mem_limit: 96m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?run python scripts/start.py --public-domain <domain or IPv4 address>}
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      dashboard:
+        condition: service_healthy
+
+volumes:
+  caddy-data:
+  caddy-config:
