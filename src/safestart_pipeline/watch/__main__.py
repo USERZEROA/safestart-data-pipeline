@@ -2,9 +2,14 @@
 
 Dataset versions every 6 hours (MSHA publishes weekly, and the lake takes each new version when the acquire flow runs),
 MSHA's sitemaps every 6 hours, OSHA's once a day (it asks for 10 seconds between requests), and the Federal Register
-every hour. `once` runs the checks that are due (all of them the first time) and exits; `loop` keeps running them as they
-come due. `--only` picks checks and `--force` runs them now, though OSHA's sitemaps are still read at most once a day.
+every hour. `once` runs the checks that are due (all of them the first time) and exits; `loop` keeps running them as
+they come due. `--only` picks checks and `--force` runs them now, though OSHA's sitemaps are still read at most once a
+day.
 Events go to Kafka; every check is logged, and stored in stream.source_checks when PostgreSQL is reachable.
+
+The log goes to standard error and to `<data root>/logs/watch.log`, or to the file SAFESTART_WATCH_LOG (`watch_log` in
+pipeline.local.toml) names; "-" keeps standard error alone. The containers set "-": their data root is read-only, and
+Docker keeps and rotates each service's output. The watcher's state is set apart the same way (state.py).
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ from pathlib import Path
 import httpx
 
 from ..cli import setup_logging
-from ..config import data_root
+from ..config import data_root, setting
 from ..crawl.crawler import make_client
 from ..crawl.sites import SITES
 from .checks import Check, record_check
@@ -45,6 +50,20 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def log_file(root: Path) -> Path | None:
+    """The watcher's log file, or None to log to standard error alone (see the module docstring)."""
+    value = setting("watch_log", str(root / "logs" / "watch.log"))
+    return None if value == "-" else Path(value)
+
+
+def start_logging(path: Path | None) -> None:
+    if path is not None:
+        setup_logging(path)
+        return
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
 def run_check(name: str, *, root: Path, state: WatchState, publisher: Publisher, client: httpx.Client) -> Check:
     if name == "versions":
         return check_versions(root, state, publisher)
@@ -54,7 +73,8 @@ def run_check(name: str, *, root: Path, state: WatchState, publisher: Publisher,
 
 
 def due(state: WatchState, names: Iterable[str], now: datetime) -> list[str]:
-    return [name for name in names if (last := state.time(f"{name}:checked_at")) is None or now - last >= SCHEDULE[name]]
+    return [name for name in names
+            if (last := state.time(f"{name}:checked_at")) is None or now - last >= SCHEDULE[name]]
 
 
 def seconds_to_next(state: WatchState, names: Iterable[str], now: datetime) -> float:
@@ -90,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true", help="run the chosen checks now, whatever their schedule")
     args = parser.parse_args(argv)
     root = data_root()
-    setup_logging(root / "logs" / "watch.log")
+    start_logging(log_file(root))
     try:
         publisher = kafka_publisher()
     except RuntimeError as problem:

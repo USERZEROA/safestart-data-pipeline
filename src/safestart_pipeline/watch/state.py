@@ -2,8 +2,10 @@
 
 It remembers the id of every event a watcher has published, so nothing is published twice however checks overlap; the
 dataset versions already compared; and named times, such as when each source was last checked. The watchers find a few
-thousand records a week, so the file stays small. SAFESTART_WATCH_STATE (or `watch_state` in pipeline.local.toml) puts
-it elsewhere, so a check can run against a data root it must only read.
+thousand records a week, so the file stays small. SAFESTART_WATCH_STATE (or `watch_state` in pipeline.local.toml) names
+another file, so a check can run against a data root it must only read: the containers mount the data root read-only
+and keep the state at /state/watch.sqlite on a volume of its own. The version check spills DuckDB's overflow into a
+folder beside this file, so that folder must be writable too.
 """
 
 from __future__ import annotations
@@ -53,7 +55,7 @@ class WatchState:
     def commit(self) -> None:
         self.db.commit()
 
-    # Published events ---------------------------------------------------------------------------------------------------
+    # Published events -------------------------------------------------------------------------------------------------
 
     def emitted(self, event_ids: Sequence[str]) -> set[str]:
         """The ids among these that were published before."""
@@ -70,13 +72,13 @@ class WatchState:
                             [(event_id, at) for event_id in event_ids])
 
     def any_emitted(self, kind: str) -> bool:
-        """Whether an event of this kind was ever published. Its ids start with '<kind>:', and ';' sorts right after ':',
-        so the primary key answers with a range."""
+        """Whether an event of this kind was ever published. Its ids start with '<kind>:', and ';' sorts right after
+        ':', so the primary key answers with a range."""
         row = self.db.execute("select 1 from emitted where event_id >= ? and event_id < ? limit 1",
                               (f"{kind}:", f"{kind};")).fetchone()
         return row is not None
 
-    # Dataset versions ---------------------------------------------------------------------------------------------------
+    # Dataset versions -------------------------------------------------------------------------------------------------
 
     def compared_versions(self, dataset: str) -> set[str]:
         return {row[0] for row in self.db.execute("select version from compared where dataset = ?", (dataset,))}
@@ -87,7 +89,7 @@ class WatchState:
             "insert or replace into compared (dataset, version, previous_version, rows, new_rows, compared_at)"
             " values (?, ?, ?, ?, ?, ?)", (dataset, version, previous_version, rows, new_rows, at))
 
-    # Named times --------------------------------------------------------------------------------------------------------
+    # Named times ------------------------------------------------------------------------------------------------------
 
     def time(self, name: str) -> datetime | None:
         row = self.db.execute("select value from times where name = ?", (name,)).fetchone()

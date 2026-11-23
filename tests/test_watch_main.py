@@ -33,7 +33,7 @@ def state(tmp_path):
     state.close()
 
 
-# Publishing ------------------------------------------------------------------------------------------------------------
+# Publishing -----------------------------------------------------------------------------------------------------------
 
 
 def test_an_event_is_published_once_however_often_it_is_found(tmp_path):
@@ -61,7 +61,7 @@ def test_the_kafka_publisher_comes_from_the_stream_layer_when_it_exists(monkeypa
         kafka_publisher()
 
 
-# Recording checks ------------------------------------------------------------------------------------------------------
+# Recording checks -----------------------------------------------------------------------------------------------------
 
 
 class FakeConnection:
@@ -105,7 +105,7 @@ def test_a_check_has_one_of_the_stored_statuses():
         Check("versions", "ok", -1)
 
 
-# Scheduling ------------------------------------------------------------------------------------------------------------
+# Scheduling -----------------------------------------------------------------------------------------------------------
 
 
 def test_checks_run_on_their_schedules_and_one_failure_does_not_stop_the_others(state):
@@ -128,13 +128,24 @@ def test_checks_run_on_their_schedules_and_one_failure_does_not_stop_the_others(
     assert watch.seconds_to_next(state, names, NOW + timedelta(minutes=30)) == 1800.0
 
 
+def test_the_log_goes_to_the_data_root_to_a_named_file_or_to_standard_error_alone(tmp_path, monkeypatch):
+    monkeypatch.delenv("SAFESTART_WATCH_LOG", raising=False)
+    assert watch.log_file(tmp_path) == tmp_path / "logs" / "watch.log"
+    monkeypatch.setenv("SAFESTART_WATCH_LOG", str(tmp_path / "elsewhere" / "watch.log"))
+    assert watch.log_file(tmp_path) == tmp_path / "elsewhere" / "watch.log"
+    monkeypatch.setenv("SAFESTART_WATCH_LOG", "-")
+    assert watch.log_file(tmp_path) is None
+
+
 def test_once_runs_the_due_checks_and_reports_a_missing_kafka_publisher(tmp_path, monkeypatch):
+    """With the containers' settings: the state in a volume of its own, the log on standard error alone."""
     add_version(tmp_path, "mines", MINES, OLD)
     add_version(tmp_path, "violations", [violation("1")], OLD)
     add_version(tmp_path, "violations", [violation("1"), violation("2", COAL_MINE)], NEW)
     monkeypatch.setenv("SAFESTART_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv("SAFESTART_WATCH_STATE", str(tmp_path / "watch-state" / "watch.sqlite"))
-    monkeypatch.setattr(watch, "setup_logging", lambda path: None)
+    monkeypatch.setenv("SAFESTART_WATCH_LOG", "-")
+    monkeypatch.setattr(watch, "setup_logging", lambda path: pytest.fail(f"no log file was asked for, got {path}"))
     publisher, attempts = ListPublisher(), []
 
     def unreachable(url, **kwargs):
@@ -150,6 +161,7 @@ def test_once_runs_the_due_checks_and_reports_a_missing_kafka_publisher(tmp_path
     assert watch.main(["once", "--only", "versions"]) == 0 and len(publisher.events) == 2  # not due again yet
     assert watch.main(["once", "--only", "versions", "--force"]) == 0 and len(publisher.events) == 2  # nothing new
     assert (tmp_path / "watch-state" / "watch.sqlite").exists()
+    assert not (tmp_path / "logs").exists() and not (tmp_path / "state").exists()  # nothing written to the data root
 
     def missing():
         raise RuntimeError("no Kafka publisher")
