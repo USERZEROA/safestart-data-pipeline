@@ -9,11 +9,15 @@ flowchart LR
         MSHA[MSHA website] ; ARL[MSHA legacy host] ; OSHA[OSHA website]
         OGD[MSHA open data: 20 datasets] ; ECFR[eCFR titles 29 and 30] ; FR[Federal Register API]
     end
-    subgraph Batch["Batch (Prefect)"]
+    subgraph Workstation
         CRAWL[Polite crawlers] --> RAW[(Raw object store<br/>content-addressed)]
+    end
+    subgraph Batch["Batch: the orchestrator (Prefect)"]
         ACQ[Bulk acquire<br/>every version kept] --> RAW
         RAW --> LAKE[(Parquet lake<br/>one file per version)]
         LAKE --> WH[(DuckDB warehouse<br/>ERD + marts)]
+        WH --> EXPORT[SafeStart exports]
+        LAKE --> MODEL[Accident-risk model]
     end
     subgraph Streaming
         REPLAY[Replay producer] --> K{{Kafka}}
@@ -23,62 +27,142 @@ flowchart LR
     end
     MSHA & ARL & OSHA --> CRAWL
     OGD & ECFR --> ACQ
-    FR --> WATCH
+    FR & MSHA & OSHA --> WATCH
     LAKE --> REPLAY
     LAKE --> WATCH
     WH --> DASH[Streamlit dashboard]
     PG --> DASH
-    WH --> EXPORT[SafeStart exports]
 ```
 
 ## Packages (`src/safestart_pipeline/`)
 
 | Package | Role |
 |---|---|
+| `definitions.py` | The rules every component shares: injury, serious accident, cited section, commodity |
 | `crawl/`, `acquire/` | Robots-compliant crawls of the three websites; bulk downloads of MSHA's open data and eCFR, every version kept |
 | `lake/` | Typed Parquet of every version of MSHA's 20 datasets (`ssp lake`) |
-| `warehouse/` | DuckDB warehouse built from the lake, the eCFR XML and the crawl catalogs; marts and documented queries |
-| `stream/` | The event contract (`events.py`), PostgreSQL schema (`schema.sql`), Kafka clients, replay producer, storage and analytics consumers |
+| `warehouse/` | DuckDB warehouse built from the lake, the eCFR XML and the crawl catalogs; marts, documented queries, exports |
+| `stream/` | The event contract (`events.py`), the record-to-event mapping (`records.py`), PostgreSQL schema (`schema.sql`), Kafka clients, replay producer, storage and analytics consumers |
 | `watch/` | Live watchers: new dataset versions (record diffs), website changes (sitemaps), Federal Register documents |
-| `ml/` | Features from the lake with Polars and a mine accident-risk model |
+| `ml/` | Features from the lake with Polars and a mine accident-risk model (`docs/ML.md`) |
 | `dashboard/` | Streamlit app over the warehouse and the streaming store |
-| `flows/` | Prefect flows that run and schedule all of the above |
+| `flows/` | Prefect flows that run and schedule the batch and the model (`python -m safestart_pipeline.flows`) |
+| `verify.py` | Completeness reports of the crawls and the bulk downloads (`ssp verify`) |
+
+## Shared rules (`definitions.py`)
+
+Each rule is stated once, in [`definitions.py`](../src/safestart_pipeline/definitions.py), whose docstring gives the
+evidence from the real data. The warehouse, the replay and the version watcher (through `stream/records.py`), the
+model and the dashboard use its constants, its Python functions and its DuckDB SQL forms (`serious_sql`, `injury_sql`,
+`cfr_section_sql`, `commodity_sql`) instead of restating a rule.
+
+- An **injury** is an accident of degree of injury 01 to 06, the injuries MSHA's injury rates count.
+- A **serious accident** is degree 01 to 05: a death, a permanent disability, or days away from work or of restricted
+  work. The rule reads the degree, never the day counts, which arrive only once the miner is back at work and also
+  appear on illnesses and other cases. A **fatality** is degree 01.
+- The **cited section** of a violation is the eCFR section its citation names, without the paragraph:
+  `56.14107(a)` is 56.14107, `75.1100-2(b)` is 75.1100-2, `56.5001(a)/.5005` is 56.5001, and `104(d)(1)` names none.
+- The **commodity** (coal `C` or metal/non-metal `M`) is the mine's flag in MSHA's mines dataset, and a record's own
+  flag only when its mine is missing there, so a mine's violations, accidents and hours worked share one commodity.
+- A violation is **S&S** (significant and substantial) when its `sig_sub` flag is `Y` (`SIG_SUB`).
 
 ## Settings (`config.py`)
 
 `data_root()`, `postgres_url()`, `kafka_bootstrap()`, `warehouse_path()`, and `setting(name, default)`: the environment
-variable `SAFESTART_<NAME>` wins, then `pipeline.local.toml`, then the default. Secrets come only from the environment.
-Local Compose ports: PostgreSQL 15432, Kafka 19092.
+variable `SAFESTART_<NAME>` wins, then `<name>` in `pipeline.local.toml`, then the default. Secrets come only from the
+environment. The defaults address the local Compose stack as `127.0.0.1` (PostgreSQL 15432, Kafka 19092): its host
+ports listen on IPv4 only, and on Windows `localhost` tries IPv6 first, which stalls every connection.
+
+| Setting | Default | Used by |
+|---|---|---|
+| `SAFESTART_DATA_ROOT` | `./data` (or `data_root` in `pipeline.local.toml`) | every stage |
+| `SAFESTART_WAREHOUSE_PATH` | `<data root>/warehouse/safestart.duckdb` | warehouse, exports, dashboard |
+| `SAFESTART_WAREHOUSE_MEMORY_LIMIT` | `1GB` | the warehouse build's DuckDB |
+| `SAFESTART_POSTGRES_URL` | `postgresql://safestart:safestart@127.0.0.1:15432/safestart` | stream services, dashboard |
+| `SAFESTART_KAFKA_BOOTSTRAP` | `127.0.0.1:19092` | Kafka clients |
+| `SAFESTART_KAFKA_PARTITIONS` | `3` | partitions of a new topic (`kafka_partitions`; the initializer's `--partitions` wins) |
+| `SAFESTART_KAFKA_SECURITY_PROTOCOL` | `SASL_SSL` once a user name is set | Kafka clients, for a managed broker |
+| `SAFESTART_KAFKA_SASL_MECHANISM` | `PLAIN` (or `SCRAM-SHA-256`, `SCRAM-SHA-512`) | Kafka clients |
+| `SAFESTART_KAFKA_SASL_USERNAME`, `SAFESTART_KAFKA_SASL_PASSWORD` | none | Kafka clients; read from the environment only |
+| `SAFESTART_KAFKA_SSL_CA_LOCATION` | the system's certificates | Kafka clients |
+| `SAFESTART_WATCH_STATE` | `<data root>/state/watch.sqlite` | the watchers' state; `/state/watch.sqlite` in Compose |
+| `SAFESTART_WATCH_LOG` | `<data root>/logs/watch.log`; `-` for standard error alone | the watchers' log; `-` in Compose |
+| `PREFECT_API_URL`, `PREFECT_API_KEY` | unset: the orchestrator keeps the schedule itself | the orchestrator (Prefect's own settings) |
+| `POLARS_MAX_THREADS`, `OMP_NUM_THREADS` | all cores | the batch and the model; 2 in Compose, as on the e2-medium |
 
 ## The event contract
 
 `stream/events.py` defines one validated envelope for every event. Topics: `msha.enforcement` (kinds `inspection`,
-`violation`, `accident`, `order_107a`, keyed by mine) and `safety.sources` (kinds `dataset_version`, `page_change`,
-`regulation`, keyed by kind). `event_id` is `<kind>:<source key>`, so a replay or a repeated check is idempotent.
-`mode` is `replay` (history pushed through the stream in source-time order) or `live` (found by a watcher).
+`violation`, `accident`, `order_107a`) and `safety.sources` (kinds `dataset_version`, `page_change`, `regulation`).
+The Kafka message key is the mine ID, so a mine's events stay in order on one partition, or the kind for an event
+without a mine. `event_id` is `<kind>:<source key>`, fixed for a given source record, so a replay or a repeated check
+is idempotent downstream. `mode` is `replay` (history pushed through the stream in source-time order) or `live` (found
+by a watcher). `stream/records.py` maps a lake record to its event for both the replay and the version watcher, so a
+record becomes the same event whichever path finds it.
 
-Details by kind (JSON scalars only):
-
-| Kind | Key | Details |
+| Kind | Source key | Details (JSON scalars only) |
 |---|---|---|
-| `inspection` | event_no | `activity_code`, `activity`, `begin_date`, `end_date` |
-| `violation` | violation_no | `event_no`, `cfr_section` (e.g. `75.400`), `part_section` (as cited, e.g. `56.14107(a)`), `sig_sub`, `likelihood`, `injury_illness`, `negligence`, `proposed_penalty` |
-| `accident` | document_no | `degree_injury_cd`, `degree_injury`, `serious`, `classification`, `accident_type`, `no_injuries`, `days_lost` |
-| `order_107a` | violation_no | `termination_date` |
-| `dataset_version` | dataset + version | `dataset`, `version`, `previous_version`, `rows`, `new_rows` |
-| `page_change` | url + lastmod | `site`, `url`, `lastmod`, `change` (`added`, `changed`, `dropped`) |
-| `regulation` | document number | `agency`, `document_number`, `type`, `html_url`, `publication_date` |
+| `inspection` | `event_no` | `activity_code`, `activity`, `begin_date`, `end_date` |
+| `violation` | `violation_no` | `event_no`, `cfr_section` (the shared rule, e.g. `75.400`), `part_section` (as cited, e.g. `56.14107(a)`), `sig_sub`, `likelihood`, `injury_illness`, `negligence`, `proposed_penalty` |
+| `accident` | `document_no` | `degree_injury_cd`, `degree_injury`, `serious` (the shared rule), `classification`, `accident_type`, `no_injuries`, `days_lost` |
+| `order_107a` | the order's `violation_no` | `termination_date` |
+| `dataset_version` | `<dataset>:<version>`, the version being the lake file's stem (the first 16 hex digits of the source zip's SHA-256) | `dataset`, `version`, `previous_version`, `rows`, `new_rows` |
+| `page_change` | `<url>\|<change>\|<lastmod>` (lastmod empty when the sitemap gives none) | `site`, `url`, `lastmod`, `change` (`added`, `changed`, `dropped`) |
+| `regulation` | Federal Register document number | `agency`, `document_number`, `type`, `html_url`, `publication_date` |
 
-A violation is serious when `sig_sub` is true (significant and substantial); an accident is serious when it was fatal
-or caused lost or restricted work days.
+A page_change key holds the change and the lastmod, so a change is reported once while a later edit of the same page is
+reported again. An event is serious, for the counts, when it is a violation with `sig_sub` true or an accident with
+`serious` true.
+
+## Streaming
+
+- **Replay** (`python -m safestart_pipeline.stream.replay`): the current lake version of inspections, violations,
+  107(a) orders and accidents, one month at a time in source-time order. `--start` (default 2024-01-01) and `--until`
+  bound the source days; `--day-seconds` (default 5) is the wall time of one source day, 0 sending as fast as the
+  broker takes them; `--max-rate` caps the events per second; `--loop` starts again from `--start` after the newest
+  record, and the unchanged event ids keep the consumers from storing or counting anything twice.
+- **Storage consumer** (group `safestart-storage`): every valid event into `stream.events`, keyed by `event_id`, with
+  the topic, partition and offset where it first arrived. Offsets are committed after the database transaction.
+- **Analytics consumer** (group `safestart-analytics`): counts per source day, kind and district into
+  `stream.daily_counts`, exactly once. An event is added to the counts only by the statement that first writes its
+  `event_id` to the ledger `stream.counted_events`, in the same transaction, so a replayed or redelivered event moves
+  no count; `daily_counts` is always `counted_events` grouped by day, kind and district.
+- **Forecasts** (`stream.forecasts`, method `ewma-weekday(alpha=0.1,weeks=26,k=3.0)`): enforcement follows the work
+  week, so each day of a series (kind, district) is forecast one step ahead from the same weekday in the previous 26
+  weeks by an exponentially weighted moving average (smoothing 0.1). The residual is observed minus predicted; a day is
+  an anomaly when the residual exceeds three scales, the scale being the weighted standard deviation of those weeks but
+  at least that of a Poisson count and at least 1, and only after four weeks of history. A day is forecast once every
+  partition has moved past it, and a late event recomputes the forecasts that depend on its day. Evaluated on the
+  lake's 52 enforcement series (4 kinds by 13 districts, January 2024 to November 2026): a mean absolute error of 3.65
+  events per series-day, against 7.1 for the best plain day-to-day EWMA and 3.9 to 4.0 for shorter memories; 1.5% of
+  the judged series-days are flagged, such as 2024-05-22, when MSHA opened 1,664 Special Emphasis Program inspections.
+- **Watchers** (`python -m safestart_pipeline.watch once|loop`): new dataset versions every 6 hours (record diffs of
+  consecutive lake versions), MSHA's sitemaps every 6 hours and OSHA's once a day (against the crawl inventories, never
+  while that site's crawl runs), the Federal Register every hour. Every request obeys robots.txt and the host's pacing,
+  redirects included (`watch/polite.py`). Their state (`SAFESTART_WATCH_STATE`, a small SQLite file) remembers every
+  event published, the versions compared and when each source was checked; the version check spills DuckDB's overflow
+  into a folder beside it. They log to standard error and to `SAFESTART_WATCH_LOG` unless it is `-`. Every check is
+  recorded in `stream.source_checks`.
 
 ## Stores
 
-- PostgreSQL, schema `stream` (`stream/schema.sql`): `events` (one row per event, envelope in columns, details and
-  source as JSON, Kafka position), `daily_counts`, `forecasts`, `source_checks`.
+- PostgreSQL, schema `stream` (`stream/schema.sql`, every statement idempotent): `events` (one row per event, envelope
+  in columns, details and source as JSON, Kafka position, with indexes by kind, by mine, by arrival, and by mode and
+  arrival for the Live page), `daily_counts`, `counted_events` (the analytics consumer's ledger), `forecasts`,
+  `source_checks`.
 - DuckDB warehouse (`warehouse_path()`): built into a new file and swapped in, so readers never see a half-built
-  warehouse. Core tables `mine`, `inspection`, `violation`, `accident`, `production_quarter`, `cfr_section`,
-  `document`, `dataset_version`; marts as views. The ERD is in `docs/ERD.md`.
+  warehouse; one writer at a time holds a lock beside it. Core tables `mine`, `inspection`, `violation`, `accident`,
+  `production_quarter`, `cfr_section`, `document`, `dataset_version`; marts as views. The ERD is in `docs/ERD.md`.
+  The dashboard opens it read-only, with a memory limit and a spill folder of its own: DuckDB's default spill folder
+  sits beside the database file, which the containers mount read-only.
+
+## Orchestration
+
+The orchestrator service (`python -m safestart_pipeline.flows serve`) runs the batch flow every day at 14:00 UTC
+(bulk downloads, lake, warehouse, exports) and the model flow every Sunday at 15:00 UTC, one at a time. With
+`PREFECT_API_URL` and `PREFECT_API_KEY` set it serves both flows as Prefect deployments (Prefect Cloud shows their runs
+and can start one); without them it keeps the same schedule in its own process. `python -m safestart_pipeline.flows
+run batch|model` runs one now. It is the only service that writes the data root.
 
 ## Entry points
 
@@ -90,13 +174,21 @@ or caused lost or restricted work days.
 | `python -m safestart_pipeline.stream.replay` | Replays enforcement history through Kafka |
 | `python -m safestart_pipeline.stream.storage` / `.analytics` | The two consumer groups |
 | `python -m safestart_pipeline.watch` | Runs the live watchers on their schedules |
+| `python -m safestart_pipeline.flows serve` | Runs the batch and model flows on their schedules |
 | `python -m safestart_pipeline.ml train` | Builds features and trains the accident-risk model |
 | `streamlit run src/safestart_pipeline/dashboard/app.py` | The dashboard |
 
+## Deployment
+
+`docker-compose.yml` runs every service above on one host from one image, and `docs/DEPLOYMENT.md` explains it. Every
+service mounts the data root read-only at `/data` except the orchestrator; the watchers keep their state in a volume
+of their own and log to standard error, which Docker keeps and rotates.
+
 ## Constraints
 
-- The cloud host is an e2-medium (2 shared vCPUs, 4 GB): Kafka runs with a small heap, PostgreSQL with a small
-  configuration, and batch work streams through files instead of holding whole datasets in memory.
-- Every request to a website follows its robots.txt and pacing (reuse `crawl/robots.py`); a refusal is never worked
-  around.
+- The cloud host is an e2-medium (2 shared vCPUs, 4 GB) with a 2 GB swap file: Kafka runs with a small heap,
+  PostgreSQL with a small configuration, every service has a memory limit (the budget is in `docker-compose.yml`), and
+  batch work streams through files instead of holding whole datasets in memory.
+- Every request to a website follows its robots.txt and pacing (reuse `crawl/robots.py`), redirect hops included; a
+  refusal is never worked around.
 - Tests use small fixtures and temporary directories; they never write under the real data root.
