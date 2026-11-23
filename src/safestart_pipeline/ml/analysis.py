@@ -2,12 +2,16 @@
 year and commodity, injury rates per 200,000 hours worked, and the most cited sections of 30 CFR. Each table is written
 as CSV and, together, as Markdown.
 
-An injury is a record of degree 01 to 06 (fatal, permanent disability, days away or restricted, or no days lost) to
-one of the operator's own employees: the quarterly reports hold only the operator's hours (contractors report theirs
-per contractor, not per mine), so contractor injuries would inflate the rate. 200,000 hours is 100 full-time workers
-for a year, so the rate reads as injuries per 100 workers a year. A serious injury is fatal or lost-time, as in the
-model, and only quarters with production reports count, so a partial year compares like with like. A cited section is
-the part and section without the paragraph ("56.14107(a)" is 56.14107).
+Injuries, serious injuries, cited sections and the commodity (coal or metal/nonmetal) follow the rules every component
+shares (`safestart_pipeline.definitions`): injuries and serious injuries by the degree of injury alone, a section as
+the shared pattern's match in the citation (a citation that names no section is left out of the section table), and a
+record's commodity as its mine's flag in the mines dataset, the record's own only for a mine missing there, so a mine's
+violations, injuries and hours fall under one commodity.
+
+Injuries are those of the operator's own employees: the quarterly reports hold only the operator's hours (contractors
+report theirs per contractor, not per mine), so contractor injuries would inflate the rate. 200,000 hours is 100
+full-time workers for a year, so the rate reads as injuries per 100 workers a year. Only quarters with production
+reports count, so a partial year compares like with like.
 """
 
 from __future__ import annotations
@@ -16,18 +20,26 @@ from pathlib import Path
 
 import polars as pl
 
-from .features import cfr_section, quarter_of, reported_quarters, scan, serious_accident
+from ..definitions import INJURY_DEGREES
+from .features import cfr_section, coal_metal, quarter_of, reported_quarters, scan, serious_accident
 
-INJURY_DEGREES = ("01", "02", "03", "04", "05", "06")
 TOP_SECTIONS = 25
 PER_HOURS = 200_000
 
 
+def with_coal_metal(lake: Path, dataset: str) -> pl.LazyFrame:
+    """A dataset's rows with `coal_metal`, their mine's commodity by the shared rule."""
+    mines = scan(lake, "mines").select("mine_id", pl.col("coal_metal_ind").alias("mine_coal_metal"))
+    return scan(lake, dataset).join(mines, on="mine_id", how="left").with_columns(
+        coal_metal("mine_coal_metal", "coal_metal_ind").alias("coal_metal")
+    )
+
+
 def ss_share(lake: Path) -> pl.LazyFrame:
     return (
-        scan(lake, "violations")
+        with_coal_metal(lake, "violations")
         .filter(pl.col("violation_issue_dt").dt.year() >= 2000)  # a few dozen stray earlier citations
-        .group_by(pl.col("violation_issue_dt").dt.year().alias("year"), pl.col("coal_metal_ind").alias("coal_metal"))
+        .group_by(pl.col("violation_issue_dt").dt.year().alias("year"), "coal_metal")
         .agg(pl.len().alias("violations"), (pl.col("sig_sub") == "Y").sum().alias("ss_violations"))
         .with_columns((pl.col("ss_violations") / pl.col("violations")).round(4).alias("ss_share"))
         .sort("year", "coal_metal")
@@ -37,15 +49,15 @@ def ss_share(lake: Path) -> pl.LazyFrame:
 def injury_rates(lake: Path) -> pl.LazyFrame:
     _, latest = reported_quarters(lake)
     injuries = (
-        scan(lake, "accidents")
+        with_coal_metal(lake, "accidents")
         .filter(pl.col("contractor_id").is_null(), pl.col("degree_injury_cd").is_in(INJURY_DEGREES),
                 quarter_of("accident_dt") <= latest)
-        .group_by(pl.col("accident_dt").dt.year().alias("year"), pl.col("coal_metal_ind").alias("coal_metal"))
+        .group_by(pl.col("accident_dt").dt.year().alias("year"), "coal_metal")
         .agg(pl.len().alias("injuries"), serious_accident().sum().alias("serious_injuries"))
     )
     hours = (
-        scan(lake, "mines_prod_quarterly")
-        .group_by(pl.col("cal_yr").alias("year"), pl.col("coal_metal_ind").alias("coal_metal"))
+        with_coal_metal(lake, "mines_prod_quarterly")
+        .group_by(pl.col("cal_yr").alias("year"), "coal_metal")
         .agg(pl.col("hours_worked").sum())
     )
     return (
@@ -61,15 +73,19 @@ def injury_rates(lake: Path) -> pl.LazyFrame:
 
 
 def top_sections(lake: Path, top: int = TOP_SECTIONS) -> pl.LazyFrame:
+    # Penalties add up in whole cents: a float total depends on the order the threads add rows in, and rounding it to
+    # dollars flipped some sections' totals by a dollar between runs.
+    cents = (pl.col("proposed_penalty") * 100).round(0).cast(pl.Int64)
     return (
         scan(lake, "violations")
-        .filter(pl.col("part_section").is_not_null())
-        .group_by(cfr_section().alias("cfr_section"))
+        .with_columns(cfr_section().alias("cfr_section"))
+        .filter(pl.col("cfr_section").is_not_null())
+        .group_by("cfr_section")
         .agg(
             pl.len().alias("citations"),
             (pl.col("sig_sub") == "Y").sum().alias("ss_citations"),
             pl.col("mine_id").n_unique().alias("mines"),
-            pl.col("proposed_penalty").sum().round(0).cast(pl.Int64).alias("proposed_penalty"),
+            ((cents.sum() + 50) // 100).alias("proposed_penalty"),
             pl.col("violation_issue_dt").max().alias("last_cited"),
         )
         .with_columns((pl.col("ss_citations") / pl.col("citations")).round(4).alias("ss_share"))

@@ -13,13 +13,14 @@ proposed was not known. Hours worked come from the operators' quarterly reports,
 ends (30 CFR 50.30).
 
 The population is every mine that reported hours worked in at least one of the four prior quarters, which is known
-when the score is made, so the model is trained on the population it later scores. Commodity, mine type, state and
-district are MSHA's current values for the mine; its status is left out because it records the future (a mine
-abandoned after an accident).
+when the score is made, so the model is trained on the population it later scores. The coal/metal flag, commodity,
+mine type, state and district are MSHA's current values for the mine; its status is left out because it records the
+future (a mine abandoned after an accident).
 
-An accident is serious when it was fatal or cost lost or restricted work days. MSHA fills in the day counts only when a
-case closes, so the degree-of-injury codes for permanent disability and days away or restricted (02 to 05) count too:
-on 2026-11-23 a third of that year's lost-time cases had no day counts yet.
+Serious accidents, cited sections and the coal/metal flag follow the rules every component shares
+(`safestart_pipeline.definitions`): an accident is serious by its degree of injury alone, a cited section is what the
+shared pattern matches in the citation, and a mine's flag is the mines dataset's. A mine missing from that dataset takes
+the flag of its newest production report, the records that put it in the population.
 """
 
 from __future__ import annotations
@@ -29,9 +30,10 @@ from pathlib import Path
 
 import polars as pl
 
+from ..definitions import CFR_SECTION_PATTERN, SERIOUS_DEGREES, commodity_sql
+
 DATASETS = ("mines", "inspections", "violations", "accidents", "mines_prod_quarterly")  # what the panel reads
 WINDOW = 4  # quarters of history behind each target quarter
-SERIOUS_DEGREES = ("01", "02", "03", "04", "05")  # fatal, permanent disability, days away and/or restricted
 COUNTS = ("inspections", "violations", "ss_violations", "accidents", "serious_accidents")
 AMOUNTS = ("proposed_penalty", "hours_worked", "avg_employees")
 NUMERIC = (
@@ -78,17 +80,20 @@ def period(column: str = "quarter") -> pl.Expr:
 
 
 def serious_accident() -> pl.Expr:
-    """Fatal, or with lost or restricted work days (by the day counts or, while a case is open, its degree code)."""
-    return (
-        pl.col("degree_injury_cd").is_in(SERIOUS_DEGREES).fill_null(False)
-        | (pl.col("days_lost").fill_null(0) > 0)
-        | (pl.col("days_restrict").fill_null(0) > 0)
-    )
+    """An accident whose degree of injury is one of the shared SERIOUS_DEGREES; the day counts play no part."""
+    return pl.col("degree_injury_cd").is_in(SERIOUS_DEGREES).fill_null(False)
 
 
 def cfr_section(column: str = "part_section") -> pl.Expr:
-    """The cited section without its paragraph: "56.14107(a)" -> "56.14107", "75.1100-2(e)(2)" -> "75.1100-2"."""
-    return pl.col(column).str.replace(r"\(.*$", "").str.strip_chars()
+    """The section a citation names, by the shared CFR_SECTION_PATTERN, or null when it names none: "56.14107(a)" is
+    56.14107, "75.1100-2(e)(2)" is 75.1100-2 and "104(d)(1)" has none."""
+    return pl.col(column).str.strip_chars().str.extract(CFR_SECTION_PATTERN, 0)
+
+
+def coal_metal(mine_flag: str, own_flag: str) -> pl.Expr:
+    """The shared commodity rule as a Polars expression: the mine's coal/metal flag, else the record's own. It is the
+    rule's SQL form (`commodity_sql`), which Polars' SQL reads as well as DuckDB, so the rule stays stated once."""
+    return pl.sql_expr(commodity_sql(mine_flag, own_flag))
 
 
 def spread(frame: pl.LazyFrame) -> pl.LazyFrame:
@@ -160,9 +165,14 @@ def reported_quarters(lake: Path) -> tuple[int, int]:
 
 
 def mine_attributes(lake: Path) -> pl.LazyFrame:
-    return scan(lake, "mines").select(
+    """MSHA's current values for every mine with production reports (the panel's mines): the coal/metal flag by the
+    shared rule, with the newest report's own flag standing in for a mine missing from the mines dataset."""
+    reported = scan(lake, "mines_prod_quarterly").group_by("mine_id").agg(
+        pl.col("coal_metal_ind").sort_by(report_quarter(), "subunit_cd").last().alias("reported_flag")
+    )
+    return reported.join(scan(lake, "mines"), on="mine_id", how="left").select(
         "mine_id",
-        pl.col("coal_metal_ind").alias("coal_metal"),
+        coal_metal("coal_metal_ind", "reported_flag").alias("coal_metal"),
         pl.col("primary_canvass").alias("commodity"),
         pl.col("current_mine_type").alias("mine_type"),
         "state",

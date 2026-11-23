@@ -38,6 +38,7 @@ from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_s
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, OrdinalEncoder, StandardScaler
 
+from ..definitions import SERIOUS_DEGREES
 from .features import CATEGORICAL, FEATURES, NUMERIC, TARGET, TREND, period, quarter_label
 
 log = logging.getLogger(__name__)
@@ -222,7 +223,7 @@ def train(
     scores.write_parquet(out / "risk_scores.parquet")
     metrics = {
         "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "target": "a serious accident (fatal, or lost or restricted work days) at the mine in the quarter",
+        "target": f"a serious accident (degree of injury {', '.join(SERIOUS_DEGREES)}) at the mine in the quarter",
         "features": {"numeric": list(NUMERIC), "trend": list(TREND), "categorical": list(CATEGORICAL)},
         "split": {name: {"quarters": quarters(part), "rows": part.height, "positives": int(part[TARGET].sum())}
                   for name, part in parts.items()},

@@ -6,7 +6,16 @@ import polars as pl
 import pytest
 
 from ml_fixtures import accident, mine, production, violation, write_lake
-from safestart_pipeline.ml.features import FEATURES, TARGET, build_panel, cfr_section, quarter_label, serious_accident
+from safestart_pipeline import definitions
+from safestart_pipeline.ml.features import (
+    FEATURES,
+    TARGET,
+    build_panel,
+    cfr_section,
+    coal_metal,
+    quarter_label,
+    serious_accident,
+)
 
 
 def quarter(year: int, number: int) -> int:
@@ -114,17 +123,41 @@ def test_nothing_from_the_target_quarter_or_later_changes_a_feature(tmp_path):
     assert row(after, "0100001", 2002, 3)[TARGET] is True  # the new fatality is the target of its own quarter
 
 
-def test_serious_accidents_are_fatal_or_lost_or_restricted_time():
-    frame = pl.DataFrame(
-        [accident(str(n), "1", date(2020, 1, 1), degree, days_lost=lost, days_restrict=restricted)
-         for n, (degree, lost, restricted) in enumerate([
-             ("01", None, None), ("02", None, None), ("03", None, None), ("05", None, 0), ("06", 0, 0),
-             ("07", 3, None), ("10", None, None), (None, None, 2), (None, None, None), ("00", 0, None)])]
-    )
-    assert frame.select(serious_accident().alias("serious"))["serious"].to_list() == [
-        True, True, True, True, False, True, False, True, False, False]
+def test_a_serious_accident_is_read_from_its_degree_alone():
+    cases = [("01", None, None), ("02", None, None), ("03", None, None), ("05", None, 0), ("06", 0, 0),
+             ("07", 3, None), ("08", 12, 4), ("10", None, None), (None, None, 2), (None, None, None), ("00", 0, None)]
+    frame = pl.DataFrame([accident(str(n), "1", date(2020, 1, 1), degree, days_lost=lost, days_restrict=restricted)
+                          for n, (degree, lost, restricted) in enumerate(cases)])
+    serious = frame.select(serious_accident().alias("serious"))["serious"].to_list()
+    assert serious == [definitions.is_serious(degree) for degree, _, _ in cases]
+    # An open days-away case is serious before its day counts arrive; an illness with lost days is not.
+    assert serious[2] is True and serious[5] is False
 
 
-def test_a_cited_section_drops_its_paragraph():
-    cited = pl.DataFrame({"part_section": ["56.14107(a)", "75.1100-2(e)(2)", "75.400", None]})
-    assert cited.select(cfr_section())["part_section"].to_list() == ["56.14107", "75.1100-2", "75.400", None]
+def test_a_cited_section_is_the_shared_pattern_match():
+    cited = ["56.14107(a)", "75.1100-2(e)(2)", "56.5001(a)/.5005", "75.1107-16-b", " 75.400 ", "104(d)(1)", "", None]
+    sections = pl.DataFrame({"part_section": cited}).select(cfr_section())["part_section"].to_list()
+    assert sections == [definitions.cfr_section(citation) for citation in cited]
+    assert sections == ["56.14107", "75.1100-2", "56.5001", "75.1107-16", "75.400", None, None, None]
+
+
+def test_the_coal_metal_rule_is_the_shared_one():
+    flags = [("C", "M"), ("M", "C"), (None, "C"), ("?", "M"), ("M", None), (None, None), (None, "X")]
+    frame = pl.DataFrame(flags, schema={"mine": pl.String, "own": pl.String}, orient="row")
+    assert frame.select(coal_metal("mine", "own").alias("flag"))["flag"].to_list() == [
+        definitions.commodity(mine_flag, own_flag) for mine_flag, own_flag in flags]
+
+
+def test_a_mines_flag_comes_from_the_mines_dataset_else_its_newest_report(tmp_path):
+    # Mine 1's reports carry the other flag, but the mines dataset decides; mine 3 is missing from the mines dataset,
+    # so its newest report's flag stands in, and its other attributes are unknown.
+    lake = write_lake(tmp_path, {
+        "mines": [mine("0100001", "C")],
+        "mines_prod_quarterly": production("0100001", (2000, 1), (2000, 4), coal_metal="M")
+        + production("0100003", (2000, 1), (2000, 3), coal_metal="C")
+        + production("0100003", (2000, 4), (2000, 4), coal_metal="M"),
+    })
+    panel = build_panel(lake).collect()
+    attributes = ("coal_metal", "mine_type", "state")
+    assert [row(panel, "0100001", 2001, 1)[name] for name in attributes] == ["C", "Underground", "WV"]
+    assert [row(panel, "0100003", 2001, 1)[name] for name in attributes] == ["M", "Unknown", "Unknown"]
