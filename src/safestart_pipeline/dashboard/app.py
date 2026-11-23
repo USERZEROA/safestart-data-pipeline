@@ -6,9 +6,16 @@ as a crew sees it before a shift) and Sources (what the pipeline holds and how f
 `data`, which turns a missing store into a sentence, so a panel shows either its data or what is missing.
 
 The tabs run lazily and follow the URL (`?page=Mine+brief&mine=4609612`): only the open page queries its stores, and
-a mine's brief can be shared as a link. Warehouse results stay cached until a new build is swapped in. Stream results
-are cached for a few seconds, shared by every viewer, and the per-kind totals, which count the whole event table, a
-little longer, so more viewers do not mean more load on the small host.
+a mine's brief can be shared as a link. Warehouse answers stay cached until a new build is swapped in, but a query that
+failed is asked again on the next run, so a passing failure (memory pressure, another process holding the file) does
+not stay on a panel until the next build. Stream results are cached for a few seconds, shared by every viewer, and the
+per-kind totals, which count the whole event table, a little longer, so more viewers do not mean more load on the
+small host.
+
+Tables format their numbers with printf formats, which Streamlit applies alike in every browser. Its named formats
+("localized", "compact", "percent") follow the viewer's language instead: 148,461 becomes 148.461 in a German browser
+and 1,48,461 in a Hindi one, and "compact" writes 156 million as "156 Mio." in German, unlike the tiles and chart
+tooltips beside them, which read the same everywhere.
 
 Run: streamlit run src/safestart_pipeline/dashboard/app.py
 """
@@ -52,24 +59,40 @@ SERIOUS_HELP = (f"Degree of injury {SERIOUS_DEGREES[0]} to {SERIOUS_DEGREES[-1]}
                 "days away from work or of restricted work.")
 MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]<>#$~|])")  # emphasis, code, links, HTML, headings, LaTeX, tables
 LINE_MARKER = re.compile(r"^(\s*)(?:([-+=])|(\d+)([.)]))", re.MULTILINE)  # list items and rules at a line start
+COUNT_FORMAT = "%,d"  # 148,461 in every browser language (see the module docstring)
 SECTION_COLUMNS = {
     "cfr_section": st.column_config.TextColumn("Section", width="small"),
     "heading": st.column_config.TextColumn("Heading", width="large"),
-    "citations": st.column_config.NumberColumn("Citations", format="localized"),
-    "ss_share": st.column_config.ProgressColumn("S&S share", format="percent", min_value=0.0, max_value=1.0),
-    "ss_citations": st.column_config.NumberColumn("S&S", format="localized"),
-    "proposed_penalty_total": st.column_config.NumberColumn("Penalties proposed (USD)", format="compact"),
-    "proposed_penalty": st.column_config.NumberColumn("Penalties proposed (USD)", format="compact"),
+    "citations": st.column_config.NumberColumn("Citations", format=COUNT_FORMAT),
+    "ss_share": st.column_config.ProgressColumn("S&S share", format="%.1f%%", min_value=0, max_value=100),
+    "ss_citations": st.column_config.NumberColumn("S&S", format=COUNT_FORMAT),
+    "proposed_penalty_total": st.column_config.NumberColumn("Penalties proposed", format="$%,.1fM"),
+    "proposed_penalty": st.column_config.NumberColumn("Penalties proposed", format="$%,.0f"),
     "last_cited": st.column_config.DateColumn("Last cited"),
 }
+# A printf format cannot scale a number, so these columns are shown in the units their formats state: a share in
+# percent, and the nation's penalty totals in millions (a mine's stay in dollars, which millions would round to $0.0M).
+SECTION_SCALES = {"ss_share": 100, "proposed_penalty_total": 1e-6}
 
 
 # Cached reads
 
 
+class _Unanswered(Exception):
+    """A warehouse query's problem, raised out of its cached function: st.cache_data keeps no exception, so only
+    answers are cached."""
+
+    def __init__(self, table: data.Table) -> None:
+        super().__init__(table.problem)
+        self.table = table
+
+
 @st.cache_data(show_spinner=False, max_entries=512)
 def _warehouse_cached(query: str, stamp: tuple[str, int] | None, args: tuple[Any, ...]) -> data.Table:
-    return getattr(data, query)(*args)
+    table = getattr(data, query)(*args)
+    if table.problem:
+        raise _Unanswered(table)
+    return table
 
 
 @st.cache_data(show_spinner=False, ttl=FRESH_TTL_SECONDS, max_entries=256)
@@ -83,8 +106,11 @@ def _totals_cached(query: str, args: tuple[Any, ...]) -> data.Table:
 
 
 def warehouse(query: Callable[..., data.Table], *args: Any) -> data.Table:
-    """A warehouse query, cached until a new build replaces the file."""
-    return _warehouse_cached(query.__name__, data.warehouse_stamp(), args)
+    """A warehouse query, cached until a new build replaces the file; a problem is asked again on the next run."""
+    try:
+        return _warehouse_cached(query.__name__, data.warehouse_stamp(), args)
+    except _Unanswered as unanswered:
+        return unanswered.table
 
 
 def stream(query: Callable[..., data.Table], *args: Any) -> data.Table:
@@ -146,17 +172,12 @@ def tile(label: str, value: str, **options: Any) -> None:
     st.metric(label, value, border=True, width=TILE_WIDTH, **options)
 
 
-def subject(section: str, heading: Any) -> str:
-    """A section's heading without the "§ 75.400" the eCFR writes before it, which the section column already shows."""
-    return re.sub(rf"^§*\s*{re.escape(section)}\s*", "", plain(heading)).strip()
-
-
 def section_picker(frame: pd.DataFrame, key: str, height: int | str = "auto") -> str | None:
     """A table of sections in which a row can be selected; returns the selected section, or the first one."""
-    if "heading" in frame:
-        frame = frame.assign(heading=[subject(*pair) for pair in zip(frame["cfr_section"], frame["heading"])])
-    columns = [column for column in SECTION_COLUMNS if column in frame]
-    event = st.dataframe(frame[columns], hide_index=True, column_config=SECTION_COLUMNS, on_select="rerun",
+    scaled = frame.assign(**{column: frame[column] * scale for column, scale in SECTION_SCALES.items()
+                             if column in frame})
+    columns = [column for column in SECTION_COLUMNS if column in scaled]
+    event = st.dataframe(scaled[columns], hide_index=True, column_config=SECTION_COLUMNS, on_select="rerun",
                          selection_mode="single-row", key=key, height=height)
     rows = list(event.selection.rows) if event is not None else []
     row = rows[0] if rows and rows[0] < len(frame) else 0
@@ -175,12 +196,12 @@ def show_section(section: str | None) -> None:
     if not shown(found, f"30 CFR {section} is not in the warehouse's eCFR text (removed or renumbered since cited)."):
         return
     row = found.frame.iloc[0]
-    title = f"{int(row['title'])} CFR" if not pd.isna(row["title"]) else "CFR"
+    name = f"{int(row['title'])} CFR {section}"
     facts = [f"Part {int(row['part'])}" if not pd.isna(row["part"]) else "",
              f"last amended {pd.Timestamp(row['amended_on']):%Y-%m-%d}" if not pd.isna(row["amended_on"]) else ""]
     text = paragraphs(plain(row["text"]))
     with st.container(border=True):
-        st.markdown(f"**{md(f'{title} {section}')}** {md(subject(section, row['heading']))}")
+        st.markdown(f"**{md(name)}** {md(plain(row['heading']))}")
         if any(facts):
             st.caption(", ".join(fact for fact in facts if fact))
         with st.container(height=300 if len(text) > 1_200 else "content", border=False):
@@ -262,7 +283,7 @@ def enforcement_page() -> None:
                          column_config={
                              "day": st.column_config.DateColumn("Day"),
                              "district": "District",
-                             "observed": st.column_config.NumberColumn("Observed", format="localized"),
+                             "observed": st.column_config.NumberColumn("Observed", format=COUNT_FORMAT),
                              "predicted": st.column_config.NumberColumn("Forecast", format="%.1f"),
                              "residual": st.column_config.NumberColumn("Residual", format="%+.1f")})
 
@@ -318,7 +339,7 @@ def mine_brief(mine_id: str) -> None:
     mine = card.frame.iloc[0]
     details = warehouse(data.mine_details, mine_id)
     extra = details.frame.iloc[0] if not details.empty else pd.Series(dtype=object)
-    st.subheader(plain(mine["mine_name"]) or f"Mine {mine_id}", anchor=False)
+    st.subheader(md(plain(mine["mine_name"])) or f"Mine {mine_id}", anchor=False)
     place = ", ".join(part for part in (plain(extra.get("county")), plain(mine["state"])) if part)
     district = plain(mine["district"])
     facts = [f"ID {mine_id}", COMMODITY_LABELS.get(plain(mine["coal_metal"]), ""), plain(mine["mine_type"]),
@@ -382,9 +403,9 @@ def sources_page() -> None:
     if shown(versions, "No dataset versions recorded in the warehouse."):
         st.dataframe(versions.frame, hide_index=True, column_config={
             "dataset": "Dataset",
-            "versions": st.column_config.NumberColumn("Versions kept", format="localized"),
+            "versions": st.column_config.NumberColumn("Versions kept", format=COUNT_FORMAT),
             "version": "Current version",
-            "rows": st.column_config.NumberColumn("Rows", format="localized"),
+            "rows": st.column_config.NumberColumn("Rows", format=COUNT_FORMAT),
             "built_at": st.column_config.DatetimeColumn("Built (UTC)", format="YYYY-MM-DD HH:mm"),
             "is_current": st.column_config.CheckboxColumn("Current"),
         })
@@ -411,10 +432,10 @@ def sources_page() -> None:
                          "source": "Source",
                          "age": "Last checked",
                          "status": "Status",
-                         "found": st.column_config.NumberColumn("Found", format="localized"),
-                         "checks_24h": st.column_config.NumberColumn("Checks (24 h)", format="localized"),
-                         "errors_24h": st.column_config.NumberColumn("Errors (24 h)", format="localized"),
-                         "found_24h": st.column_config.NumberColumn("Found (24 h)", format="localized"),
+                         "found": st.column_config.NumberColumn("Found", format=COUNT_FORMAT),
+                         "checks_24h": st.column_config.NumberColumn("Checks (24 h)", format=COUNT_FORMAT),
+                         "errors_24h": st.column_config.NumberColumn("Errors (24 h)", format=COUNT_FORMAT),
+                         "found_24h": st.column_config.NumberColumn("Found (24 h)", format=COUNT_FORMAT),
                          "note": "Note"})
 
 

@@ -1,5 +1,7 @@
-"""The dashboard renders every page from a tiny warehouse shaped like the contract, with PostgreSQL absent, present
-(through stand-in queries) or real, and its data layer turns each missing store into a message.
+"""The dashboard renders every page from a tiny warehouse made of the warehouse's own tables, macros and marts
+(schema.sql, build.MACROS, marts.sql) over hand-written rows, and from one the real build made of the warehouse tests'
+sources, with PostgreSQL absent, present (through stand-in queries) or real; its data layer turns each missing store
+into a message.
 
 The PostgreSQL test runs when TEST_DATABASE_URL names a database, as the consumers' tests do: it replaces the `stream`
 schema there with `stream/schema.sql` and synthetic events, and drops it at the end.
@@ -7,6 +9,7 @@ schema there with `stream/schema.sql` and synthetic events, and drops it at the 
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from datetime import date
@@ -22,110 +25,26 @@ from streamlit.testing.v1 import AppTest
 
 from safestart_pipeline.dashboard import app as dashboard
 from safestart_pipeline.dashboard import charts, data
-from safestart_pipeline.definitions import injury_sql
 from safestart_pipeline.stream.events import ENFORCEMENT_KINDS, KINDS, Event
+from safestart_pipeline.warehouse.build import MACROS, build
+from test_warehouse import write_data_root
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "safestart_pipeline"
 APP = PACKAGE / "dashboard" / "app.py"
+WAREHOUSE = PACKAGE / "warehouse"
 UNREACHABLE = "postgresql://dashboard:secret-password@127.0.0.1:9/nothing"  # nothing listens on port 9
+# The number formats Streamlit's frontend writes in the browser's language (Intl.NumberFormat); printf formats and
+# "accounting" read the same in every browser.
+LOCALE_FORMATS = {"localized", "compact", "percent", "dollar", "euro", "yen", "scientific", "engineering", "bytes"}
 
-# The warehouse contract's tables, and its marts as plain views over them.
-CONTRACT = """
-create table mine (mine_id varchar primary key, mine_name varchar, coal_metal varchar, mine_type varchar,
-    status varchar, status_date date, state varchar, county varchar, district varchar, primary_sic varchar,
-    primary_canvass varchar, latitude double, longitude double, controller_id varchar, controller_name varchar,
-    operator_id varchar, operator_name varchar);
-create table inspection (event_no varchar primary key, mine_id varchar, begin_date date, end_date date,
-    activity_code varchar, activity varchar, coal_metal varchar);
-create table violation (violation_no varchar primary key, event_no varchar, mine_id varchar, issue_date date,
-    occur_date date, part_section varchar, cfr_section varchar, sig_sub boolean, likelihood varchar,
-    injury_illness varchar, negligence varchar, proposed_penalty double, amount_paid double, termination_date date,
-    coal_metal varchar, mine_type varchar);
-create table accident (document_no varchar primary key, mine_id varchar, accident_date date,
-    degree_injury_cd varchar, degree_injury varchar, serious boolean, classification varchar, accident_type varchar,
-    no_injuries integer, days_lost integer, days_restrict integer, subunit varchar, narrative varchar,
-    coal_metal varchar);
-create table production_quarter (mine_id varchar, cal_yr integer, cal_qtr integer, subunit_cd varchar,
-    avg_employees double, hours_worked double, coal_production double,
-    primary key (mine_id, cal_yr, cal_qtr, subunit_cd));
-create table cfr_section (section varchar primary key, title integer, part integer, heading varchar, text varchar,
-    amended_on date);
-create table document (url varchar primary key, site varchar, state varchar, kind varchar, content_type varchar,
-    bytes bigint, sha256 varchar, fetched_at timestamp, in_sitemap boolean);
-create table dataset_version (dataset varchar, version varchar, rows bigint, built_at timestamp, is_current boolean);
-"""
-MARTS = """
-create view mart_top_cited_sections as
-select v.cfr_section, any_value(c.heading) as heading, count(*) as citations,
-       count(*) filter (where v.sig_sub) as ss_citations, count(*) filter (where v.sig_sub) / count(*) as ss_share,
-       sum(v.proposed_penalty) as proposed_penalty_total, max(v.issue_date) as last_cited
-from violation as v left join cfr_section as c on c.section = v.cfr_section
-where v.cfr_section is not null
-group by v.cfr_section;
-
-create view mart_mine_scorecard as
-with bounds as (select max(issue_date) - interval 12 month as since, max(issue_date) as until from violation),
-inspections as (select mine_id, count(*) as n from inspection, bounds
-                where begin_date > since and begin_date <= until group by mine_id),
-violations as (select mine_id, count(*) as n, count(*) filter (where sig_sub) as ss, sum(proposed_penalty) as penalty
-               from violation, bounds where issue_date > since and issue_date <= until group by mine_id),
-accidents as (select mine_id, count(*) as n, count(*) filter (where serious) as serious,
-                     sum(no_injuries) filter (where INJURY) as injuries
-              from accident, bounds where accident_date > since and accident_date <= until group by mine_id),
-hours as (select mine_id, sum(hours_worked) as hours from production_quarter, bounds
-          where make_date(cal_yr, cal_qtr * 3, 1) > since and make_date(cal_yr, cal_qtr * 3 - 2, 1) <= until
-          group by mine_id),
-cited as (select mine_id, cfr_section, count(*) as n,
-                 row_number() over (partition by mine_id order by count(*) desc, cfr_section) as rank
-          from violation, bounds where issue_date > since and issue_date <= until and cfr_section is not null
-          group by mine_id, cfr_section),
-top as (select mine_id, string_agg(cfr_section, ', ' order by rank) as sections from cited where rank <= 3
-        group by mine_id)
-select m.mine_id, m.mine_name, m.coal_metal, m.mine_type, m.status, m.state, m.district, m.latitude, m.longitude,
-       coalesce(i.n, 0) as inspections_12m, coalesce(v.n, 0) as violations_12m, coalesce(v.ss, 0) as ss_violations_12m,
-       coalesce(v.penalty, 0) as proposed_penalty_12m, coalesce(a.n, 0) as accidents_12m,
-       coalesce(a.serious, 0) as serious_accidents_12m, h.hours as hours_worked_12m,
-       coalesce(a.injuries, 0) * 200000 / nullif(h.hours, 0) as injury_rate_12m, t.sections as top_sections_12m
-from mine as m
-left join inspections as i using (mine_id)
-left join violations as v using (mine_id)
-left join accidents as a using (mine_id)
-left join hours as h using (mine_id)
-left join top as t using (mine_id);
-
-create view mart_ss_trend as
-select year(issue_date) as year, coal_metal, count(*) as violations, count(*) filter (where sig_sub) as ss_violations,
-       count(*) filter (where sig_sub) / count(*) as ss_share
-from violation where issue_date is not null and coal_metal is not null
-group by all;
-
-create view mart_injury_rate as
-with injuries as (select year(accident_date) as year, coal_metal, sum(no_injuries) as injuries from accident
-                  where INJURY and accident_date is not null group by all),
-hours as (select p.cal_yr as year, m.coal_metal, sum(p.hours_worked) as hours_worked
-          from production_quarter as p join mine as m using (mine_id) group by all)
-select year, coal_metal, coalesce(injuries, 0) as injuries, hours_worked,
-       coalesce(injuries, 0) * 200000 / nullif(hours_worked, 0) as rate_per_200k
-from hours left join injuries using (year, coal_metal);
-
-create view mart_district_year as
-select district, year, sum(inspections) as inspections, sum(violations) as violations,
-       sum(ss) as ss_violations, sum(accidents) as accidents
-from (select m.district, year(i.begin_date) as year, 1 as inspections, 0 as violations, 0 as ss, 0 as accidents
-      from inspection as i join mine as m using (mine_id)
-      union all
-      select m.district, year(v.issue_date), 0, 1, v.sig_sub::integer, 0
-      from violation as v join mine as m using (mine_id)
-      union all
-      select m.district, year(a.accident_date), 0, 0, 0, 1 from accident as a join mine as m using (mine_id))
-where district is not null and year is not null
-group by all;
-""".replace("INJURY", injury_sql())  # the shared rule of what counts as an injury
+# Rows of the warehouse's tables. Section number 7.7 is in both titles, as in the eCFR, and its title-29 row comes
+# first, as in the real warehouse; MSHA cites title 30. The abandoned mine's name holds Markdown, as some of MSHA's
+# names do ("**Mobile Crushing Unit**").
 ROWS = """
 insert into mine values
  ('4609612', 'Highwall Park Surface Mine', 'C', 'Surface', 'Active', '2010-05-01', 'WV', 'Boone', 'C04',
   'Bituminous coal', 'Coal (Bituminous)', 38.05, -81.8, 'C001', 'Highwall Holdings', 'P001', 'Highwall Park LLC'),
- ('4601234', 'Highwall Deep Mine No. 2', 'C', 'Underground', 'Abandoned', '2019-02-01', 'WV', 'Logan', 'C04',
+ ('4601234', '**Highwall Deep Mine No. 2**', 'C', 'Underground', 'Abandoned', '2019-02-01', 'WV', 'Logan', 'C04',
   'Bituminous coal', 'Coal (Bituminous)', 37.8, -81.9, 'C001', 'Highwall Holdings', 'P002', 'Highwall Deep LLC'),
  ('0100003', 'O''Neal Quarry & Mill', 'M', 'Surface', 'Active', '1979-01-22', 'AL', 'Shelby', 'M3', 'Lime', 'Stone',
   33.18, -86.76, 'M00174', 'Martin Marietta Materials Inc', 'L16197', 'Martin Marietta Materials, Inc.');
@@ -146,36 +65,43 @@ insert into violation values
  ('V5', 'E4', '4609612', '2020-04-01', '2020-04-01', '75.400', '75.400', false, 'Unlikely', 'Lost Workdays', 'Low',
   117, 117, '2020-04-03', 'C', 'Surface'),
  ('V6', 'E3', '0100003', '2026-06-10', '2026-06-10', '56.9999', '56.9999', false, 'Unlikely', 'No Lost Workdays',
-  'Low', 100, 100, '2026-06-12', 'M', 'Surface');
+  'Low', 100, 100, '2026-06-12', 'M', 'Surface'),
+ ('V7', 'E3', '0100003', '2026-06-10', '2026-06-10', '7.7(c)', '7.7', false, 'Unlikely', 'No Lost Workdays', 'Low',
+  250, 250, '2026-06-12', 'M', 'Surface');
 insert into accident values
  ('A1', '4609612', '2026-09-14', '03', 'DAYS AWAY FROM WORK ONLY', true, 'HANDLING OF MATERIALS',
   'Caught in, under or between', 1, 12, 0, 'STRIP, QUARY, OPEN PIT',
   'Moving a $40 roller *by hand* when [it] slipped.
-1. The belt was locked out.', 'C'),
+1. The belt was locked out.', 'C', null),
  ('A2', '4609612', '2025-02-01', '06', 'NO DYS AWY FRM WRK,NO RSTR ACT', false, 'SLIP OR FALL OF PERSON',
-  'Fall to the walkway', 1, 0, 0, 'STRIP, QUARY, OPEN PIT', 'Slipped on ice.', 'C'),
+  'Fall to the walkway', 1, 0, 0, 'STRIP, QUARY, OPEN PIT', 'Slipped on ice.', 'C', null),
  ('A3', '0100003', '2026-05-05', '01', 'FATALITY', true, 'MACHINERY', 'Struck by', 1, 0, 0,
-  'MILL OPERATION/PREPARATION PLANT', 'Fatal injury.', 'M');
+  'MILL OPERATION/PREPARATION PLANT', 'Fatal injury.', 'M', null);
 insert into production_quarter values
- ('4609612', 2025, 4, '03', 40, 21000, 150000), ('4609612', 2026, 1, '03', 41, 22000, 160000),
- ('4609612', 2026, 2, '03', 42, 23000, 155000), ('4609612', 2026, 3, '03', 40, 22500, 158000),
- ('0100003', 2026, 1, '03', 30, 15000, null), ('0100003', 2026, 2, '03', 30, 15500, null);
+ ('4609612', 2025, 4, '03', 40, 21000, 150000, 'C'), ('4609612', 2026, 1, '03', 41, 22000, 160000, 'C'),
+ ('4609612', 2026, 2, '03', 42, 23000, 155000, 'C'), ('4609612', 2026, 3, '03', 40, 22500, 158000, 'C'),
+ ('0100003', 2026, 1, '03', 30, 15000, null, 'M'), ('0100003', 2026, 2, '03', 30, 15500, null, 'M');
 insert into cfr_section values
- ('75.400', 30, 75, '§ 75.400 Accumulation of combustible materials.',
+ ('75.400', 30, 75, 'Accumulation of combustible materials.',
   'Coal dust, loose coal, and other combustible materials shall be cleaned up and not be permitted to accumulate.',
   '2021-07-01'),
- ('77.1605', 30, 77, '§ 77.1605 Loading and haulage equipment; installations.',
+ ('77.1605', 30, 77, 'Loading and haulage equipment; installations.',
   '(a) Cab windows shall be of safety glass.
 (b) Mobile equipment shall be equipped with adequate brakes.', '2020-01-01'),
- ('56.14107', 30, 56, '§ 56.14107 Moving machine parts.',
+ ('56.14107', 30, 56, 'Moving machine parts.',
   '(a) Moving machine parts shall be guarded to protect persons from contacting gears, sprockets and chains.
-(b) Guards shall not be required where the exposed moving parts are at least seven feet away.', '2019-07-01');
+(b) Guards shall not be required where the exposed moving parts are at least seven feet away.', '2019-07-01'),
+ ('7.7', 29, 7, 'Presentations of other interested persons.',
+  'Any interested person may present written data, views or arguments.', '1983-06-01'),
+ ('7.7', 30, 7, 'Quality assurance.',
+  '(a) Applicants shall maintain the quality of each approved product.
+(c) Applicants shall keep the records of their inspections and tests.', '2008-04-01');
 insert into document values
- ('https://www.msha.gov/', 'msha', 'fetched', 'html', 'text/html', 52000, 'a1', '2026-11-20 10:00:00', true),
+ ('https://www.msha.gov/', 'msha', 'fetched', 'page', 'text/html', 52000, 'a1', '2026-11-20 10:00:00', true),
  ('https://www.msha.gov/a.pdf', 'msha', 'fetched', 'pdf', 'application/pdf', 1200000, 'a2', '2026-11-20 10:01:00',
   false),
- ('https://www.osha.gov/', 'osha', 'fetched', 'html', 'text/html', 61000, 'a3', '2026-11-21 08:00:00', true),
- ('https://www.osha.gov/b.png', 'osha', 'skipped', 'image', 'image/png', null, null, null, false),
+ ('https://www.osha.gov/', 'osha', 'fetched', 'page', 'text/html', 61000, 'a3', '2026-11-21 08:00:00', true),
+ ('https://www.osha.gov/b.png', 'osha', 'skipped', 'other', null, null, null, null, false),
  ('https://arlweb.msha.gov/c.pdf', 'arlweb', 'fetched', 'pdf', 'application/pdf', 800000, 'a4', '2026-11-19 09:00:00',
   false);
 insert into dataset_version values
@@ -219,9 +145,13 @@ def stream_tables(now: pd.Timestamp) -> dict[str, pd.DataFrame]:
 
 
 def build_warehouse(path: Path) -> Path:
+    """The warehouse's own tables, macros and marts over ROWS, created in the order the build creates them."""
     with duckdb.connect(str(path)) as connection:
-        for script in (CONTRACT, ROWS, MARTS):
-            connection.execute(script)
+        connection.execute((WAREHOUSE / "schema.sql").read_text(encoding="utf-8"))
+        connection.execute(ROWS)
+        for signature, body in MACROS.items():
+            connection.execute(f"create macro {signature} as {body}")
+        connection.execute((WAREHOUSE / "marts.sql").read_text(encoding="utf-8"))
     return path
 
 
@@ -233,6 +163,15 @@ def stores(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("SAFESTART_POSTGRES_URL", UNREACHABLE)
     st.cache_data.clear()
     return tmp_path
+
+
+@pytest.fixture(scope="module")
+def built_warehouse(tmp_path_factory) -> Path:
+    """A warehouse the real build made of the warehouse tests' sources, where section number 1.1 is in both titles
+    and mine 0100001 cites it."""
+    target = tmp_path_factory.mktemp("built") / "safestart.duckdb"
+    build(write_data_root(tmp_path_factory.mktemp("data")), target)
+    return target
 
 
 def stand_in(name: str, frame: pd.DataFrame):
@@ -271,6 +210,12 @@ def chart_count(app: AppTest) -> int:
     return len(app.get("vega_lite_chart"))
 
 
+def column_formats(app: AppTest) -> dict[str, str]:
+    """The number format of every column a run's tables configure, by column name."""
+    return {name: column["type_config"]["format"] for frame in app.dataframe
+            for name, column in json.loads(frame.proto.columns).items() if "format" in column.get("type_config", {})}
+
+
 def test_every_page_renders_from_the_warehouse_without_postgres(stores):
     shown = {page: run_page(page) for page in dashboard.PAGES}
     for page in ("Live", "Enforcement", "Sources"):
@@ -286,6 +231,24 @@ def test_every_page_renders_from_the_warehouse_without_postgres(stores):
     assert "7943d78c6aba1c23" in sources and "47b242d1616ee0d7" not in sources
     assert "4 documents" in sources  # the skipped image has no stored copy
     assert chart_count(shown["Sources"]) == 1
+
+
+def test_every_page_renders_from_a_warehouse_the_build_made(built_warehouse, monkeypatch):
+    monkeypatch.setenv("SAFESTART_WAREHOUSE_PATH", str(built_warehouse))
+    monkeypatch.setenv("SAFESTART_POSTGRES_URL", UNREACHABLE)
+    st.cache_data.clear()
+    for page in dashboard.PAGES:
+        run_page(page)
+    brief = run_page("Mine brief", mine="0100001")
+    with duckdb.connect(str(built_warehouse), read_only=True) as connection:
+        top, = connection.execute("select top_sections_12m from mart_mine_scorecard where mine_id = '0100001'"
+                                  ).fetchone()
+        headings = dict(connection.execute("select section, heading from cfr_section where title = 30").fetchall())
+    # Section 1.1, cited once here, ranks where the mart ranks it, with the heading and text of 30 CFR 1.1 alone.
+    sections = brief.dataframe[0].value.head(len(top))
+    assert "1.1" in top and sections["cfr_section"].tolist() == top
+    assert sections["heading"].fillna("").tolist() == [headings.get(section) or "" for section in top]
+    assert "**30 CFR" in text_of(brief) and "29 CFR" not in text_of(brief)
 
 
 def test_every_page_says_what_is_missing_without_any_store(tmp_path, monkeypatch):
@@ -309,6 +272,21 @@ def test_a_missing_mart_empties_only_its_own_panel(stores):
     assert "Accumulation of combustible materials" in text
 
 
+def test_a_failed_warehouse_query_is_asked_again_and_answers_stay_cached(stores, monkeypatch):
+    """A passing failure (out of memory, the file held by another process) clears at the next run, not at the next
+    build, when the warehouse's stamp in the cache key changes."""
+    answer, calls = data.top_cited_sections, []
+
+    def top_cited_sections(limit: int) -> data.Table:
+        calls.append(limit)
+        return answer(limit) if len(calls) > 1 else data.Table(problem="The warehouse could not answer: Out of Memory")
+
+    monkeypatch.setattr(data, "top_cited_sections", top_cited_sections)
+    tables = [dashboard.warehouse(data.top_cited_sections, 100) for _ in range(3)]
+    assert [table.problem for table in tables] == ["The warehouse could not answer: Out of Memory", None, None]
+    assert tables[2].frame["cfr_section"].iloc[0] == "75.400" and len(calls) == 2  # the answer came from the cache
+
+
 def test_a_mine_brief_from_a_name(stores):
     app = run_page("Mine brief", mine="highwall")
     choice = app.selectbox[0]
@@ -320,22 +298,41 @@ def test_a_mine_brief_from_a_name(stores):
         assert tile in text
     sections = app.dataframe[0].value
     assert list(sections["cfr_section"]) == ["75.400", "77.1605"]
-    assert sections["heading"].iloc[0] == "Accumulation of combustible materials."  # without "§ 75.400" again
+    assert sections["heading"].iloc[0] == "Accumulation of combustible materials."
     assert app.expander[0].label == "2026-09-14 · HANDLING OF MATERIALS · DAYS AWAY FROM WORK ONLY"
     narrative = r"Moving a \$40 roller \*by hand\* when \[it\] slipped." + "\n\n" + r"1\. The belt was locked out."
     assert narrative in text  # shown literally, not as Markdown
 
     choice.select("4601234").run()
+    assert app.subheader[0].value == r"\*\*Highwall Deep Mine No. 2\*\*"  # the name as MSHA writes it, not bold
     text = text_of(app)
     assert "No citations at this mine in the 12 months." in text
     assert "No accidents on record for this mine." in text
 
 
 def test_a_mine_brief_from_an_id_as_msha_writes_it(stores):
-    text = text_of(run_page("Mine brief", mine="01-00003"))
+    app = run_page("Mine brief", mine="01-00003")
+    text = text_of(app)
     assert "O'Neal Quarry & Mill" in text
     assert "56.14107" in text and "Moving machine parts" in text
+    # 7.7, cited once here, counts once and reads as 30 CFR 7.7, though 29 CFR has a section 7.7 too.
+    sections = app.dataframe[0].value.set_index("cfr_section")
+    assert sections.loc["7.7", ["heading", "citations"]].tolist() == ["Quality assurance.", 1]
+    assert "29 CFR" not in text and "Presentations of other interested persons" not in text
     assert "No mine name or ID matches" in text_of(run_page("Mine brief", mine="no such mine"))
+
+
+def test_numbers_read_the_same_in_every_browser_language(stream_rows):
+    formats = {}
+    for page in dashboard.PAGES:
+        formats |= column_formats(run_page(page, mine="4609612"))
+    assert {"citations", "ss_share", "proposed_penalty_total", "proposed_penalty", "observed", "rows",
+            "found_24h"} <= set(formats)
+    assert not set(formats.values()) & LOCALE_FORMATS, formats
+    # A printf format cannot scale, so the Standards table holds shares in percent and penalty totals in millions.
+    standards = run_page("Standards").dataframe[0].value.set_index("cfr_section")
+    assert standards.loc["75.400", ["ss_share", "proposed_penalty_total"]].tolist() == pytest.approx(
+        [200 / 3, 0.002322])
 
 
 def test_stream_pages_render_events_forecasts_and_checks(stream_rows):
@@ -379,7 +376,11 @@ def test_warehouse_queries_follow_the_contract(stores):
     sections = data.mine_sections("4609612").frame
     assert sections[["cfr_section", "citations", "ss_citations"]].values.tolist() == [["75.400", 2, 2],
                                                                                     ["77.1605", 1, 0]]
-    assert sections["heading"].iloc[0].endswith("Accumulation of combustible materials.")
+    assert sections["heading"].iloc[0] == "Accumulation of combustible materials."
+    # Section number 7.7 is in both titles: the quarry's one citation counts once, with title 30's heading and text.
+    quarry = data.mine_sections("0100003").frame.set_index("cfr_section")
+    assert quarry.loc["7.7", ["heading", "citations", "proposed_penalty"]].tolist() == ["Quality assurance.", 1, 250]
+    assert data.section_text("7.7").frame[["title", "heading"]].values.tolist() == [[30, "Quality assurance."]]
     assert data.mine_accidents("4609612", limit=1).frame["accident_date"].tolist() == [pd.Timestamp("2026-09-14")]
     assert data.national_injury_rate("M").frame["year"].tolist() == [2026]
     versions = data.dataset_versions().frame.set_index("dataset")

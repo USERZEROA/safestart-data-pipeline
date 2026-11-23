@@ -155,7 +155,9 @@ def twelve_months() -> Table:
 
 
 def mine_sections(mine_id: str, limit: int = 10) -> Table:
-    """The standards cited most at one mine in the 12 months, with their headings."""
+    """The standards cited most at one mine in the 12 months, with their headings. MSHA cites 30 CFR, and a section
+    number alone is not a section (29 CFR 7.7 and 30 CFR 7.7 both exist), so the join names the title, as the marts
+    do; without it a citation of such a number would count once per title."""
     return warehouse_query(
         """
         with bounds as (select max(issue_date) as until from violation)
@@ -164,7 +166,7 @@ def mine_sections(mine_id: str, limit: int = 10) -> Table:
                max(v.issue_date) as last_cited
         from violation as v
         cross join bounds
-        left join cfr_section as c on c.section = v.cfr_section
+        left join cfr_section as c on c.title = 30 and c.section = v.cfr_section
         where v.mine_id = $mine_id and v.cfr_section is not null and v.issue_date > bounds.until - interval 12 month
         group by v.cfr_section
         order by citations desc, v.cfr_section
@@ -214,8 +216,13 @@ def top_cited_sections(limit: int = 100) -> Table:
 
 
 def section_text(section: str) -> Table:
+    """The text of a cited section: the section of that number in 30 CFR, the title MSHA cites."""
     return warehouse_query(
-        "select section, title, part, heading, text, amended_on from cfr_section where section = $section",
+        """
+        select section, title, part, heading, text, amended_on
+        from cfr_section
+        where title = 30 and section = $section
+        """,
         {"section": section},
     )
 
