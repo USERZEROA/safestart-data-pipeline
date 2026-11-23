@@ -114,9 +114,21 @@ def test_the_orchestrator_takes_prefect_from_env_and_needs_no_stream_service():
     env = orchestrator["environment"]
     assert env["PREFECT_API_URL"] is None and env["PREFECT_API_KEY"] is None  # from .env when set there, else unset
     assert (env["POLARS_MAX_THREADS"], env["OMP_NUM_THREADS"]) == ("2", "2")
+    # Prefect's local API server starts with a process's first run; on shared vCPUs it can take nearly its default 20 s.
+    assert env["PREFECT_SERVER_EPHEMERAL_STARTUP_TIMEOUT_SECONDS"] == "120"
     assert "depends_on" not in orchestrator and "SAFESTART_POSTGRES_URL" not in env  # nor the database password
     example = (ROOT / ".env.example").read_text(encoding="utf-8")
     assert "# PREFECT_API_URL=\n" in example and "# PREFECT_API_KEY=\n" in example  # optional, so left out
+
+
+def test_the_server_is_updated_by_a_clean_shutdown_never_a_hard_reset():
+    """A reset skips the guest's shutdown: no container is stopped, and Kafka may lose events it acknowledged."""
+    guide = (ROOT / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
+    update = guide[guide.index("- Update after a push to `main`"):]
+    update = update[:update.index("\n- ")]
+    assert "gcloud compute instances stop safestart-pipeline" in update
+    assert "gcloud compute instances start safestart-pipeline" in update
+    assert not re.search(r"^\s*gcloud compute instances reset", guide, re.MULTILINE)
 
 
 def test_secrets_and_data_never_enter_the_image():

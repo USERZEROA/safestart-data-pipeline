@@ -59,7 +59,9 @@ echo "safestart: code at $(git -C "$app" rev-parse --short HEAD)"
 # The bucket seeds the data root. A boot copies only the files the server lacks: once there, the orchestrator keeps
 # them current (new downloads, the lake, the warehouse, the exports), so an older copy in the bucket never replaces
 # them, and nothing on the server is deleted. A database's journal files (SQLite -wal/-shm, DuckDB .wal) and work in
-# progress are never copied, so a journal cannot meet another copy of its database.
+# progress (partial downloads; a lake build's *.partial, *.tmp and transcoded .<16 hex digits>.txt) are never copied,
+# so a journal cannot meet another copy of its database and no work file outlives the build that wrote it.
+exclude='.*objects.tmp.*,.*[.]partial$,.*[.]sqlite-[a-z]+$,.*[.]duckdb[.-].*,.*[.]tmp$,.*[.][0-9a-f]{16}[.]txt$'
 install -d -m 0755 "$data"
 if [[ -n $bucket ]]; then
   command -v gcloud >/dev/null || snap install google-cloud-cli --classic
@@ -67,9 +69,7 @@ if [[ -n $bucket ]]; then
     if gcloud storage ls "gs://$bucket/$part/" >/dev/null 2>&1; then
       echo "safestart: copying what the server lacks of gs://$bucket/$part/"
       install -d "$data/$part"
-      gcloud storage rsync --recursive --no-clobber \
-        --exclude='.*objects.tmp.*,.*[.]partial$,.*[.]sqlite-[a-z]+$,.*[.]duckdb[.-].*' \
-        "gs://$bucket/$part" "$data/$part"
+      gcloud storage rsync --recursive --no-clobber --exclude="$exclude" "gs://$bucket/$part" "$data/$part"
     else
       echo "safestart: gs://$bucket/$part/ is empty, skipped"
     fi

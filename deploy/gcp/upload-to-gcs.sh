@@ -35,11 +35,12 @@ if ! command -v gcloud >/dev/null; then
   exit 1
 fi
 
-# Not data: partial downloads of a running crawl (objects/tmp/), half-written lake files (*.partial), and the journal
-# files of a database in use (SQLite's -wal, -shm and -journal; the warehouse's DuckDB .wal, a build in progress and its
-# staging folder), which must never meet another copy of their database. The patterns avoid backslashes and '|' so
-# they pass unchanged through any shell.
-exclude='.*objects.tmp.*,.*[.]partial$,.*[.]sqlite-[a-z]+$,.*[.]duckdb[.-].*'
+# Not data: partial downloads of a running crawl (objects/tmp/), the work files of a lake build in progress or killed
+# (*.partial, *.tmp, and the text it transcodes a zip's member into, .<16 hex digits>.txt, up to 1.5 GB), and the
+# journal files of a database in use (SQLite's -wal, -shm and -journal; the warehouse's DuckDB .wal, a build in
+# progress and its staging folder), which must never meet another copy of their database. The patterns avoid
+# backslashes and '|' so they pass unchanged through any shell.
+exclude='.*objects.tmp.*,.*[.]partial$,.*[.]sqlite-[a-z]+$,.*[.]duckdb[.-].*,.*[.]tmp$,.*[.][0-9a-f]{16}[.]txt$'
 for folder in $folders; do
   case $folder in
     raw/bulk | state | lake | warehouse | exports | raw) ;;

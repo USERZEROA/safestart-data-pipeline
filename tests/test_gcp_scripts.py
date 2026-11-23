@@ -16,7 +16,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 GCP = ROOT / "deploy" / "gcp"
-EXCLUDE = "--exclude=.*objects.tmp.*,.*[.]partial$,.*[.]sqlite-[a-z]+$,.*[.]duckdb[.-].*"
+EXCLUDE = ("--exclude=.*objects.tmp.*,.*[.]partial$,.*[.]sqlite-[a-z]+$,.*[.]duckdb[.-].*"
+           ",.*[.]tmp$,.*[.][0-9a-f]{16}[.]txt$")
 SERVER_FOLDERS = ("raw/bulk", "state", "lake", "warehouse", "exports")
 STUB = """\
 import json, os, sys
@@ -118,6 +119,9 @@ def test_a_rerun_updates_the_existing_server_instead_of_creating_one(gcloud):
     assert result.returncode == 0, result.stdout + result.stderr
     assert not [args for args in calls() if "create" in args]
     assert call(calls(), "compute", "instances", "add-metadata", "safestart-pipeline")
+    # The new settings take effect at a boot after a clean shutdown, never a hard reset that cuts the containers off.
+    assert ("gcloud compute instances stop safestart-pipeline --zone=us-central1-a && gcloud compute instances start"
+            " safestart-pipeline --zone=us-central1-a" in result.stdout) and "reset" not in result.stdout
 
 
 @pytest.fixture
@@ -184,6 +188,11 @@ def test_the_windows_upload_passes_the_same_arguments_through_gcloud(gcloud, dat
     ("warehouse/.safestart.duckdb-x1y2/mine-0.parquet", False),
     ("lake/msha_ogd/violations/7943d78c6aba1c23.parquet", True),
     ("lake/msha_ogd/mines/.c4ba9edb.parquet.partial", False),
+    # A lake build's work files: the text it transcodes a zip's member into, and the manifest and dictionary it is
+    # writing; a build that was killed leaves them behind.
+    ("lake/msha_ogd/violations/.7943d78c6aba1c23.txt", False), ("lake/msha_ogd/mines/manifest.json.tmp", False),
+    ("lake/msha_ogd/_dictionary.parquet.tmp", False), ("lake/msha_ogd/mines/manifest.json", True),
+    ("lake/msha_ogd/_dictionary.parquet", True), ("exports/safestart/manifest.json", True),
     ("raw/bulk/objects/tmp/download", False), ("raw/bulk/objects/0a/1b/0a1b2c", True),
 ])
 def test_files_in_use_are_never_copied(path, copied):
@@ -198,9 +207,11 @@ def test_files_in_use_are_never_copied(path, copied):
 def test_the_server_copies_what_it_lacks_of_the_folders_it_needs():
     script = (GCP / "startup.sh").read_text(encoding="utf-8")
     assert f"for part in {' '.join(SERVER_FOLDERS)}; do" in script
-    rsync = re.search(r"gcloud storage rsync (.+?)\\\n\s+--exclude='([^']+)'", script)
+    rsync = re.search(r'gcloud storage rsync (.+?) --exclude="\$exclude" "gs://\$bucket/\$part" "\$data/\$part"\n',
+                      script)
     assert rsync and rsync[1].split() == ["--recursive", "--no-clobber"]  # never replaces nor deletes on the server
-    assert f"--exclude={rsync[2]}" == EXCLUDE  # the same files left out both ways
+    exclude = re.findall(r"^exclude='([^']+)'$", script, re.MULTILINE)
+    assert [f"--exclude={pattern}" for pattern in exclude] == [EXCLUDE]  # the same files left out both ways
     assert "chown -R 10001:10001 \"$data\"" in script  # the image's user, as whom the orchestrator writes
     assert re.search(r"scripts/start[.]py .*--with-orchestrator", script)  # the server runs the batch flows
 

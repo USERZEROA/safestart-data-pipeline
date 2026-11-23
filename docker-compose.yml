@@ -214,7 +214,8 @@ services:
   # image's user (uid 10001); it needs neither Kafka nor PostgreSQL, so it starts on its own. Polars and the model's
   # libraries use two threads, as many as the e2-medium has. It starts only with the "orchestrator" profile
   # (COMPOSE_PROFILES in .env, set by `scripts/start.py --with-orchestrator`), so a workstation's data root is never
-  # written unless asked; the server's startup script turns it on.
+  # written unless asked; the server's startup script turns it on. Without a Prefect API, each process starts Prefect's
+  # local API server with its first run: 10 s on one CPU, 19 s on half of one, so it is given 120 s, not Prefect's 20.
   orchestrator:
     <<: *pipeline
     profiles: [orchestrator]
@@ -226,6 +227,7 @@ services:
       PREFECT_API_URL:
       PREFECT_API_KEY:
       PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+      PREFECT_SERVER_EPHEMERAL_STARTUP_TIMEOUT_SECONDS: "120"
       POLARS_MAX_THREADS: "2"
       OMP_NUM_THREADS: "2"
     volumes:

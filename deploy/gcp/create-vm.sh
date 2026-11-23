@@ -92,7 +92,9 @@ if missing compute instances describe "$name" --zone="$zone"; then
 else
   gc compute instances add-metadata "$name" --zone="$zone" --metadata="$settings" \
     --metadata-from-file=startup-script="$here/startup.sh"
-  echo "$name exists; its settings are updated for the next boot (gcloud compute instances reset $name --zone=$zone)."
+  # A stop shuts the guest down, so every container stops within its grace period; a reset would cut them off.
+  echo "$name exists; its settings are updated for the next boot (gcloud compute instances stop $name --zone=$zone" \
+    "&& gcloud compute instances start $name --zone=$zone)."
 fi
 
 site=${domain:-$address}
