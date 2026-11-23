@@ -14,9 +14,11 @@ from safestart_pipeline.stream.analytics import (
     forecast,
     forecast_rows,
     item,
+    pass_end,
     plan,
 )
 from safestart_pipeline.stream.events import TOPIC_ENFORCEMENT, TOPIC_SOURCES, Event
+from safestart_pipeline.stream.replay import Row, build_event
 
 E0, E1, S0 = (TOPIC_ENFORCEMENT, 0), (TOPIC_ENFORCEMENT, 1), (TOPIC_SOURCES, 0)
 MONDAY = date(2025, 1, 6)
@@ -97,14 +99,108 @@ def test_a_day_is_complete_once_every_partition_is_past_it_or_read_to_its_end():
     assert mark.complete_through(TOPIC_SOURCES) is None  # read to its end without a single event: no day known
 
 
-def test_live_events_place_a_partition_only_when_no_replayed_event_has():
+E2 = (TOPIC_ENFORCEMENT, 2)
+LAST = date(2026, 11, 21)  # the replay pass's last source day, stamped on each of its events
+
+
+def replayed(mark: Watermark, partition, day: date) -> None:
+    mark.seen(partition, day, replayed=True, through=LAST)
+
+
+def test_live_events_never_move_the_clock_while_a_replay_pass_is_under_way():
+    """A fresh start: the watcher's newest records reach partition 1 before the replay's first record does."""
     mark = Watermark()
+    mark.assign([E0, E1, E2])
+    mark.seen(E1, date(2026, 11, 20), replayed=False)
+    for partition in (E0, E1, E2):
+        mark.end(partition)
+    assert mark.complete_through(TOPIC_ENFORCEMENT, wait_for_replay=True) is None  # an empty store waits
+    replayed(mark, E0, date(2024, 1, 1))
+    replayed(mark, E2, date(2024, 1, 1))
+    mark.end(E0)
+    mark.end(E2)
+    assert mark.replaying(TOPIC_ENFORCEMENT)
+    assert mark.complete_through(TOPIC_ENFORCEMENT, wait_for_replay=True) == date(2023, 12, 31)
+    mark.seen(E0, date(2026, 11, 22), replayed=False)  # more live records, on a partition the replay places too
+    assert mark.complete_through(TOPIC_ENFORCEMENT) == date(2023, 12, 31)
+    mark.end(E0)
+    assert mark.complete_through(TOPIC_ENFORCEMENT) == date(2023, 12, 31)
+    replayed(mark, E1, date(2025, 6, 3))
+    mark.end(E1)
+    assert mark.complete_through(TOPIC_ENFORCEMENT) == date(2025, 6, 2)
+
+
+def test_once_the_pass_has_reached_its_last_day_the_live_days_move_the_clock():
+    """The weekly versions the watcher compares after the replay are forecast in the same process."""
+    mark = Watermark()
+    for partition, day in ((E0, LAST), (E1, LAST - timedelta(days=1)), (E2, LAST)):  # nothing on day LAST on E1
+        replayed(mark, partition, day)
+        mark.end(partition)
+    assert not mark.replaying(TOPIC_ENFORCEMENT) and mark.complete_through(TOPIC_ENFORCEMENT) == LAST - timedelta(1)
+    for partition in (E0, E1, E2):
+        mark.seen(partition, LAST + timedelta(days=7), replayed=False)
+    # Partition 1, still being read, may hold the rest of the pass: its replayed day holds the clock until its end.
+    assert mark.complete_through(TOPIC_ENFORCEMENT) == LAST - timedelta(days=2)
+    for partition in (E0, E1, E2):
+        mark.end(partition)
+    assert mark.complete_through(TOPIC_ENFORCEMENT) == LAST + timedelta(days=6)
+
+
+def test_a_partition_still_being_read_behind_the_last_day_keeps_its_replayed_place():
+    mark = Watermark()
+    replayed(mark, E0, LAST)
+    replayed(mark, E1, LAST - timedelta(days=5))  # the consumer is behind on partition 1
+    mark.seen(E1, LAST + timedelta(days=3), replayed=False)
+    mark.end(E0)
+    assert mark.complete_through(TOPIC_ENFORCEMENT) == LAST - timedelta(days=6)
+    mark.end(E1)  # read to its end: nothing of the pass is left on it
+    assert mark.complete_through(TOPIC_ENFORCEMENT) == LAST + timedelta(days=2)
+
+
+def test_a_rebalance_neither_ends_a_pass_nor_starts_one_again():
+    during = Watermark()
+    replayed(during, E0, date(2025, 3, 3))
+    during.revoke([E0])
+    during.assign([E0])
+    during.seen(E0, date(2026, 11, 20), replayed=False)
+    during.end(E0)
+    assert during.replaying(TOPIC_ENFORCEMENT) and during.complete_through(TOPIC_ENFORCEMENT) is None
+
+    after = Watermark()
+    replayed(after, E0, LAST)
+    after.revoke([E0])
+    after.assign([E0])
+    after.seen(E0, LAST + timedelta(days=4), replayed=False)
+    after.end(E0)
+    assert after.complete_through(TOPIC_ENFORCEMENT) == LAST + timedelta(days=3)
+
+
+def test_topics_without_a_replay_pass_are_placed_by_their_newest_days():
+    """safety.sources has no replay; a replay without stamps (older versions) is placed as the newest day it gave."""
+    mark = Watermark()
+    mark.seen(S0, date(2026, 11, 20), replayed=False)
+    mark.end(S0)
+    assert mark.complete_through(TOPIC_SOURCES) == date(2026, 11, 19)
     mark.seen(E0, date(2024, 3, 5), replayed=True)
-    mark.seen(E0, date(2026, 11, 20), replayed=False)  # a record a watcher found, ahead of the replay
-    mark.seen(E1, date(2026, 11, 18), replayed=False)
-    assert mark.complete_through(TOPIC_ENFORCEMENT) == date(2024, 3, 4)
-    mark.revoke([E0])
-    assert mark.complete_through(TOPIC_ENFORCEMENT) == date(2026, 11, 17)
+    mark.seen(E0, date(2026, 11, 20), replayed=False)
+    mark.end(E0)
+    assert mark.complete_through(TOPIC_ENFORCEMENT) == date(2026, 11, 19)
+
+
+def test_the_pass_stamp_is_read_from_replayed_events_only():
+    def make(mode, source):
+        return Event.new(kind="violation", key="1", mode=mode, occurred_at=date(2025, 1, 8), title="t", source=source)
+
+    assert pass_end(make("replay", {"through": "2026-11-21"})) == LAST
+    assert pass_end(make("replay", {"dataset": "violations"})) is None
+    assert pass_end(make("replay", {"through": "the end"})) is None  # never a reason to stop the consumer
+    assert pass_end(make("live", {"through": "2026-11-21"})) is None
+    row = Row(date(2025, 1, 8), 0, 1, LAST, "violation", "1", {
+        "key": "1", "mine_id": "4609612", "occurred": date(2025, 1, 8), "own_coal_metal": "C", "own_state": None,
+        "own_mine_name": None, "event_no": "1", "part_section": "75.400", "sig_sub": "Y", "likelihood": None,
+        "inj_illness": None, "negligence": None, "proposed_penalty": None, "mine_district": "C04", "mine_state": "WV",
+        "mine_name": "Highwall", "mine_coal_metal": "C"})
+    assert pass_end(build_event(row, {"violation": "a1" * 8})) == LAST  # the replay stamps what the consumer reads
 
 
 def test_counts_treat_s_and_s_violations_and_serious_accidents_as_serious():

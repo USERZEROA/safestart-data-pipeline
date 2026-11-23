@@ -5,8 +5,14 @@ It sends four synthetic events of one mine (an inspection, an S&S and an ordinar
 district named after the run, so they cannot be mistaken for real records. It then waits until the storage consumer
 has stored each one in stream.events and the analytics consumer has counted each one exactly once in
 stream.daily_counts, and checks the dashboard's health endpoint. Afterwards it deletes its rows from PostgreSQL, the
-analytics consumer's ledger of counted events included (`--keep` leaves them); the events themselves stay in the Kafka
-log until retention removes them.
+analytics consumer's ledger of counted events and the forecasts of its district included (`--keep` leaves them); the
+events themselves stay in the Kafka log until retention removes them.
+
+The events happen on the stream's first source day, or today while the store holds no enforcement count. Once the
+replay is over, the analytics consumer places each partition at the newest day it has carried (stream/analytics.py),
+so events dated today would make every day before today look complete, and the days MSHA has not published yet would
+be forecast before their records arrive. No partition stands before the first day, so the run's events never move
+that clock.
 
 On the host, after `python scripts/start.py`, it reads the PostgreSQL password and the host ports from .env. Inside a
 service container the SAFESTART_KAFKA_BOOTSTRAP, SAFESTART_POSTGRES_URL and SAFESTART_DASHBOARD_URL variables win:
@@ -31,7 +37,7 @@ import psycopg
 from confluent_kafka import Producer
 
 from safestart_pipeline import definitions
-from safestart_pipeline.stream.events import Event
+from safestart_pipeline.stream.events import ENFORCEMENT_KINDS, Event
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -70,6 +76,14 @@ def endpoints(environ: Mapping[str, str], env: Mapping[str, str]) -> Endpoints:
         dashboard=(environ.get("SAFESTART_DASHBOARD_URL")
                    or f"http://127.0.0.1:{env.get('DASHBOARD_HOST_PORT') or 8501}").rstrip("/"),
     )
+
+
+def source_day(connection: psycopg.Connection, today: date) -> date:
+    """The day the run's events happen: the stream's first enforcement day, or today on a store without one (see the
+    module docstring)."""
+    first = connection.execute("SELECT min(day) FROM stream.daily_counts WHERE kind = ANY(%s)",
+                               (sorted(ENFORCEMENT_KINDS),)).fetchone()[0]
+    return first or today
 
 
 def smoke_events(run: str, day: date) -> list[Event]:
@@ -206,10 +220,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     where = endpoints(os.environ, read_env(args.env_file))
     run = uuid.uuid4().hex[:8]
-    events = smoke_events(run, datetime.now(UTC).date())
-    send(events, where.kafka)
-    print(f"Sent {len(events)} events of run {run} to Kafka at {where.kafka}.")
     with psycopg.connect(where.postgres, autocommit=True, connect_timeout=10) as connection:
+        events = smoke_events(run, source_day(connection, datetime.now(UTC).date()))
+        send(events, where.kafka)
+        print(f"Sent {len(events)} events of run {run} to Kafka at {where.kafka}.")
         problems = verify(connection, events, args.timeout)
         if not args.keep:
             remove(connection, events)

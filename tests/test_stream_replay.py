@@ -8,12 +8,14 @@ from datetime import date
 import polars as pl
 import pytest
 
+from safestart_pipeline.stream import replay as replay_module
 from safestart_pipeline.stream.replay import (
     Pacer,
     build_event,
     next_month,
     read_rows,
     replay,
+    wait_for_lake,
 )
 
 D = pl.Date
@@ -128,7 +130,7 @@ def test_events_carry_their_mine_and_the_contracts_details(lake):
                           "likelihood": "Reasonably", "injury_illness": "LostDays", "negligence": "ModNegligence",
                           "proposed_penalty": 1205.0}
     assert v1.title == "S&S violation of 30 CFR 75.400 at Highwall Park Surface Mine"
-    assert v1.source == {"dataset": "violations", "version": versions(lake)["violation"]}
+    assert v1.source == {"dataset": "violations", "version": versions(lake)["violation"], "through": "2024-01-31"}
     # A hyphenated section number is a section of its own (30 CFR 77.216-3); only the paragraph is dropped.
     assert by_id["violation:V2"].details["cfr_section"] == "77.216-3"
     v3 = by_id["violation:V3"]  # no section cited
@@ -147,6 +149,56 @@ def test_events_carry_their_mine_and_the_contracts_details(lake):
     assert "inspection:I4" not in by_id
     assert by_id["order_107a:V1"].details == {"termination_date": "2024-01-02"}
     assert by_id["order_107a:V1"].title == "Imminent-danger order (107(a)) at Highwall Park Surface Mine"
+
+
+def test_every_event_carries_the_last_day_its_pass_sends_before_the_first_is_sent(lake):
+    """The analytics consumer learns from the first event when the pass will be over. V4's later copy (2024-02-01) is
+    never sent, so it must not be the last day: a pass that never reached its stamp would never be seen to end."""
+    sent = events(lake)
+    assert {event.source["through"] for event in sent} == {max(event.occurred_at for event in sent)[:10]}
+    assert {event.source["through"] for event in sent} == {"2024-01-31"}
+    assert {row.through for row in read_rows(lake, date(2024, 1, 1), date(2024, 1, 5))} == {date(2024, 1, 4)}
+
+
+def test_without_a_lake_the_replay_waits_for_one_and_says_so_once(tmp_path, lake, caplog):
+    """A data root gets its lake from the orchestrator's first batch; failing until then would only restart forever."""
+    empty = tmp_path / "empty"
+
+    class Stop:
+        """A stop event whose waits pass at once, the lake appearing during the second."""
+
+        def __init__(self):
+            self.waits = 0
+
+        def wait(self, seconds):
+            self.waits += 1
+            if self.waits == 2:
+                empty.mkdir()
+                for name in ("mines", "inspections", "violations", "orders_107a", "accidents"):
+                    write(empty, name, {"mines": MINES, "inspections": INSPECTIONS, "violations": VIOLATIONS,
+                                        "orders_107a": ORDERS, "accidents": ACCIDENTS}[name])
+            return False
+
+    caplog.set_level("INFO", logger="safestart_pipeline.stream.replay")
+    stop = Stop()
+    assert wait_for_lake(empty, stop, every=300) and stop.waits == 2
+    assert [record.getMessage() for record in caplog.records] == [
+        (f"no lake at {empty} yet (inspections, violations, orders_107a, accidents, mines missing): waiting for the"
+         " orchestrator's batch, looking again every 300 s")]
+    assert wait_for_lake(lake, threading.Event())  # a lake: no wait at all
+
+    stopped = threading.Event()
+    stopped.set()
+    assert not wait_for_lake(tmp_path / "still-empty", stopped)
+
+
+def test_a_replay_stopped_while_it_waits_for_the_lake_exits_without_sending(tmp_path, monkeypatch):
+    stopped = threading.Event()
+    stopped.set()
+    monkeypatch.setenv("SAFESTART_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(replay_module, "stop_on_signals", lambda: stopped)
+    monkeypatch.setattr(replay_module, "make_publisher", lambda: pytest.fail("nothing to send without a lake"))
+    assert replay_module.main([]) == 0
 
 
 def test_an_accident_is_serious_by_its_degree_of_injury_alone(lake):

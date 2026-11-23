@@ -43,10 +43,12 @@ def test_the_live_page_reads_one_modes_newest_events_from_an_index(conn):
     assert "events_mode_received" in " ".join(row[0] for row in plan)
 
 
-def violation(key, day, district="C04", sig_sub=True, mode="replay"):
+def violation(key, day, district="C04", sig_sub=True, mode="replay", through=None):
+    """A violation event; `through` stamps a replayed one with its pass's last day, as stream/replay.py does."""
     return Event.new(kind="violation", key=key, mode=mode, occurred_at=day, title=f"Violation {key}",
                      details={"cfr_section": "75.400", "sig_sub": sig_sub}, mine_id=f"mine-{district}",
-                     district=district, state="WV", coal_metal="C")
+                     district=district, state="WV", coal_metal="C",
+                     source={"through": through.isoformat()} if through else {})
 
 
 def test_storage_keeps_each_event_once_with_where_it_first_arrived(conn):
@@ -65,15 +67,17 @@ def test_storage_keeps_each_event_once_with_where_it_first_arrived(conn):
     assert rows[0][4] == datetime(2024, 1, 1, tzinfo=UTC) and rows[0][5] == {}
 
 
-def history(days=120):
-    """A replay of `days` days: violations in two districts on weekdays (more on Tuesdays), a few on weekends."""
-    events = []
-    for n in range(days):
+def history(days=120, *, first=0, mode="replay", stamped=False):
+    """Days `first` to `days - 1` of a record: violations in two districts on weekdays (more on Tuesdays), a few on
+    weekends. Replayed by default, `stamped` with the last day as a replay pass of these days stamps them."""
+    events, last = [], START + timedelta(days=days - 1)
+    for n in range(first, days):
         day = START + timedelta(days=n)
         for district, base in (("C04", 6), ("M3", 3)):
             count = base + (4 if day.weekday() == 1 else 0) if day.weekday() < 5 else n % 2
             count += 25 if (district, n) == ("C04", 71) else 0  # one unusual day
-            events += [violation(f"{district}-{n}-{i}", day, district, sig_sub=i % 3 == 0) for i in range(count)]
+            events += [violation(f"{district}-{n}-{i}", day, district, sig_sub=i % 3 == 0, mode=mode,
+                                 through=last if stamped else None) for i in range(count)]
     return events
 
 
@@ -153,6 +157,54 @@ def test_late_and_earlier_events_recompute_the_forecasts_that_depend_on_them(con
         analytics.handle(batch)
     assert analytics.done[TOPIC_ENFORCEMENT] == through
     assert_forecasts_match(conn, through)  # the stream now starts 29 days earlier, and day 40 holds 30 more
+
+
+ENDED = {(TOPIC_ENFORCEMENT, 0), (TOPIC_ENFORCEMENT, 1), (TOPIC_SOURCES, 0)}
+
+
+def newest_forecast(conn):
+    return conn.execute("SELECT max(day) FROM stream.forecasts").fetchone()[0]
+
+
+def newest_day(batch):
+    return max((date.fromisoformat(Event.from_json(record.value).occurred_at[:10]) for record in batch.records),
+               default=None)
+
+
+def test_live_records_found_before_the_replay_are_forecast_only_once_the_replay_has_passed_them(conn):
+    """A fresh start: the version watcher announces the newest week while the replay's first record has reached one
+    partition only. The week is counted at once, but no day is forecast before the replay has passed it, and the
+    forecasts come out as a clean start computes them."""
+    replay, last = history(stamped=True), START + timedelta(days=119)
+    analytics = consumer(conn)
+    analytics.handle(Batch([], ENDED))  # empty topics at the start
+    watched = history(first=113, mode="live")  # the same records as the replay's last week
+    records = [Record(TOPIC_ENFORCEMENT, 0 if event.district == "C04" else 1, n, event.to_json())
+               for n, event in enumerate(watched + replay[:1])]
+    analytics.handle(Batch(records, ENDED))
+    assert conn.execute("SELECT sum(events) FROM stream.daily_counts").fetchone()[0] == len(watched) + 1
+    assert newest_forecast(conn) is None and analytics.done.get(TOPIC_ENFORCEMENT) is None
+
+    reached = START
+    for batch in batches(replay[1:], offset=10_000):
+        analytics.handle(batch)
+        reached = max(reached, newest_day(batch) or reached)
+        assert newest_forecast(conn) is None or newest_forecast(conn) < reached
+    assert analytics.done[TOPIC_ENFORCEMENT] == last - timedelta(days=1)
+    assert analytics.totals["counted"] == len(replay)
+    assert_forecasts_match(conn, last - timedelta(days=1))
+
+
+def test_the_days_the_watcher_finds_after_the_replay_are_forecast_in_the_same_process(conn):
+    analytics = consumer(conn)
+    for batch in batches(history(stamped=True)):
+        analytics.handle(batch)
+    last = START + timedelta(days=119)
+    assert analytics.done[TOPIC_ENFORCEMENT] == last - timedelta(days=1)
+    for batch in batches(history(127, first=120, mode="live"), offset=100_000):  # a week of new versions' records
+        analytics.handle(batch)
+    assert analytics.done[TOPIC_ENFORCEMENT] == last + timedelta(days=6)
+    assert_forecasts_match(conn, last + timedelta(days=6))
 
 
 def test_a_source_day_is_not_forecast_before_every_partition_has_moved_past_it(conn):

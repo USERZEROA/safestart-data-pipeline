@@ -9,11 +9,19 @@ once per event however often the event arrives. One transaction runs at a time (
 instance of the consumer cannot interleave its counts with a forecast being computed.
 
 Completed days. A source day is complete on a topic once every partition the consumer reads has carried a later day or
-has been read to its end. The replay sends each partition's events in source-time order, so a partition's place in
-source time is the newest day of the replayed events it has carried; a partition that has carried only live events
-(found by a watcher, in no particular order) is placed by its newest live day. An event that arrives for a day already
-forecast (a record found late) changes that day's count, and the forecasts that depend on the day are computed again:
-a forecast row is a function of daily_counts alone, so whenever it is computed it comes out the same.
+has been read to its end. The replay sends its events in source-time order and stamps each with the last source day of
+its pass (`source["through"]`). While a pass is under way (the topic has not yet carried a replayed event of that
+day), a partition stands at the newest day of the replayed events it has carried; live events, which a watcher finds
+in no particular order and often far ahead of the replay, are counted but never move the clock, so no day is forecast
+before the replay has passed it (a consumer restarted during a pass learns of it from the pass's next event). Once
+the pass has reached its last day, a partition stands at the newer of its newest replayed and live days, so the days
+the watchers find after the replay are forecast in the same process as they complete; a partition still being read
+keeps its replayed day until that reaches the pass's last day, since the rest of the pass may still be on it.
+safety.sources, which no replay feeds, is placed by its live days throughout. A store without forecasts waits for the
+replay's first event on the enforcement topic: placed by live events alone, every day before the newest of them would
+look complete, and the whole history would be forecast at once from nearly empty counts. An event that arrives for a
+day already forecast (a record found late) changes that day's count, and the forecasts that depend on the day are
+computed again: a forecast row is a function of daily_counts alone, so whenever it is computed it comes out the same.
 
 Forecast ("ewma-weekday"). Enforcement follows the work week: since 2024 MSHA has cited 512 violations on an average
 Tuesday and 16 on an average Saturday. Each day of a series (kind, district) is therefore forecast from the same weekday
@@ -26,11 +34,12 @@ never flagged. A day is judged only with MIN_HISTORY weeks of history. A series 
 event that day or in that day's history.
 
 The parameters were chosen on the lake's 52 enforcement series (4 kinds by 13 districts, January 2024 to November
-2026), scored on the series-days that have history: this method's mean absolute error is 3.65 events, against 7.1 for
-the best plain day-to-day EWMA (which mostly forecasts the weekly cycle) and 3.9 to 4.0 for shorter memories
-(smoothing 0.2 or 0.3 over 12 weeks). It flags 1.5% of the series-days it judges (accidents 0.95%, inspections 1.85%,
-violations 2.15%, 107(a) orders none): public holidays, and days such as 2024-05-22, when MSHA opened 1,664 "Special
-Emphasis Program" inspections and every district's inspection count was flagged (266 in M2 against 22.5 forecast).
+2026), scored on the series-days that have history: this method's mean absolute error is 3.65 events, against 6.3 for
+the best plain day-to-day EWMA, which misses the weekly cycle (smoothing 1, that is yesterday's count; 7.1 with this
+method's smoothing of 0.1), and 3.9 to 4.0 for shorter memories (smoothing 0.2 or 0.3 over 12 weeks). It flags 1.5% of
+the series-days it judges (accidents 0.95%, inspections 1.85%, violations 2.15%, 107(a) orders none): public holidays,
+and days such as 2024-05-22, when MSHA opened 1,664 "Special Emphasis Program" inspections and every district's
+inspection count was flagged (266 in M2 against 22.5 forecast).
 """
 
 from __future__ import annotations
@@ -95,6 +104,7 @@ WHERE (f.observed, f.predicted, f.residual, f.anomaly, f.method)
 """
 log = logging.getLogger(__name__)
 SeriesDay = tuple[str, str, date]  # (kind, district, day)
+Partition = tuple[str, int]  # (topic, partition)
 
 
 class Item(NamedTuple):
@@ -113,6 +123,15 @@ def item(event: Event) -> Item:
     flag = {"violation": "sig_sub", "accident": "serious"}.get(event.kind)
     return Item(event.event_id, date.fromisoformat(event.occurred_at[:10]), event.kind, event.district or "",
                 flag is not None and event.details.get(flag) is True)
+
+
+def pass_end(event: Event) -> date | None:
+    """The last source day of the replay pass that sent the event (`source["through"]`, see stream/replay.py); None
+    for a live event or a replayed one without a readable stamp."""
+    try:
+        return date.fromisoformat(event.source["through"]) if event.mode == "replay" else None
+    except (KeyError, ValueError):
+        return None
 
 
 class Forecast(NamedTuple):
@@ -169,37 +188,64 @@ def plan(done: date | None, through: date | None, origin: date, former_origin: d
 
 
 class Watermark:
-    """Where each partition the consumer reads stands in source time (see the module docstring)."""
+    """Where each partition the consumer reads stands in source time, and how far each topic's replay pass has come
+    (see the module docstring). A partition's days are forgotten when it is revoked, since another consumer may read it
+    meanwhile; a topic's pass is not, so a rebalance neither ends a pass nor starts one again."""
 
     def __init__(self) -> None:
-        self.assigned: set[tuple[str, int]] = set()
-        self.ended: set[tuple[str, int]] = set()
-        self.replayed: dict[tuple[str, int], date] = {}
-        self.live: dict[tuple[str, int], date] = {}
+        self.assigned: set[Partition] = set()
+        self.ended: set[Partition] = set()
+        self.replayed: dict[Partition, date] = {}  # the newest day of the replayed events a partition has carried
+        self.live: dict[Partition, date] = {}  # the newest day of its live events
+        self.through: dict[str, date] = {}  # per topic, the last source day of the newest replay pass seen
+        self.reached: dict[str, date] = {}  # per topic, the newest day of the replayed events it has carried
 
-    def assign(self, partitions: Iterable[tuple[str, int]]) -> None:
+    def assign(self, partitions: Iterable[Partition]) -> None:
         self.assigned |= set(partitions)
 
-    def revoke(self, partitions: Iterable[tuple[str, int]]) -> None:
+    def revoke(self, partitions: Iterable[Partition]) -> None:
         for partition in partitions:
             self.assigned.discard(partition)
             self.ended.discard(partition)
             self.replayed.pop(partition, None)
             self.live.pop(partition, None)
 
-    def seen(self, partition: tuple[str, int], day: date, replayed: bool) -> None:
+    def seen(self, partition: Partition, day: date, *, replayed: bool, through: date | None = None) -> None:
+        """An event of `day` on the partition; `through` is a replayed event's pass stamp."""
         newest = self.replayed if replayed else self.live
         newest[partition] = max(newest.get(partition, day), day)
+        topic = partition[0]
+        if replayed:
+            self.reached[topic] = max(self.reached.get(topic, day), day)
+            if through is not None:
+                self.through[topic] = max(self.through.get(topic, through), through)
         self.assigned.add(partition)
         self.ended.discard(partition)
 
-    def end(self, partition: tuple[str, int]) -> None:
+    def end(self, partition: Partition) -> None:
         self.assigned.add(partition)
         self.ended.add(partition)
 
-    def complete_through(self, topic: str) -> date | None:
-        """The last complete source day of a topic; None until every partition with events to read has placed itself."""
-        places = {p: self.replayed.get(p) or self.live.get(p) for p in self.assigned if p[0] == topic}
+    def replaying(self, topic: str) -> bool:
+        """Whether a replay pass is under way on the topic: it has stamped a last day the topic has not carried yet."""
+        through = self.through.get(topic)
+        return through is not None and self.reached[topic] < through
+
+    def place(self, partition: Partition) -> date | None:
+        """A partition's place in source time: during a pass, or while it is still being read behind the pass's last
+        day, its newest replayed day; otherwise the newer of its newest replayed and live days."""
+        replayed, live, through = self.replayed.get(partition), self.live.get(partition), self.through.get(partition[0])
+        behind = through is not None and (replayed is None or replayed < through)
+        if self.replaying(partition[0]) or (behind and partition not in self.ended):
+            return replayed
+        return max((day for day in (replayed, live) if day is not None), default=None)
+
+    def complete_through(self, topic: str, *, wait_for_replay: bool = False) -> date | None:
+        """The last complete source day of a topic; None until every partition with events to read has placed itself,
+        and with `wait_for_replay` until the topic has carried a replayed event."""
+        if wait_for_replay and topic not in self.reached:
+            return None
+        places = {p: self.place(p) for p in self.assigned if p[0] == topic}
         known = [place for place in places.values() if place is not None]
         waiting = [place for p, place in places.items() if p not in self.ended]
         if not known or None in waiting:
@@ -229,7 +275,8 @@ class Analytics:
                             problem)
                 continue
             items.append(item(event))
-            self.watermark.seen((record.topic, record.partition), items[-1].day, event.mode == "replay")
+            self.watermark.seen((record.topic, record.partition), items[-1].day, replayed=event.mode == "replay",
+                                through=pass_end(event))
         for partition in batch.ended:
             self.watermark.end(partition)
         with self.conn.transaction():
@@ -258,7 +305,9 @@ class Analytics:
         if topic not in self.done:
             self.done[topic] = self.conn.execute(
                 "SELECT max(day) FROM stream.forecasts WHERE kind = ANY(%s)", (kinds,)).fetchone()[0]
-        done, through = self.done[topic], self.watermark.complete_through(topic)
+        done = self.done[topic]
+        # The stack always starts the replay, and an empty store waits for it (see "Completed days").
+        through = self.watermark.complete_through(topic, wait_for_replay=done is None and topic == TOPIC_ENFORCEMENT)
         days, redo = plan(done, through, origin, self.origin.get(topic), changed)
         self.origin[topic] = origin
         if not days and not redo:

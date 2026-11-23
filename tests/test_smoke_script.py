@@ -109,6 +109,16 @@ def test_verify_passes_once_both_consumers_wrote_every_event_and_cleanup_removes
     assert ledger.fetchone()[0] == 0  # the counts' ledger goes with them, so daily_counts stays its sum
 
 
+def test_the_events_happen_on_the_streams_first_day_so_they_never_move_the_analytics_clock(stream_db):
+    """Dated today, they would place their partition at today once the replay is over, and every day before it would
+    look complete (stream/analytics.py)."""
+    assert smoke.source_day(stream_db, DAY) == DAY  # nothing counted yet: no clock to move
+    stream_db.execute("INSERT INTO stream.daily_counts (day, kind, district, events) VALUES"
+                      " ('2024-01-01', 'violation', 'C04', 3), ('2024-01-02', 'inspection', 'M3', 1),"
+                      " ('2019-06-30', 'page_change', '', 1)")  # a page's lastmod: not the enforcement stream
+    assert smoke.source_day(stream_db, DAY) == date(2024, 1, 1)
+
+
 def test_verify_names_the_consumer_that_fell_short(stream_db):
     events = smoke.smoke_events("ab12cd34", DAY)
     write_as_consumers(stream_db, events, store={events[0].event_id}, count_twice={"accident"})

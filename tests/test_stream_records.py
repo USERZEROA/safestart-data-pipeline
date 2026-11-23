@@ -161,7 +161,8 @@ def test_the_replay_and_the_watcher_make_the_same_event_of_a_record(lake):
     assert sorted(watched) == sorted(set(replayed) - {f"{kind}:1" for kind in CONTRACT}) and len(watched) == 15
     for event_id, found in watched.items():
         again = replayed[event_id]
-        assert (found.mode, again.mode, found.source) == ("live", "replay", again.source)
+        assert (found.mode, again.mode) == ("live", "replay")
+        assert again.source == found.source | {"through": "2026-11-20"}  # the replay stamps its pass's last day
         assert comparable(found) == comparable(again), event_id
 
     kept = watched["violation:6"]

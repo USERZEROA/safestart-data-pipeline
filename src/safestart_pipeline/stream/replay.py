@@ -14,6 +14,14 @@ keeps the rhythm of the record (MSHA's inspectors work weekdays) and the 2024-20
 A replay that falls behind (a slow broker) sends without pausing until it has caught up. With `--loop` it starts again
 from the start date after the newest record, reading the lake afresh; the event ids are unchanged, so the consumers
 keep what they already have and store and count nothing twice.
+
+Each pass stamps its events: `source` names the lake version a record was read from and `through`, the last source day
+the pass sends, known before its first event. The analytics consumer reads the stamp to tell a pass under way, during
+which the watchers' newer records must not move its clock, from one that has reached its end (stream/analytics.py).
+
+A data root without a lake (a new server before the orchestrator's first batch, a workstation started without one)
+gets one only from the orchestrator. The replay then says so once and looks again every few minutes until every
+dataset it reads is there, instead of failing and being restarted again and again.
 """
 
 from __future__ import annotations
@@ -37,6 +45,8 @@ from .events import Event
 from .kafka import make_publisher, stop_on_signals
 from .records import BY_NAME, KINDS, Kind, event, mine_sql, one_copy_sql, select_sql
 
+LAKE_DATASETS = (*(kind.dataset for kind in KINDS), "mines")  # every dataset the replay reads
+LAKE_WAIT_SECONDS = 300.0  # how often a replay without a lake looks for one again
 log = logging.getLogger(__name__)
 
 
@@ -44,6 +54,7 @@ class Row(NamedTuple):
     day: date
     day_index: int  # this record's place among its source day's records
     day_events: int  # how many records the source day has
+    through: date  # the last source day of the pass
     kind: str
     key: str
     record: dict[str, Any]  # the record as `records.mine_sql` reads it
@@ -54,17 +65,34 @@ def current_parquet(lake: Path, dataset: str) -> Path:
     return lake / dataset / manifest["current"]
 
 
+def missing_datasets(lake: Path) -> list[str]:
+    """The datasets the replay reads of which the lake holds no current version yet."""
+    missing = []
+    for dataset in LAKE_DATASETS:
+        manifest = lake / dataset / "manifest.json"
+        if not manifest.is_file() or "current" not in json.loads(manifest.read_text(encoding="utf-8")):
+            missing.append(dataset)
+    return missing
+
+
+def wait_for_lake(lake: Path, stop: threading.Event, every: float = LAKE_WAIT_SECONDS) -> bool:
+    """Wait until the lake holds every dataset the replay reads, saying once that it waits; False when stopped first."""
+    if missing := missing_datasets(lake):
+        log.info("no lake at %s yet (%s missing): waiting for the orchestrator's batch, looking again every %.0f s",
+                 lake, ", ".join(missing), every)
+    while missing:
+        if stop.wait(every):
+            return False
+        missing = missing_datasets(lake)
+    return True
+
+
 def next_month(day: date) -> date:
     return date(day.year + day.month // 12, day.month % 12 + 1, 1)
 
 
 def parquet_sql(path: Path) -> str:
     return "read_parquet('" + path.as_posix().replace("'", "''") + "')"
-
-
-def newest_sql(files: Mapping[str, str]) -> str:
-    return "SELECT max(day) FROM (" + " UNION ALL ".join(
-        f"SELECT max({kind.date}) AS day FROM {files[kind.name]} r" for kind in KINDS) + ")"
 
 
 def repeated_sql(kind: Kind, file: str) -> str:
@@ -81,6 +109,12 @@ def month_sql(kind: Kind, file: str) -> str:
             f" UNION ALL SELECT * FROM repeated_{kind.name} WHERE occurred >= $start AND occurred < $until")
 
 
+def last_day_sql(files: Mapping[str, str]) -> str:
+    """The newest source day among the records of [$start, $until) that are sent, one copy per key."""
+    return "SELECT max(occurred) FROM (" + " UNION ALL ".join(
+        f"SELECT occurred FROM ({month_sql(kind, files[kind.name])})" for kind in KINDS) + ")"
+
+
 def rows_sql(files: Mapping[str, str], mines: str) -> str:
     """Every kind's records in [$start, $until), source day by source day, each day's in the kind order of `KINDS`.
     The kinds read different columns, so a column holds one kind's values and is null in the others' records."""
@@ -93,16 +127,18 @@ def rows_sql(files: Mapping[str, str], mines: str) -> str:
 
 
 def read_rows(lake: Path, start: date, until: date | None = None, *, chunk: int = 2000) -> Iterator[Row]:
-    """The records from `start` up to (not including) `until`, in source-time order, one calendar month at a time."""
+    """The records from `start` up to (not including) `until`, in source-time order, one calendar month at a time.
+    Each row carries the last source day of them all, known before the first."""
     files = {kind.name: parquet_sql(current_parquet(lake, kind.dataset)) for kind in KINDS}
+    window = {"start": start, "until": until or date.max}
     with tempfile.TemporaryDirectory(prefix="replay-duckdb-") as spill:
         con = duckdb.connect(config={"memory_limit": "256MB", "threads": 2, "temp_directory": spill})
         try:
-            newest = con.execute(newest_sql(files)).fetchone()[0]
-            end = min(until or date.max, newest + timedelta(days=1)) if newest else start
             for kind in KINDS:
                 con.execute(f"CREATE TEMP TABLE repeated_{kind.name} AS {repeated_sql(kind, files[kind.name])}",
-                            {"start": start, "until": end})
+                            window)
+            through = con.execute(last_day_sql(files), window).fetchone()[0]
+            end = through + timedelta(days=1) if through else start
             query = rows_sql(files, parquet_sql(current_parquet(lake, "mines")))
             month = start
             while month < end:
@@ -112,7 +148,7 @@ def read_rows(lake: Path, start: date, until: date | None = None, *, chunk: int 
                 while rows := cursor.fetchmany(chunk):
                     for values in rows:
                         record = dict(zip(names, values, strict=True))
-                        yield Row(record["day"], record["day_index"], record["day_events"], record["kind"],
+                        yield Row(record["day"], record["day_index"], record["day_events"], through, record["kind"],
                                   record["key"], record)
                 month = after
         finally:
@@ -122,7 +158,8 @@ def read_rows(lake: Path, start: date, until: date | None = None, *, chunk: int 
 def build_event(row: Row, versions: Mapping[str, str]) -> Event:
     """The replay event of one record; `versions` names the lake version each kind was read from."""
     kind = BY_NAME[row.kind]
-    return event(kind, row.record, mode="replay", source={"dataset": kind.dataset, "version": versions[kind.name]})
+    return event(kind, row.record, mode="replay", source={"dataset": kind.dataset, "version": versions[kind.name],
+                                                          "through": row.through.isoformat()})
 
 
 class Pacer:
@@ -184,9 +221,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
+    lake, stop = data_root() / "lake" / "msha_ogd", stop_on_signals()
+    if not wait_for_lake(lake, stop):
+        return 0
     publisher = make_publisher()
-    summary = replay(publisher.send, data_root() / "lake" / "msha_ogd", start=args.start, until=args.until,
-                     day_seconds=args.day_seconds, max_rate=args.max_rate, loop=args.loop, stop=stop_on_signals())
+    summary = replay(publisher.send, lake, start=args.start, until=args.until, day_seconds=args.day_seconds,
+                     max_rate=args.max_rate, loop=args.loop, stop=stop)
     publisher.flush()
     print(json.dumps(summary, indent=2))
     return 0
