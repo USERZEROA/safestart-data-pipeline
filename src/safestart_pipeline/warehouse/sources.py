@@ -26,6 +26,7 @@ from lxml import etree
 from ..crawl.urls import FILE_EXTENSIONS, extension
 from ..lake.msha_ogd import object_path
 from ..verify import clean_section, parse_amddate
+from ..verify import read_only as verify_read_only
 
 ECFR_SOURCE = "ecfr-govinfo"
 CRAWL_SITES = ("osha", "msha", "arlweb")
@@ -45,9 +46,11 @@ MONTHS = {name: number for number, name in enumerate(
 
 
 def read_only(path: Path) -> sqlite3.Connection:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    """A reading connection that returns plain tuples (verify.read_only, which also opens a WAL database on a mount it
+    cannot write)."""
+    db = verify_read_only(path)
+    db.row_factory = None
+    return db
 
 
 # eCFR -----------------------------------------------------------------------------------------------------------------
