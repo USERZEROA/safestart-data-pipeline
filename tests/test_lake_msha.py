@@ -8,7 +8,7 @@ from datetime import date
 import polars as pl
 
 from safestart_pipeline.acquire.bulk import BulkStore
-from safestart_pipeline.lake.msha_ogd import build_dataset, build_lake, object_path, read_definitions
+from safestart_pipeline.lake.msha_ogd import build_dataset, build_lake, object_path, read_definitions, split_record
 
 MINES_TXT = (
     "MINE_ID|CURRENT_MINE_NAME|CURRENT_STATUS_DT|NO_EMPLOYEES|LATITUDE|EXTRA_COL\r\n"
@@ -24,6 +24,27 @@ DEFINITION = (
     "MINES|NO_EMPLOYEES|NUMBER|5|Number of employees.\r\n"
     "MINES|LATITUDE|NUMBER|9,6|Latitude.\r\n"
     "MINES|RETIRED_COL|VARCHAR2|1|No longer in the file.\r\n"
+)
+
+
+# The 107(a) export is written for Excel: a "sep=" line ended by a bare CR, a title and a "Data as of" line before the
+# header, readable column names in mixed case (one with a leading space here), and a tab before IDs to keep their zeros.
+ORDERS_CSV = (
+    "sep=|\r"
+    "107(a) Order Issued Report\r\n"
+    "Data as of 20-NOV-26 - Violations issued through 20-NOV-26\r\n"
+    "Coal or Metal|Mine ID|Operator Name (Violations)|Violation No.|Violation Date Issued| Termination Date\r\n"
+    '"C"|"\t4609612"|"Onyx Energy, LLC"|"\t9837820"|"01/08/2025"|"01/08/2025"\r\n'
+    '"M"|"\t0102147"|"Chaparral Sand & Gravel"|"\t8677568"|"07/17/2012"|""\r\n'
+)
+ORDERS_DEFINITION = (
+    "TABLE_NAME|COLUMN_NAME|DATA_TYPE|DATA_LENGTH|FIELD_DESCRIPTION\r\n"
+    "107(a) ORDERS ISSUED|COAL OR METAL|VARCHAR2|1|Coal or metal/non-metal mine.\r\n"
+    "107(a) ORDERS ISSUED|MINE ID|VARCHAR2|7|Mine identification number.\r\n"
+    "107(a) ORDERS ISSUED|OPERATOR NAME (VIOLATIONS)|VARCHAR2|60|Operator at the time of the violation.\r\n"
+    "107(a) ORDERS ISSUED|VIOLATION NO.|VARCHAR2|7|Order number.\r\n"
+    "107(a) ORDERS ISSUED|VIOLATION DATE ISSUED|DATE|10|Date the order was issued.\r\n"
+    "107(a) ORDERS ISSUED|TERMINATION DATE|DATE|10|Date the order was terminated.\r\n"
 )
 
 
@@ -78,6 +99,82 @@ def test_a_dataset_becomes_typed_parquet_with_its_failures_counted(tmp_path):
     assert again["built"] is False and again["rows"] == 3
 
 
+def test_an_export_written_for_excel_loses_its_preamble_and_keeps_its_types(tmp_path):
+    zip_path, definition = tmp_path / "OrdersIssued.zip", tmp_path / "def.txt"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("107(a)OrdersIssued.csv", ORDERS_CSV.encode("cp1252"))
+    definition.write_bytes(ORDERS_DEFINITION.encode("cp1252"))
+    result = build_dataset("orders_107a", zip_path, definition, tmp_path / "lake", "cd" * 32, "OrdersIssued.zip")
+    assert result["built"] and result["rows"] == 2 and result["member"] == "107(a)OrdersIssued.csv"
+    assert result["preamble"] == ["107(a) Order Issued Report", "Data as of 20-NOV-26 - Violations issued through 20-NOV-26"]
+    assert result["undefined_columns"] == [] and result["unused_definitions"] == []
+
+    frame = pl.read_parquet(tmp_path / "lake" / "orders_107a" / result["parquet"])
+    assert dict(frame.schema) == {
+        "coal_or_metal": pl.String, "mine_id": pl.String, "operator_name_violations": pl.String, "violation_no": pl.String,
+        "violation_date_issued": pl.Date, "termination_date": pl.Date,
+    }
+    rows = frame.rows(named=True)
+    assert rows[0] == {"coal_or_metal": "C", "mine_id": "4609612", "operator_name_violations": "Onyx Energy, LLC",
+                       "violation_no": "9837820", "violation_date_issued": date(2025, 1, 8), "termination_date": date(2025, 1, 8)}
+    assert rows[1]["mine_id"] == "0102147" and rows[1]["termination_date"] is None  # leading zeros kept, empty is null
+
+
+def test_a_record_keeps_its_unescaped_quotes_and_a_quoted_separator():
+    # MSHA never escapes a quote inside text, and one contractor name holds the separator itself.
+    assert split_record('"1102923"|"54" ROLL CR. #4"|"Pres"||304', 5) == (
+        ["1102923", '54" ROLL CR. #4', "Pres", "", "304"], "plain")
+    assert split_record('"A5304"|"AZZ|Central Electric"|"2012"|2', 4) == (["A5304", "AZZ|Central Electric", "2012", "2"], "quoted")
+    assert split_record('"A"|"B|C"s"|"D"', 3) == (["A", 'B|C"s', "D"], "quoted")
+    assert split_record('"A"|"B"|"C"|"D"', 3) == (["A", "B", "C"], "truncated")
+    assert split_record('"A"|"B|C"', 4) == (["A", "B|C", "", ""], "padded")
+
+
+CONTRACTORS_TXT = (
+    "CONTRACTOR_ID|CONTRACTOR_NAME| SUBUNIT|HOURS_WORKED\r\n"
+    '"R220"|"Clary"s Sitework & Development, Inc."|"STRIP, QUARY, OPEN PIT"|4266\r\n'
+    '"A5304"|"AZZ|Central Electric"|"SURFACE AT UNDERGROUND"|0\r\n'
+    '"A0452"|"Christensen"s Electrical Services"|"MILL OPERATION/PREPARATION PLANT"|272\r\n'
+)
+CONTRACTORS_DEFINITION = (
+    "TABLE_NAME|COLUMN_NAME|DATA_TYPE|DATA_LENGTH|FIELD_DESCRIPTION\r\n"
+    "CONTRACTOR_PROD|CONTRACTOR_ID|VARCHAR2|5|Contractor identifier.\r\n"
+    "CONTRACTOR_PROD|CONTRACTOR_NAME|VARCHAR2|60|Contractor name.\r\n"
+    "CONTRACTOR_PROD|SUBUNIT|VARCHAR2|40|Kind of work.\r\n"
+    "CONTRACTOR_PROD|HOURS_WORKED|NUMBER|10|Hours worked.\r\n"
+)
+
+
+def test_stray_quotes_do_not_run_records_together(tmp_path):
+    # A reader that honors quotes reads these three records as one: the quote after "Clary" opens a field that the
+    # next record's quotes keep open.
+    zip_path, definition = tmp_path / "ContractorProdQuarterly.zip", tmp_path / "def.txt"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("ContractorProdQuarterly.txt", CONTRACTORS_TXT.encode("cp1252"))
+    definition.write_bytes(CONTRACTORS_DEFINITION.encode("cp1252"))
+    result = build_dataset("contractor_prod_quarterly", zip_path, definition, tmp_path / "lake", "ef" * 32)
+    assert result["rows"] == 3 and result["lines_read"] == {"plain": 2, "quoted": 1}
+    frame = pl.read_parquet(tmp_path / "lake" / "contractor_prod_quarterly" / result["parquet"])
+    assert frame["contractor_name"].to_list() == [
+        'Clary"s Sitework & Development, Inc.', "AZZ|Central Electric", 'Christensen"s Electrical Services']
+    assert frame["subunit"].to_list()[1] == "SURFACE AT UNDERGROUND" and frame["hours_worked"].to_list() == [4266, 0, 272]
+
+
+def test_a_declared_type_the_data_contradicts_is_overridden_on_record(tmp_path):
+    # MSHA declares the yearly contractor head count NUMBER(9), but it is an average written with two decimals.
+    zip_path, definition = tmp_path / "ContractorProdYearly.zip", tmp_path / "def.txt"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("ContractorProdYearly.txt", 'CONTRACTOR_ID|AVG_EMPLOYEE_CNT\r\n"A0452"|1.33\r\n"A0453"|.67\r\n"A0454"|3\r\n')
+    definition.write_bytes(("TABLE_NAME|COLUMN_NAME|DATA_TYPE|DATA_LENGTH|FIELD_DESCRIPTION\r\n"
+                            "CP|CONTRACTOR_ID|VARCHAR2|5|Contractor.\r\nCP|AVG_EMPLOYEE_CNT|NUMBER|9|Average employees.\r\n").encode())
+    result = build_dataset("contractor_prod_yearly", zip_path, definition, tmp_path / "lake", "12" * 32)
+    frame = pl.read_parquet(tmp_path / "lake" / "contractor_prod_yearly" / result["parquet"])
+    assert frame["avg_employee_cnt"].to_list() == [1.33, 0.67, 3.0]
+    column = next(c for c in result["columns"] if c["name"] == "avg_employee_cnt")
+    assert column["type"] == "Float64" and column["declared"] == "NUMBER(9)" and column["cast_failures"] == 0
+    assert "two decimals" in column["override"]
+
+
 def test_the_lake_follows_the_bulk_catalog(tmp_path):
     root = tmp_path / "root"
     store = BulkStore(root / "state" / "bulk.sqlite")
@@ -85,6 +182,8 @@ def test_the_lake_follows_the_bulk_catalog(tmp_path):
         "Mines.zip": mines_zip(tmp_path / "Mines.zip").read_bytes(),
         "Mines_Definition_File.txt": DEFINITION.encode("cp1252"),
     }
+    # The last check found the definition unchanged (HTTP 304): the copy already held is still the current one.
+    states = {"Mines.zip": "fetched", "Mines_Definition_File.txt": "unchanged"}
     for name, blob in blobs.items():
         digest = hashlib.sha256(blob).hexdigest()
         target = object_path(root, digest)
@@ -92,14 +191,56 @@ def test_the_lake_follows_the_bulk_catalog(tmp_path):
         target.write_bytes(blob)
         store.db.execute(
             "insert into files (url, source, name, listed_at, state, sha256, verified)"
-            " values (?, 'msha-ogd', ?, '2026-11-19T00:00:00Z', 'fetched', ?, 1)",
-            (f"https://example.test/{name}", name, digest),
+            " values (?, 'msha-ogd', ?, '2026-11-19T00:00:00Z', ?, ?, 1)",
+            (f"https://example.test/{name}", name, states[name], digest),
         )
     store.close()
 
     results = build_lake(root)
     assert results["mines"]["built"] and results["mines"]["rows"] == 3 and results["mines"]["cast_failures"] == 2
+    assert results["mines"]["versions"] == 1
     assert results["violations"] == {"built": False, "missing": ["Violations.zip", "violations_Definition_File.txt"]}
     dictionary = pl.read_parquet(root / "lake" / "msha_ogd" / "_dictionary.parquet")
     assert dictionary.filter(pl.col("column") == "no_employees")["description"].to_list() == ["Number of employees."]
+    assert dictionary.schema["override"] == pl.String and dictionary["override"].null_count() == dictionary.height
     assert build_lake(root)["mines"]["built"] is False
+
+
+def test_every_held_version_is_in_the_lake_and_the_newest_is_current(tmp_path):
+    root = tmp_path / "root"
+    store = BulkStore(root / "state" / "bulk.sqlite")
+    old_blob = mines_zip(tmp_path / "old.zip").read_bytes()
+    with zipfile.ZipFile(tmp_path / "new.zip", "w") as archive:  # the newer release adds a mine
+        archive.writestr("Mines.txt", (MINES_TXT + '"0100006"|"Fourth"|"02/02/2002"|3|"30.5"|"b"\r\n').encode("cp1252"))
+    new_blob = (tmp_path / "new.zip").read_bytes()
+    definition = DEFINITION.encode("cp1252")
+    for blob in (old_blob, new_blob, definition):
+        target = object_path(root, hashlib.sha256(blob).hexdigest())
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(blob)
+    for name, blob in (("Mines.zip", new_blob), ("Mines_Definition_File.txt", definition)):
+        store.db.execute(
+            "insert into files (url, source, name, listed_at, state, sha256, verified)"
+            " values (?, 'msha-ogd', ?, '2026-11-23T00:00:00Z', 'fetched', ?, 1)",
+            (f"https://example.test/{name}", name, hashlib.sha256(blob).hexdigest()),
+        )
+    for blob, seen in ((old_blob, "2026-11-18T00:00:00Z"), (new_blob, "2026-11-23T13:00:00Z")):
+        store.db.execute("insert into versions (url, sha256, content_length, first_seen_at) values (?, ?, ?, ?)",
+                         ("https://example.test/Mines.zip", hashlib.sha256(blob).hexdigest(), len(blob), seen))
+    store.close()
+
+    results = build_lake(root, only=["mines"])
+    assert results["mines"]["versions"] == 2 and results["mines"]["versions_built"] == 2 and results["mines"]["rows"] == 4
+    manifest = json.loads((root / "lake" / "msha_ogd" / "mines" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["current"] == hashlib.sha256(new_blob).hexdigest()[:16] + ".parquet"
+    assert sorted(version["rows"] for version in manifest["versions"]) == [3, 4]
+
+    # A version built under an older lake format is built again; the current version stays the newest.
+    for version in manifest["versions"]:
+        if version["rows"] == 3:
+            version.pop("format")
+    (root / "lake" / "msha_ogd" / "mines" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    again = build_lake(root, only=["mines"])
+    assert again["mines"]["versions_built"] == 1 and again["mines"]["built"] is False
+    manifest = json.loads((root / "lake" / "msha_ogd" / "mines" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["current"] == hashlib.sha256(new_blob).hexdigest()[:16] + ".parquet"
