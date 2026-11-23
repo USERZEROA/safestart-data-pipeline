@@ -6,9 +6,12 @@ import zipfile
 from datetime import date
 
 import polars as pl
+import pytest
 
 from safestart_pipeline.acquire.bulk import BulkStore
-from safestart_pipeline.lake.msha_ogd import build_dataset, build_lake, object_path, read_definitions, split_record
+from safestart_pipeline.lake.msha_ogd import (
+    LakeBuildError, build_dataset, build_lake, object_path, read_definitions, split_record,
+)
 
 MINES_TXT = (
     "MINE_ID|CURRENT_MINE_NAME|CURRENT_STATUS_DT|NO_EMPLOYEES|LATITUDE|EXTRA_COL\r\n"
@@ -85,7 +88,7 @@ def test_a_dataset_becomes_typed_parquet_with_its_failures_counted(tmp_path):
     assert rows[1] == {"mine_id": "0100004", "current_mine_name": "Café Mine", "current_status_dt": None, "no_employees": None,
                        "latitude": None, "extra_col": None}
     assert rows[2]["current_status_dt"] is None and rows[2]["latitude"] == -86.758889
-    assert rows[2]["current_mine_name"] == "Thi" + chr(0xFFFD) + "rd" and result["undecodable_bytes"] == 1
+    assert rows[2]["current_mine_name"] == "Thi" + chr(0xFFFD) + "rd" and result["decoding"]["undecodable_bytes"] == 1
 
     failures = {column["name"]: column["cast_failures"] for column in result["columns"]}
     assert failures["no_employees"] == 1 and failures["current_status_dt"] == 1 and failures["latitude"] == 0
@@ -128,6 +131,47 @@ def test_a_record_keeps_its_unescaped_quotes_and_a_quoted_separator():
     assert split_record('"A"|"B|C"s"|"D"', 3) == (["A", 'B|C"s', "D"], "quoted")
     assert split_record('"A"|"B"|"C"|"D"', 3) == (["A", "B", "C"], "truncated")
     assert split_record('"A"|"B|C"', 4) == (["A", "B|C", "", ""], "padded")
+    assert split_record('"A"|"B"|', 2) == (["A", "B"], "trailing")  # extra fields that are all empty
+    # The header's count of fields alone does not make a plain split safe: here the quoted name holds the separator
+    # and the last field is missing, so a plain split would shift values between columns.
+    assert split_record('"A5304"|"AZZ|Central Electric"|0', 4) == (["A5304", "AZZ|Central Electric", "0", ""], "padded")
+
+
+def build_member(tmp_path, member_bytes, definition_text, name="mines"):
+    zip_path, definition = tmp_path / f"{name}.zip", tmp_path / f"{name}.def.txt"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("Data.txt", member_bytes)
+    definition.write_bytes(definition_text.encode("cp1252"))
+    return build_dataset(name, zip_path, definition, tmp_path / "lake", hashlib.sha256(member_bytes).hexdigest())
+
+
+TWO_COLUMNS = "T|COLUMN_NAME|DATA_TYPE|DATA_LENGTH|D\r\nT|MINE_ID|VARCHAR2|7|Mine.\r\nT|NAME|VARCHAR2|50|Name.\r\n"
+
+
+def test_a_line_that_does_not_fit_the_header_fails_the_version(tmp_path):
+    with pytest.raises(ValueError, match="do not split"):
+        build_member(tmp_path, b'MINE_ID|NAME\r\n"0100003"|"First"\r\n"0100004"\r\n', TWO_COLUMNS)
+    assert not list((tmp_path / "lake" / "mines").glob("*.parquet*"))  # nothing half-written is left
+
+
+def test_the_header_may_follow_a_sep_line_ended_by_a_bare_cr(tmp_path):
+    result = build_member(tmp_path, b'sep=|\rMINE_ID|NAME\r\n"0100003"|"First"\r\n"0100004"|"Second"\r\n', TWO_COLUMNS)
+    assert result["rows"] == 2 and result["undefined_columns"] == [] and result["preamble"] == []
+
+
+def test_a_byte_order_mark_and_pasted_utf8_text_are_read_as_such(tmp_path):
+    member = '﻿MINE_ID|NAME\r\n"0100003"|"Pit 45° North"\r\n'.encode("utf-8") + '"0100004"|"Café"\r\n'.encode("cp1252")
+    result = build_member(tmp_path, member, TWO_COLUMNS)
+    frame = pl.read_parquet(tmp_path / "lake" / "mines" / result["parquet"])
+    assert frame["mine_id"].to_list() == ["0100003", "0100004"] and frame["name"].to_list() == ["Pit 45° North", "Café"]
+    assert result["decoding"] == {"byte_order_mark": 1, "utf8_lines": 2}
+
+
+def test_a_new_definition_file_rebuilds_the_version(tmp_path):
+    member = b'MINE_ID|NAME\r\n"0100003"|"First"\r\n'
+    assert build_member(tmp_path, member, TWO_COLUMNS)["built"]
+    assert build_member(tmp_path, member, TWO_COLUMNS)["built"] is False
+    assert build_member(tmp_path, member, TWO_COLUMNS.replace("Name.", "Mine name."))["built"]
 
 
 CONTRACTORS_TXT = (
@@ -224,16 +268,21 @@ def test_every_held_version_is_in_the_lake_and_the_newest_is_current(tmp_path):
             " values (?, 'msha-ogd', ?, '2026-11-23T00:00:00Z', 'fetched', ?, 1)",
             (f"https://example.test/{name}", name, hashlib.sha256(blob).hexdigest()),
         )
-    for blob, seen in ((old_blob, "2026-11-18T00:00:00Z"), (new_blob, "2026-11-23T13:00:00Z")):
+    # The new release is recorded first here on purpose: the manifest orders versions by when they were first seen.
+    for blob, seen in ((new_blob, "2026-11-23T13:00:00Z"), (old_blob, "2026-11-18T00:00:00Z")):
         store.db.execute("insert into versions (url, sha256, content_length, first_seen_at) values (?, ?, ?, ?)",
                          ("https://example.test/Mines.zip", hashlib.sha256(blob).hexdigest(), len(blob), seen))
+    # An even older version whose file is gone is reported and skipped, without stopping the build.
+    store.db.execute("insert into versions (url, sha256, content_length, first_seen_at) values (?, ?, ?, ?)",
+                     ("https://example.test/Mines.zip", "f" * 64, 1, "2026-11-10T00:00:00Z"))
     store.close()
 
     results = build_lake(root, only=["mines"])
-    assert results["mines"]["versions"] == 2 and results["mines"]["versions_built"] == 2 and results["mines"]["rows"] == 4
+    assert results["mines"]["versions"] == 3 and results["mines"]["versions_built"] == 2 and results["mines"]["rows"] == 4
+    assert [item["version"] for item in results["mines"]["skipped_versions"]] == ["f" * 16]
     manifest = json.loads((root / "lake" / "msha_ogd" / "mines" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["current"] == hashlib.sha256(new_blob).hexdigest()[:16] + ".parquet"
-    assert sorted(version["rows"] for version in manifest["versions"]) == [3, 4]
+    assert [version["rows"] for version in manifest["versions"]] == [3, 4]  # oldest first
 
     # A version built under an older lake format is built again; the current version stays the newest.
     for version in manifest["versions"]:
@@ -244,3 +293,29 @@ def test_every_held_version_is_in_the_lake_and_the_newest_is_current(tmp_path):
     assert again["mines"]["versions_built"] == 1 and again["mines"]["built"] is False
     manifest = json.loads((root / "lake" / "msha_ogd" / "mines" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["current"] == hashlib.sha256(new_blob).hexdigest()[:16] + ".parquet"
+
+
+def test_a_current_version_that_cannot_be_built_fails_the_run_after_the_others(tmp_path):
+    root = tmp_path / "root"
+    store = BulkStore(root / "state" / "bulk.sqlite")
+    blobs = {
+        "Mines.zip": mines_zip(tmp_path / "Mines.zip").read_bytes(),
+        "Mines_Definition_File.txt": DEFINITION.encode("cp1252"),
+        "Accidents.zip": b"not a zip file",
+        "Accidents_Definition_File.txt": DEFINITION.encode("cp1252"),
+    }
+    for name, blob in blobs.items():
+        digest = hashlib.sha256(blob).hexdigest()
+        target = object_path(root, digest)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(blob)
+        store.db.execute(
+            "insert into files (url, source, name, listed_at, state, sha256, verified)"
+            " values (?, 'msha-ogd', ?, '2026-11-23T00:00:00Z', 'error', ?, 1)",  # the last check failed: copy kept
+            (f"https://example.test/{name}", name, digest),
+        )
+    store.close()
+    with pytest.raises(LakeBuildError, match="accidents"):
+        build_lake(root)
+    assert (root / "lake" / "msha_ogd" / "mines" / "manifest.json").exists()  # the other datasets were built
+    assert (root / "lake" / "msha_ogd" / "_dictionary.parquet").exists()
