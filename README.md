@@ -36,7 +36,8 @@ by Prefect, packaged with Docker Compose, tested in GitHub Actions and deployed 
 **Documentation.** This README is the project documentation: the summary above, then the architecture, the key
 components and their implementation. The files in [docs/](docs/) are reference appendices with the full detail of
 each part: [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), [QUERIES](docs/QUERIES.md), [ML](docs/ML.md),
-[SAFESTART_EXPORTS](docs/SAFESTART_EXPORTS.md) and [DEPLOYMENT](docs/DEPLOYMENT.md).
+[SAFESTART_EXPORTS](docs/SAFESTART_EXPORTS.md) and [DEPLOYMENT](docs/DEPLOYMENT.md). For print, the same document
+is [docs/SafeStart-data-pipeline-documentation.pdf](docs/SafeStart-data-pipeline-documentation.pdf).
 
 ## Contents
 
@@ -56,7 +57,7 @@ deployment).
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Sources
         WEB[MSHA, OSHA websites<br/>MSHA legacy host]
         BULK[MSHA open data: 20 datasets<br/>eCFR titles 29 and 30]
@@ -210,6 +211,70 @@ readers never see a half-built warehouse, and it records what it found in `build
 key, dangling references, citations of sections no longer in Title 30) rather than hiding it. The ERD and every table
 are in [docs/ERD.md](docs/ERD.md).
 
+```mermaid
+erDiagram
+    mine ||--o{ inspection : "is inspected in"
+    mine ||--o{ violation : "is cited in"
+    inspection |o--o{ violation : "issues"
+    mine ||--o{ accident : "reports"
+    mine ||--o{ production_quarter : "reports hours in"
+    cfr_section |o--o{ violation : "is the title 30 text of"
+    mine {
+        VARCHAR mine_id PK
+        VARCHAR coal_metal
+        VARCHAR district
+    }
+    inspection {
+        VARCHAR event_no PK
+        VARCHAR mine_id FK
+        DATE begin_date
+    }
+    violation {
+        VARCHAR violation_no PK
+        VARCHAR event_no FK
+        VARCHAR mine_id FK
+        VARCHAR cfr_section FK
+        DATE issue_date
+        BOOLEAN sig_sub
+        DOUBLE proposed_penalty
+    }
+    accident {
+        VARCHAR document_no PK
+        VARCHAR mine_id FK
+        DATE accident_date
+        BOOLEAN serious
+    }
+    production_quarter {
+        VARCHAR mine_id PK
+        INTEGER cal_yr PK
+        INTEGER cal_qtr PK
+        VARCHAR subunit_cd PK
+        DOUBLE hours_worked
+    }
+    cfr_section {
+        INTEGER title PK
+        VARCHAR section PK
+        VARCHAR heading
+        DATE amended_on
+    }
+    document {
+        VARCHAR url PK
+        VARCHAR site
+        VARCHAR kind
+        VARCHAR sha256
+    }
+    dataset_version {
+        VARCHAR dataset PK
+        VARCHAR version PK
+        BIGINT rows
+        BOOLEAN is_current
+    }
+```
+
+The core tables and their keys (the build checks every reference it does not declare; every column, the marts and the
+build's checks are in [docs/ERD.md](docs/ERD.md)). `document` and `dataset_version` describe the crawled corpus and
+the lake versions the warehouse was built from.
+
 **Shared definitions.** One module, [`definitions.py`](src/safestart_pipeline/definitions.py), states the rules every
 component counts by: a serious accident is degree of injury 01 to 05 by its code, an injury 01 to 06, a violation's
 cited section is the section its citation names without the paragraph, and a record's commodity is its mine's. The
@@ -293,15 +358,15 @@ phone:
 
 The mine brief of one of the largest underground coal mines, as the live dashboard serves it (desktop and phone):
 
-<p>
-<img src="docs/images/dashboard-mine-brief.png" alt="Mine brief of Marshall County Mine: 12-month record, standards cited most with their text, recent accidents" width="640">
-<img src="docs/images/dashboard-mine-brief-phone.png" alt="The same mine brief at phone width" width="180">
-</p>
+<table><tr>
+<td><img src="docs/images/dashboard-mine-brief.png" alt="Mine brief of Marshall County Mine: its 12-month record and the standards cited most there, with their text" width="520"></td>
+<td><img src="docs/images/dashboard-mine-brief-phone.png" alt="The same mine brief at phone width" width="150"></td>
+</tr></table>
 
-The Enforcement page while the replay streams 2024: daily violations by district, each day's one-step-ahead forecast,
-and the days the analytics consumer flagged:
+The Enforcement page while the replay streams 2024: one district's violations each day against the one-step-ahead
+forecast, which has learned the weekly rhythm of inspections (the days it flags are marked in red):
 
-<img src="docs/images/dashboard-enforcement.png" alt="Enforcement page: violations by day and district, observed against forecast, flagged anomalies" width="640">
+<img src="docs/images/dashboard-forecast.png" alt="Observed violations per day in district C04 against the one-step-ahead forecast" width="640">
 
 ## Deployment
 
