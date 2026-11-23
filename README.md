@@ -67,8 +67,10 @@ compared. The newest version is the dataset's `current` one in its `manifest.jso
   escapes a quote inside it (`"54" ROLL CR. #4"`), and one contractor name holds the separator (`"AZZ|Central
   Electric"`), so a quote-honoring CSV reader runs records together (it kept 41,410 of the 92,129 mine records). Every
   record is one line: the lake splits each line itself, and a quoted field ends only at a quote followed by the
-  separator or the line end. A build fails if the Parquet row count differs from the source's line count; the
-  manifest counts the lines read each way.
+  separator or the line end. A line that still does not give the header's fields fails the version instead of shifting
+  values between columns; the manifest counts the lines read each way. Lines of pasted UTF-8 text are decoded as UTF-8.
+- A version that cannot be built is reported; when it is a dataset's current version, the run fails after building the
+  others. A version is rebuilt when the lake format, the definition file or a type override changes.
 - The 107(a) orders export is written for Excel (a `sep=|` line, a title and a "Data as of" line before the header,
   readable column names); the preamble is dropped and kept in the manifest.
 - Types: every column is cast to the type MSHA's definition file declares (`VARCHAR2` to text, `DATE` to a date,
