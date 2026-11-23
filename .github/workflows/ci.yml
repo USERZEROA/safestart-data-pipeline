@@ -1,8 +1,12 @@
-# Lint and unit tests (with a PostgreSQL service for the tests that need one), then the whole stream path in Docker
-# Compose: the image is built, Kafka, PostgreSQL, the initializer, both consumer groups and the dashboard start, the
-# watcher's and the orchestrator's entry points load in the image, and scripts/smoke_test.py sends contract events
-# through Kafka and waits for both consumers' rows in PostgreSQL. The watcher and the orchestrator are not started:
-# they would send requests to MSHA, OSHA and the Federal Register.
+# Lint and unit tests (with a PostgreSQL service for the tests that need one), then the whole system in Docker Compose
+# on the sample data root (src/safestart_pipeline/sample.py), every service from the image built here. Kafka,
+# PostgreSQL, the initializer, both consumer groups, the dashboard and the orchestrator start; the orchestrator runs the
+# batch flow once from the downloads held (lake, warehouse, SafeStart exports); the replay sends the history and the
+# version watcher the sample's new week, each once. The job then checks the events by mode and kind, the counts and the
+# watcher's check in PostgreSQL, the warehouse and the exports the batch wrote, and the dashboard, and
+# scripts/smoke_test.py sends contract events through Kafka and waits for both consumers' rows. Nothing asks MSHA,
+# OSHA, govinfo or the Federal Register: the watcher runs its version check alone, and the orchestrator, whose schedule
+# would download at 14:00 UTC, has no network here (it needs none).
 name: CI
 
 on:
@@ -55,6 +59,8 @@ jobs:
     needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      SAMPLE: ${{ github.workspace }}/sample-data
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3
@@ -63,8 +69,13 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           enable-cache: true
       - run: uv sync --locked --all-extras
-      - name: Write .env and the empty data root
-        run: python3 scripts/start.py --no-start
+      # The orchestrator writes the data root as the image's user, as on the server (deploy/gcp/startup.sh).
+      - name: Write the sample data root and hand it to the image's user
+        run: |
+          uv run --no-sync python -m safestart_pipeline.sample "$SAMPLE"
+          sudo chown -R 10001:10001 "$SAMPLE"
+      - name: Write .env for the sample data root, with the orchestrator on
+        run: python3 scripts/start.py --no-start --data-root "$SAMPLE" --with-orchestrator
       - name: Check the Compose files and the Caddyfile
         run: |
           docker compose version
@@ -72,19 +83,103 @@ jobs:
           PUBLIC_DOMAIN=ci.example.org docker compose -f docker-compose.yml -f docker-compose.public.yml config --quiet
           docker run --rm -e PUBLIC_DOMAIN=203.0.113.7 -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
             caddy:2.11-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Keep the orchestrator off the network
+        run: |
+          printf 'services:\n  orchestrator:\n    network_mode: none\n' > "$RUNNER_TEMP/offline.yml"
+          echo "COMPOSE_FILE=docker-compose.yml:$RUNNER_TEMP/offline.yml" >> "$GITHUB_ENV"
       - name: Build the image
         run: docker compose build
-      # Only long-running services are named: Compose starts Kafka, PostgreSQL and the one-shot initializer as their
-      # dependencies, and --wait also waits for those, the initializer until it has exited successfully (it is a
-      # dependency with the condition service_completed_successfully, which Compose v2 waits for rather than failing).
-      - name: Start both consumers and the dashboard, after Kafka, PostgreSQL and the initializer
-        run: docker compose up --detach --wait --wait-timeout 300 storage-consumer analytics-consumer dashboard
-      - name: Load the watcher's and the orchestrator's entry points in the image
+      # Compose starts Kafka, PostgreSQL and the one-shot initializer as dependencies of the services named, and --wait
+      # also waits for those, the initializer until it has exited successfully (a dependency with the condition
+      # service_completed_successfully, which Compose v2 waits for rather than failing on). The replay and the watcher
+      # run below, once each, instead of as services.
+      - name: Start Kafka, PostgreSQL, the initializer, both consumers, the dashboard and the orchestrator
+        run: >-
+          docker compose up --detach --wait --wait-timeout 300
+          storage-consumer analytics-consumer dashboard orchestrator
+      - name: Run the batch flow once in the orchestrator, from the downloads held
+        run: docker compose exec -T orchestrator python -m safestart_pipeline.flows run batch --no-download
+      # The sample's second version adds a week from 2026-11-09 (sample.NEWS_FROM), which the version watcher sends.
+      - name: Replay the history before the sample's new week, unpaced, until it exits
+        run: >-
+          docker compose run --rm --no-deps -T replay
+          python -m safestart_pipeline.stream.replay --day-seconds 0 --until 2026-11-09
+      - name: Run the version watcher once
+        run: docker compose run --rm --no-deps -T watcher python -m safestart_pipeline.watch once --only versions
+      # tests/test_sample.py derives every EXPECTED_* value below from the sample with the pipeline's own code.
+      - name: Check the events by mode and kind, the counts and the version check in PostgreSQL
+        env:
+          EXPECTED_EVENTS: |
+            live accident 1
+            live dataset_version 4
+            live inspection 2
+            live order_107a 1
+            live violation 3
+            replay accident 3
+            replay inspection 6
+            replay order_107a 1
+            replay violation 8
+          EXPECTED_COUNTS: |
+            accident 4 3
+            dataset_version 4 0
+            inspection 8 0
+            order_107a 2 0
+            violation 11 6
+          EXPECTED_CHECK: |
+            ok 11
         run: |
-          docker compose run --rm --no-deps watcher python -m safestart_pipeline.watch --help
-          docker compose run --rm --no-deps orchestrator python -m safestart_pipeline.flows --help
-      - name: Smoke test through Kafka into PostgreSQL
-        run: uv run --no-sync python scripts/smoke_test.py
+          query() { docker compose exec -T postgres psql -U safestart -d safestart -AtF ' ' -c "$1" | LC_ALL=C sort; }
+          for attempt in $(seq 60); do
+            events=$(query "select mode, kind, count(*) from stream.events group by 1, 2")
+            counts=$(query "select kind, sum(events), sum(serious) from stream.daily_counts group by 1")
+            check=$(query "select status, found from stream.source_checks where source = 'versions'")
+            if [ "$events" = "${EXPECTED_EVENTS%$'\n'}" ] && [ "$counts" = "${EXPECTED_COUNTS%$'\n'}" ] &&
+               [ "$check" = "${EXPECTED_CHECK%$'\n'}" ]; then
+              echo "Both consumers have every event, counted once, and the version check is recorded."
+              exit 0
+            fi
+            sleep 2
+          done
+          diff <(printf '%s' "$EXPECTED_EVENTS") <(printf '%s\n' "$events") || true
+          diff <(printf '%s' "$EXPECTED_COUNTS") <(printf '%s\n' "$counts") || true
+          echo "source_checks: '$check', expected '${EXPECTED_CHECK%$'\n'}'"
+          exit 1
+      - name: Check the warehouse and the SafeStart exports the batch wrote
+        env:
+          EXPECTED_TABLES: |
+            accident 4
+            cfr_section 8
+            dataset_version 11
+            document 4
+            inspection 8
+            mine 5
+            production_quarter 20
+            violation 11
+          EXPECTED_EXPORTS: |
+            cited_sections.parquet 6
+            mine_profiles.parquet 5
+        run: |
+          cd "$SAMPLE/exports/safestart"
+          jq -r '.files | to_entries[] | "\(.value.sha256)  \(.key)"' manifest.json | sha256sum -c
+          diff <(printf '%s' "$EXPECTED_EXPORTS") \
+            <(jq -r '.files | to_entries[] | "\(.key) \(.value.rows)"' manifest.json | LC_ALL=C sort)
+          cd "$GITHUB_WORKSPACE"
+          uv run --no-sync python - <<'EOF'
+          import os
+          import duckdb
+          expected = dict(line.split() for line in os.environ["EXPECTED_TABLES"].splitlines())
+          path = os.path.join(os.environ["SAMPLE"], "warehouse", "safestart.duckdb")
+          with duckdb.connect(path, read_only=True) as con:
+              found = {table: str(con.execute(f"select count(*) from {table}").fetchone()[0]) for table in expected}
+          assert found == expected, f"warehouse rows {found}, expected {expected}"
+          print("The warehouse holds", found)
+          EOF
+      - name: Check the dashboard, and send contract events through Kafka into PostgreSQL
+        run: |
+          port=$(sed -n 's/^DASHBOARD_HOST_PORT=//p' .env)
+          curl -fsS --retry 10 --retry-delay 3 --retry-all-errors "http://127.0.0.1:${port:-8501}/_stcore/health"
+          echo
+          uv run --no-sync python scripts/smoke_test.py
       - name: Service state and logs
         if: failure()
         run: |

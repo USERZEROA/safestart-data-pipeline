@@ -64,8 +64,9 @@ python scripts/start.py --data-root F:/SafeStartData
 ```
 
 `--data-root` names the folder that holds the data root (`raw/`, `state/`, `lake/`, `warehouse/`, `exports/`); without
-it the empty `./data` is used and the stream services start without history until the orchestrator's first batch. The
-first run writes `.env` with a random PostgreSQL password, builds the image, starts every service but the
+it the empty `./data` is used: the replay then waits for a lake, which only the orchestrator's batch writes, and the
+dashboard has no warehouse to show ([the sample data root](#without-the-data-the-sample-data-root) fills both in a
+minute). The first run writes `.env` with a random PostgreSQL password, builds the image, starts every service but the
 orchestrator and waits until the dashboard answers. The orchestrator writes the data root, so a workstation runs it only
 when asked: `--with-orchestrator` turns it on and `--without-orchestrator` off again, and the choice is kept in `.env`.
 Later runs reuse `.env`: PostgreSQL keeps the password its database was created with, so the launcher never replaces
@@ -93,12 +94,39 @@ Then:
   has counted each one exactly once, checks the dashboard, and removes its rows again, the counted-event ledger
   included.
 - State and logs: `docker compose ps`, `docker compose logs -f replay`, `docker compose logs -f watcher`.
-- One writer of the data root at a time: on a workstation that runs the orchestrator and also runs the batch or the
-  model by hand (`ssp pipeline`, `python -m safestart_pipeline.flows run`) on the same folder, stop the orchestrator
-  first with `docker compose stop orchestrator`. File locks do not reach across Docker Desktop's file sharing, so the warehouse
-  lock cannot keep a process on the host and one in a container apart.
+- One writer of the data root at a time. A batch or model run, whoever starts it, and `ssp lake` hold the data root's
+  writer lock (`state/pipeline.lock`) from start to end, so a second one started meanwhile, by hand or by the
+  schedule, fails at once instead of writing the same files. The lock keeps apart the processes of one host or one
+  container, but file locks do not reach across Docker Desktop's file sharing: on a workstation that runs the
+  orchestrator and also runs the batch or the model by hand on the host (`ssp pipeline`, `python -m
+  safestart_pipeline.flows run`) on the same folder, stop the orchestrator first (`docker compose stop orchestrator`).
 - Stop with `docker compose stop` or `docker compose down`; `docker compose down --volumes` also deletes Kafka's log,
   the stream store and the watcher state (the next start creates them again with the password in `.env`).
+
+### Without the data: the sample data root
+
+The real data root is 4.5 GB gathered over days of polite crawling and downloading. To see the whole system without
+it, write the sample data root, a few hundred kilobytes of invented records in MSHA's own formats
+(`src/safestart_pipeline/sample.py`), and start the stack on it:
+
+```bash
+uv sync --all-extras
+uv run python -m safestart_pipeline.sample sample-data   # a new or empty folder; the lake is built from its zips
+python scripts/start.py --data-root sample-data
+docker compose --profile orchestrator run --rm orchestrator python -m safestart_pipeline.flows run batch --no-download
+docker compose run --rm replay python -m safestart_pipeline.stream.replay --day-seconds 0
+uv run --extra stream python scripts/smoke_test.py
+```
+
+It holds five mines, two weekly versions of the inspections, violations, 107(a) orders, accidents and mines, five
+quarters of hours worked, the eCFR sections the violations cite and the legacy host's crawl catalog. The batch, run
+once without downloads (on Linux, first hand the folder to the image's user: `sudo chown -R 10001:10001 sample-data`),
+finds the lake current and builds the warehouse and the SafeStart exports; the dashboard then shows them. The replay
+service sends the history at the stack's pace, 5 seconds per source day from 2024 (about 90 minutes for the sample),
+so the command above sends it at once (the consumers keep each event once, whoever sends it); the watcher announces
+the second version's new week as live events within a minute of the start. The watcher still asks the Federal
+Register for its newest documents; the MSHA and OSHA crawl catalogs are left out, so it never compares their live
+sitemaps with a tiny inventory. CI runs the same steps and checks every count (`.github/workflows/ci.yml`).
 
 ### The orchestrator and Prefect
 
@@ -118,9 +146,14 @@ docker compose up -d orchestrator
 
 It then serves the batch and model flows as deployments of that workspace, on the same schedule, and a run can also be
 started from Prefect Cloud. Without Prefect Cloud, leave both lines commented out rather than empty: with an empty URL
-Prefect logs errors on every run. Polars and the model's libraries are held to two threads (`POLARS_MAX_THREADS`,
-`OMP_NUM_THREADS`), the e2-medium's two vCPUs. To run the batch now:
-`docker compose exec orchestrator python -m safestart_pipeline.flows run batch`.
+Prefect logs errors on every run. Without a Prefect API, the first run of each process starts Prefect's local API
+server, which may take 20 seconds on shared vCPUs, so the orchestrator gives it 120
+(`PREFECT_SERVER_EPHEMERAL_STARTUP_TIMEOUT_SECONDS`); a scheduled run that still raises before it starts is logged with
+its traceback and tried again 15 minutes later, up to three times, and the scheduler keeps going. Polars and the
+model's libraries are held to two threads (`POLARS_MAX_THREADS`, `OMP_NUM_THREADS`), the e2-medium's two vCPUs. To run
+the batch now: `docker compose exec orchestrator python -m safestart_pipeline.flows run batch`; it fails at once if a
+scheduled run holds the data root's writer lock, and a scheduled run that finds a manual one under way fails likewise
+and waits for its next time.
 
 ## Serve it over HTTPS
 
@@ -190,9 +223,10 @@ workstation that holds the data. `<project>`, `<bucket>`, `<billing account>` an
    By default the script copies `raw/bulk/`, `state/`, `lake/`, `warehouse/` and `exports/`, each with
    `gcloud storage rsync`; `-Only` picks folders, and `raw` names the whole raw archive, an archive the server never
    reads. A rerun skips what already arrived and resumes an interrupted large file; nothing in the bucket is ever
-   deleted. Left out: partial downloads of a running crawl, half-written lake files, and the journal files of a
-   database in use (SQLite's `-wal`, `-shm` and `-journal`; the warehouse's `.wal`, a build in progress and its
-   staging folder), which must never meet another copy of their database. Where PowerShell refuses to run scripts,
+   deleted. Left out: partial downloads of a running crawl, the work files a lake build in progress or killed leaves
+   (`*.partial`, `*.tmp`, and the zip member it transcodes to `.<16 hex digits>.txt`, up to 1.5 GB), and the journal
+   files of a database in use (SQLite's `-wal`, `-shm` and `-journal`; the warehouse's `.wal`, a build in progress and
+   its staging folder), which must never meet another copy of their database. Where PowerShell refuses to run scripts,
    call it as `powershell -ExecutionPolicy Bypass -File deploy/gcp/upload-to-gcs.ps1 -Bucket <bucket>`.
    `deploy/gcp/upload-to-gcs.sh` does the same from Linux, macOS or Git Bash.
 
@@ -227,9 +261,17 @@ the image's user, for the orchestrator to write.
 
 Operating the server:
 
-- Update after a push to `main`: `gcloud compute instances reset safestart-pipeline --zone=us-central1-a`. Every boot
-  brings the checkout up to the branch, copies what the server lacks from the bucket and rebuilds what changed; `.env`
-  stays.
+- Update after a push to `main` by stopping and starting the server (or `sudo reboot` in a maintenance shell):
+
+  ```bash
+  gcloud compute instances stop safestart-pipeline --zone=us-central1-a
+  gcloud compute instances start safestart-pipeline --zone=us-central1-a
+  ```
+
+  A stop shuts the guest down cleanly, so Docker stops every container within its grace period and Kafka writes out
+  the events it has acknowledged. A `gcloud compute instances reset` skips the shutdown, and live events the watcher
+  has already recorded as sent could be lost from Kafka. Every boot brings the checkout up to the branch, copies what
+  the server lacks from the bucket and rebuilds what changed; `.env` stays.
 - A shell for maintenance (to add the Prefect settings to `.env`, for example) needs a temporary firewall rule for
   Google's IAP range, removed afterwards:
 
