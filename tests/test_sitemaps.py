@@ -44,6 +44,20 @@ def test_rejects_documents_that_are_not_sitemaps():
         parse_sitemap(b"not xml at all")
 
 
+def corrupt_deflate(packed: bytes) -> bytes:
+    damaged = bytearray(packed)
+    damaged[12:20] = b"\xff" * 8  # inside the compressed stream, after the 10-byte header
+    return bytes(damaged)
+
+
+@pytest.mark.parametrize("damage", [lambda packed: packed[:-10], lambda packed: packed[:2] + b"not gzip at all",
+                                    corrupt_deflate], ids=["truncated", "bad header", "corrupt stream"])
+def test_a_damaged_gzip_sitemap_is_a_value_error_like_any_other_unreadable_one(damage):
+    """gzip raises EOFError, BadGzipFile (an OSError) or zlib.error here; the readers catch ValueError alone."""
+    with pytest.raises(ValueError, match="not a readable gzip sitemap"):
+        parse_sitemap(damage(gzip.compress(URLSET)))
+
+
 def test_external_entities_are_never_read(tmp_path):
     secret = tmp_path / "secret.txt"
     secret.write_text("TOP-SECRET", encoding="utf-8")
