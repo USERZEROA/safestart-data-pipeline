@@ -2647,6 +2647,7 @@ dashboard = [
     { name = "streamlit" },
 ]
 ml = [
+    { name = "joblib" },
     { name = "scikit-learn" },
 ]
 orchestration = [
@@ -2660,6 +2661,7 @@ stream = [
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 
@@ -2669,6 +2671,7 @@ requires-dist = [
     { name = "confluent-kafka", marker = "extra == 'stream'", specifier = ">=2.16" },
     { name = "duckdb", marker = "extra == 'analysis'", specifier = ">=1.1" },
     { name = "httpx", specifier = ">=0.28" },
+    { name = "joblib", marker = "extra == 'ml'", specifier = ">=1.4" },
     { name = "lxml", specifier = ">=5.3" },
     { name = "pandas", marker = "extra == 'dashboard'", specifier = ">=2.3" },
     { name = "polars", marker = "extra == 'analysis'", specifier = ">=1.20" },
@@ -2683,6 +2686,7 @@ provides-extras = ["orchestration", "analysis", "stream", "dashboard", "ml"]
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=8.3" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.8" },
 ]
 
