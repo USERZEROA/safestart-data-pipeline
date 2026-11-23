@@ -33,8 +33,10 @@ def test_the_smoke_events_follow_the_contract_and_stay_apart_from_real_records()
 
 
 def test_expected_counts_apply_the_contracts_serious_rule():
-    assert smoke.expected_counts(smoke.smoke_events("ab12cd34", DAY)) == {
-        "inspection": (1, 0), "violation": (2, 1), "accident": (1, 1)}
+    events = smoke.smoke_events("ab12cd34", DAY)
+    assert smoke.expected_counts(events) == {"inspection": (1, 0), "violation": (2, 1), "accident": (1, 1)}
+    accident = events[3].details  # serious by its degree of injury, as definitions.py states the rule
+    assert (accident["degree_injury_cd"], accident["serious"]) == ("03", True)
 
 
 def test_endpoints_come_from_the_container_environment_or_the_host_ports_in_env(tmp_path):
@@ -84,6 +86,10 @@ def write_as_consumers(connection, events, *, store=None, count_twice=()):
                 (event.event_id, event.kind, event.mode, event.occurred_at, event.emitted_at, event.mine_id,
                  event.district, event.state, event.coal_metal, event.title, json.dumps(event.details),
                  json.dumps(event.source), event.topic, offset))
+        connection.execute(
+            "INSERT INTO stream.counted_events (event_id, day, kind, district, serious) VALUES (%s, %s, %s, %s, %s) "
+            "ON CONFLICT (event_id) DO NOTHING", (event.event_id, DAY, event.kind, event.district,
+                                                  smoke.is_serious(event)))
         for _ in range(2 if event.kind in count_twice else 1):
             connection.execute(
                 "INSERT INTO stream.daily_counts (day, kind, district, events, serious) VALUES (%s, %s, %s, 1, %s) "
@@ -99,6 +105,8 @@ def test_verify_passes_once_both_consumers_wrote_every_event_and_cleanup_removes
     assert smoke.verify(stream_db, events, timeout=0) == []
     smoke.remove(stream_db, events)
     assert smoke.stored(stream_db, events) == set() and smoke.counted(stream_db, "SMOKE-ab12cd34") == {}
+    ledger = stream_db.execute("SELECT count(*) FROM stream.counted_events WHERE district = 'SMOKE-ab12cd34'")
+    assert ledger.fetchone()[0] == 0  # the counts' ledger goes with them, so daily_counts stays its sum
 
 
 def test_verify_names_the_consumer_that_fell_short(stream_db):

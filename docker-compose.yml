@@ -1,12 +1,16 @@
-# The streaming side of the pipeline on one host: Kafka and PostgreSQL, the stream initializer, the replay producer,
-# the storage and analytics consumer groups, the live watchers and the dashboard. `python scripts/start.py` writes .env
-# (a random PostgreSQL password, the data root) and starts it; docs/DEPLOYMENT.md explains each step.
+# The pipeline on one host: Kafka and PostgreSQL, the stream initializer, the replay producer, the storage and
+# analytics consumer groups, the live watchers, the dashboard and the orchestrator of the batch flows.
+# `python scripts/start.py` writes .env (a random PostgreSQL password, the data root) and starts it;
+# docs/DEPLOYMENT.md explains each step.
 #
-# Memory limits are sized for a 4 GiB e2-medium: the services that keep running may use 2.9 GiB together (3.0 GiB
-# with the HTTPS gateway of docker-compose.public.yml; the initializer exits before the others start), which leaves
-# about 1 GiB to the system and Docker. Kafka has the largest share: a 384 MiB heap plus the JVM's own memory (the
-# broker measured 320 MiB at rest and 400 MiB while a health check ran). Host ports listen on 127.0.0.1 only; the
-# public overlay adds the one public entrance.
+# Memory limits are ceilings sized for a 4 GiB e2-medium with a 2 GiB swap file (deploy/gcp/startup.sh), leaving 1 GiB
+# of its memory to the system and Docker; tests/test_deployment_files.py keeps them there. The services that keep
+# running may use 2.7 GiB together, the HTTPS gateway of docker-compose.public.yml included, so they never need swap.
+# Kafka has the largest share of them: a 384 MiB heap plus the JVM's own memory (the broker measured 320 MiB at rest
+# and 400 MiB while a health check ran). The orchestrator's limit covers its largest run, the weekly model training
+# (1.35 GiB measured in this image with two threads) beside Prefect (0.4 GiB with its local server); with it and the
+# replay, which runs once after a start, at their limits as well, the host may swap but never runs out of memory. Host
+# ports listen on 127.0.0.1 only; the public overlay adds the one public entrance.
 name: safestart
 
 x-logging: &logging
@@ -15,16 +19,16 @@ x-logging: &logging
     max-size: 10m
     max-file: "3"
 
-# The data root (lake/ and warehouse/) of the host, read-only in every pipeline service.
+# The host's data root (raw/bulk/, state/, lake/, warehouse/, exports/), mounted at /data. Every service only reads it,
+# except the orchestrator, whose batch flows write it.
 x-data-root: &data-root
   type: bind
   source: ${DATA_ROOT:-./data}
   target: /data
   read_only: true
 
-# Every pipeline service runs the same image as an unprivileged user without Linux capabilities, and starts once the
-# initializer has created the Kafka topics and the PostgreSQL schema.
-x-app: &app
+# Every pipeline service runs the same image as an unprivileged user without Linux capabilities.
+x-pipeline: &pipeline
   image: safestart-pipeline:local
   build: .
   init: true
@@ -32,6 +36,10 @@ x-app: &app
   logging: *logging
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
+
+# The stream services start once the initializer has created the Kafka topics and the PostgreSQL schema.
+x-app: &app
+  <<: *pipeline
   environment: &app-env
     SAFESTART_DATA_ROOT: /data
     SAFESTART_KAFKA_BOOTSTRAP: kafka:9092
@@ -126,7 +134,7 @@ services:
       start_period: 60s
       start_interval: 2s
 
-  # Creates the Kafka topics and the PostgreSQL schema, then exits; every other pipeline service waits for it.
+  # Creates the Kafka topics and the PostgreSQL schema, then exits; every stream service waits for it.
   init:
     <<: *app
     command: ["python", "-m", "safestart_pipeline.stream.init"]
@@ -156,23 +164,28 @@ services:
     command: ["python", "-m", "safestart_pipeline.stream.analytics"]
     mem_limit: 256m
 
-  # The live watchers keep what they have seen (sitemap dates, the last Federal Register document, downloaded dataset
-  # versions) in their own volume, since the data root is read-only.
+  # The live watchers keep what they have seen (the events they published, the dataset versions they compared, when
+  # each source was checked) and the version check's DuckDB spill folder in their own volume, since the data root is
+  # read-only, and they log to standard error only. Their limit covers the version check: comparing two versions of
+  # the 3.1 million violations took up to 607 MiB in this image while DuckDB may use 1 GB (watch/versions.py).
   watcher:
     <<: *app
     command: ["python", "-m", "safestart_pipeline.watch", "loop"]
-    mem_limit: 320m
+    mem_limit: 640m
     environment:
       <<: *app-env
-      SAFESTART_WATCH_STATE_DIR: /state
+      SAFESTART_WATCH_STATE: /state/watch.sqlite
+      SAFESTART_WATCH_LOG: "-"
     volumes:
       - *data-root
       - watch-state:/state
 
+  # The dashboard keeps DuckDB under half of its limit (dashboard/data.py) and peaked at 300 MiB rendering every page
+  # from the real warehouse; the browser's toolbar shows a viewer's options only, without Streamlit's "Deploy" button.
   dashboard:
     <<: *app
     command: ["streamlit", "run", "/app/src/safestart_pipeline/dashboard/app.py"]
-    mem_limit: 640m
+    mem_limit: 448m
     environment:
       <<: *app-env
       STREAMLIT_SERVER_PORT: "8501"
@@ -180,6 +193,7 @@ services:
       STREAMLIT_SERVER_HEADLESS: "true"
       STREAMLIT_SERVER_FILE_WATCHER_TYPE: none
       STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+      STREAMLIT_CLIENT_TOOLBAR_MODE: viewer
     ports:
       - 127.0.0.1:${DASHBOARD_HOST_PORT:-8501}:8501
     healthcheck:
@@ -193,6 +207,27 @@ services:
       retries: 3
       start_period: 120s
       start_interval: 5s
+
+  # The batch flows on their schedules (flows/__main__.py): every day the downloads, the lake, the warehouse and the
+  # exports, every Sunday the model. With PREFECT_API_URL and PREFECT_API_KEY set in .env it serves them as Prefect
+  # deployments; without them it keeps the same schedule by itself. The only service that writes the data root, as the
+  # image's user (uid 10001); it needs neither Kafka nor PostgreSQL, so it starts on its own. Polars and the model's
+  # libraries use two threads, as many as the e2-medium has.
+  orchestrator:
+    <<: *pipeline
+    command: ["python", "-m", "safestart_pipeline.flows", "serve"]
+    mem_limit: 1920m
+    environment:
+      SAFESTART_DATA_ROOT: /data
+      TZ: UTC
+      PREFECT_API_URL:
+      PREFECT_API_KEY:
+      PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+      POLARS_MAX_THREADS: "2"
+      OMP_NUM_THREADS: "2"
+    volumes:
+      - <<: *data-root
+        read_only: false
 
 volumes:
   kafka-data:

@@ -90,6 +90,16 @@ def test_the_default_data_root_is_created_and_any_other_must_exist(checkout, cap
         start.data_folder(checkout, str(checkout / "missing"))
 
 
+def test_on_linux_the_data_root_goes_to_the_orchestrators_user(checkout, monkeypatch, capsys):
+    monkeypatch.setattr(start.sys, "platform", "win32")  # Docker Desktop shares a folder whatever its owner
+    start.data_folder(checkout, "./data")
+    assert "chown" not in capsys.readouterr().out
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    folder = start.data_folder(checkout, "./data")
+    assert folder.stat().st_uid != start.SERVICE_UID  # this test's own folder
+    assert f"`sudo chown -R 10001:10001 {folder}`" in capsys.readouterr().out
+
+
 def test_the_gateway_overlay_is_added_only_for_a_public_domain():
     assert start.compose_command({"PUBLIC_DOMAIN": ""}) == ["docker", "compose", "-f", "docker-compose.yml"]
     assert start.compose_command({"PUBLIC_DOMAIN": "34.120.7.15"})[-2:] == ["-f", "docker-compose.public.yml"]

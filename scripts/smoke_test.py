@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """End-to-end check of a running stack: contract events sent to Kafka must reach PostgreSQL through both consumers.
 
-It sends four synthetic events of one mine (an inspection, an S&S and an ordinary violation, a lost-time accident) in a
+It sends four synthetic events of one mine (an inspection, an S&S and an ordinary violation, a days-away accident) in a
 district named after the run, so they cannot be mistaken for real records. It then waits until the storage consumer
 has stored each one in stream.events and the analytics consumer has counted each one exactly once in
-stream.daily_counts, and checks the dashboard's health endpoint. Afterwards it deletes its rows from PostgreSQL
-(`--keep` leaves them); the events themselves stay in the Kafka log until retention removes them.
+stream.daily_counts, and checks the dashboard's health endpoint. Afterwards it deletes its rows from PostgreSQL, the
+analytics consumer's ledger of counted events included (`--keep` leaves them); the events themselves stay in the Kafka
+log until retention removes them.
 
 On the host, after `python scripts/start.py`, it reads the PostgreSQL password and the host ports from .env. Inside a
 service container the SAFESTART_KAFKA_BOOTSTRAP, SAFESTART_POSTGRES_URL and SAFESTART_DASHBOARD_URL variables win:
@@ -29,6 +30,7 @@ from pathlib import Path
 import psycopg
 from confluent_kafka import Producer
 
+from safestart_pipeline import definitions
 from safestart_pipeline.stream.events import Event
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,6 +80,7 @@ def smoke_events(run: str, day: date) -> list[Event]:
     inspection = f"smoke-{run}-1"
     violation = {"event_no": inspection, "likelihood": "Reasonably Likely", "negligence": "Moderate",
                  "injury_illness": "Lost Workdays or Restricted Duty"}
+    days_away = "03"
     return [
         Event.new(kind="inspection", key=inspection, title=f"Smoke test {run}: regular inspection",
                   details={"activity_code": "E01", "activity": "Regular Safety and Health Inspection",
@@ -88,15 +91,17 @@ def smoke_events(run: str, day: date) -> list[Event]:
         Event.new(kind="violation", key=f"smoke-{run}-3", title=f"Smoke test {run}: violation of 30 CFR 75.1722",
                   details={**violation, "cfr_section": "75.1722", "part_section": "75.1722(a)", "sig_sub": False,
                            "likelihood": "Unlikely", "proposed_penalty": 250.0}, **envelope),
-        Event.new(kind="accident", key=f"smoke-{run}-4", title=f"Smoke test {run}: lost-time accident",
-                  details={"degree_injury_cd": "03", "degree_injury": "DAYS AWAY FROM WORK ONLY", "serious": True,
-                           "classification": "MACHINERY", "accident_type": "CAUGHT IN, UNDER OR BETWEEN",
-                           "no_injuries": 1, "days_lost": 4}, **envelope),
+        Event.new(kind="accident", key=f"smoke-{run}-4", title=f"Smoke test {run}: days-away accident",
+                  details={"degree_injury_cd": days_away, "degree_injury": "DAYS AWAY FROM WORK ONLY",
+                           "serious": definitions.is_serious(days_away), "classification": "MACHINERY",
+                           "accident_type": "CAUGHT IN, UNDER OR BETWEEN", "no_injuries": 1, "days_lost": 4},
+                  **envelope),
     ]
 
 
 def is_serious(event: Event) -> bool:
-    """The contract's rule: an S&S violation, or an accident that was fatal or cost lost or restricted work days."""
+    """What the analytics consumer counts as serious: a violation whose sig_sub is true, or an accident whose serious
+    is true (set by its producer from the degree of injury, definitions.is_serious)."""
     if event.kind == "violation":
         return event.details.get("sig_sub") is True
     return event.kind == "accident" and event.details.get("serious") is True
@@ -140,10 +145,12 @@ def counted(connection: psycopg.Connection, district: str) -> dict[str, tuple[in
 
 
 def remove(connection: psycopg.Connection, events: list[Event]) -> None:
-    """Delete the run's rows: its events, and the counts and forecasts of its district."""
+    """Delete the run's rows: its events, and the counts, the counted-event ledger and the forecasts of its district
+    (daily_counts is the ledger grouped by day, kind and district, so the two go together)."""
     district, ids = events[0].district, [event.event_id for event in events]
     with connection.transaction():
         connection.execute("DELETE FROM stream.events WHERE event_id = ANY(%s)", (ids,))
+        connection.execute("DELETE FROM stream.counted_events WHERE district = %s", (district,))
         connection.execute("DELETE FROM stream.daily_counts WHERE district = %s", (district,))
         connection.execute("DELETE FROM stream.forecasts WHERE district = %s", (district,))
 

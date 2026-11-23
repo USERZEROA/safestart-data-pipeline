@@ -3,10 +3,11 @@
 
 The first run writes `.env` from `.env.example` with a random PostgreSQL password. PostgreSQL keeps the password its
 database was created with, so later runs never replace it, and a first run refuses to invent a new one while the
-database of an earlier `.env` still exists. `--data-root` names the host folder with lake/ and warehouse/ (mounted
-read-only into every service) and `--public-domain` adds the HTTPS gateway of docker-compose.public.yml for a domain
-name or the server's public IPv4 address; both are kept in `.env` for the next run. `--no-start` stops once `.env` is
-ready (CI). Only the standard library is used, so the launcher runs before any dependency is installed.
+database of an earlier `.env` still exists. `--data-root` names the host folder of the data root (read-only in every
+service but the orchestrator, whose batch flows write it) and `--public-domain` adds the HTTPS gateway of
+docker-compose.public.yml for a domain name or the server's public IPv4 address; both are kept in `.env` for the next
+run. `--no-start` stops once `.env` is ready (CI). Only the standard library is used, so the launcher runs before any
+dependency is installed.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_VOLUME = "safestart_postgres-data"  # <the `name` in docker-compose.yml>_<volume>
+SERVICE_UID = 10001  # the image's user (Dockerfile), as whom the orchestrator writes the data root
 LABEL = re.compile(r"(?!-)[a-z0-9-]{1,63}(?<!-)")
 
 
@@ -121,7 +123,9 @@ def prepare_env(root: Path, *, data_root: str | None = None, public_domain: str 
 
 
 def data_folder(root: Path, value: str) -> Path:
-    """The data root on the host. The default ./data is created empty; any other folder must exist already."""
+    """The data root on the host. The default ./data is created empty; any other folder must exist already. On Linux
+    the orchestrator writes it as the image's user, so a folder of another owner gets a note on how to hand it over
+    (Docker Desktop, on Windows and macOS, shares a folder whatever its owner)."""
     folder = Path(value) if Path(value).is_absolute() else root / value
     if not folder.is_dir():
         if value != "./data":
@@ -129,7 +133,10 @@ def data_folder(root: Path, value: str) -> Path:
         folder.mkdir(parents=True)
     for part, user in (("lake", "the replay"), ("warehouse", "the dashboard")):
         if not (folder / part).is_dir():
-            print(f"Note: {folder} has no {part}/ yet, which {user} reads.")
+            print(f"Note: {folder} has no {part}/ yet, which {user} reads; the orchestrator's daily batch builds it.")
+    if sys.platform == "linux" and folder.stat().st_uid != SERVICE_UID:
+        print(f"Note: the orchestrator writes {folder} as user {SERVICE_UID}; hand the folder over with "
+              f"`sudo chown -R {SERVICE_UID}:{SERVICE_UID} {folder}`.")
     return folder
 
 
