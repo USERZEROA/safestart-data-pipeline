@@ -7,17 +7,20 @@ all of its pages. Each finding becomes a page_change event keyed by the URL, the
 reported once while a later edit of the same page is reported again.
 
 The watcher asks the way the crawl does: robots.txt through crawl/robots.py, the site's own delay or its Crawl-delay if
-longer, and never while that site's crawl runs (it holds the crawl's lock while it asks). The inventory is only read.
+longer, and never while that site's crawl runs (it holds the crawl's lock while it asks). A data root the watcher cannot
+write, as the containers mount it, holds no running crawl, since a crawl writes its state there, so there it asks
+without the lock. The inventory is only read.
 OSHA asks for 10 seconds between requests, so its sitemaps are read at most once a day whatever the schedule; OSHA's
 sitemap gives no lastmod, so only added and dropped pages are found there.
 """
 
 from __future__ import annotations
 
+import os
 import time
 from collections import Counter
 from collections.abc import Callable
-from contextlib import ExitStack
+from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -145,6 +148,14 @@ def page_event(site: Site, change: Change, checked_at: datetime) -> Event:
         source={"site": site.name, **({"sitemap": change.sitemap} if change.sitemap else {})})
 
 
+def crawl_lock(data_root: Path, site: Site) -> AbstractContextManager[object]:
+    """The site's crawl lock, or nothing to hold where the state folder cannot be written (no crawl runs there)."""
+    state = data_root / "state"
+    if not os.access(state, os.W_OK):
+        return nullcontext()
+    return SiteLock(state / f"crawl-{site.name}.lock")
+
+
 def check_sitemaps(site: Site, data_root: Path, state: WatchState, publisher: Publisher, client: httpx.Client, *,
                    sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
                    now: Callable[[], datetime] = utc_now) -> Check:
@@ -157,7 +168,7 @@ def check_sitemaps(site: Site, data_root: Path, state: WatchState, publisher: Pu
         return Check(source, "skipped", note=f"no {site.name} crawl inventory to compare with")
     with ExitStack() as stack:
         try:
-            stack.enter_context(SiteLock(data_root / "state" / f"crawl-{site.name}.lock"))
+            stack.enter_context(crawl_lock(data_root, site))
         except RuntimeError:
             return Check(source, "skipped", note=f"the {site.name} crawl is running, so its host was not asked")
         state.set_time(f"{source}:read_at", started)

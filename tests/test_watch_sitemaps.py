@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
@@ -160,6 +161,16 @@ def test_a_site_is_not_asked_while_its_crawl_runs_or_without_an_inventory(bench)
 
     (bench.root / "state" / "crawl-example.sqlite").unlink()
     assert bench.check(now=NOW + timedelta(hours=6)).note == "no example crawl inventory to compare with"
+
+
+def test_a_data_root_that_cannot_be_written_is_asked_without_the_crawl_lock(bench, monkeypatch):
+    """The containers mount the data root read-only: no crawl can run there, and no lock file can be created."""
+    state, access = bench.root / "state", os.access
+    monkeypatch.setattr(sitemaps.os, "access",
+                        lambda path, mode, *args, **kwargs: (Path(path) != state or mode != os.W_OK)
+                        and access(path, mode, *args, **kwargs))
+    assert bench.check().status == "ok"
+    assert not (state / "crawl-example.lock").exists()
 
 
 def test_a_site_with_a_minimum_interval_is_read_at_most_that_often(bench, monkeypatch):
