@@ -23,7 +23,7 @@ SafeStart's pre-shift checks and its library should put their text first.
 
 Combustible accumulations (75.400) and unguarded moving machine parts (56.14107) lead by far. Roof, face and rib
 protection (75.202) is cited less often, but 71% of its citations are S&S, the highest share in the list; the quarterly
-employment report (50.30) is cited often and never S&S.
+employment report (50.30) is cited often and almost never S&S (6 of 47,111 citations).
 
 | cfr_section | heading | citations | ss_share | proposed_penalty_musd | last_cited | text_begins |
 |---|---|---:|---:|---:|---|---|

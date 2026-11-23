@@ -5,13 +5,17 @@ reads the lake's Parquet in place and streams it through SQL, so the build never
 the analytical queries run in seconds without a database server. PostgreSQL keeps only the live event stream.
 
 The build writes a new file "<warehouse>.building" and replaces the warehouse with it only after every step succeeded,
-so a reader (the dashboard, an export) sees the previous warehouse or the new one, never a half-built file.
+so a reader (the dashboard, an export) sees the previous warehouse or the new one, never a half-built file. It first
+removes what an earlier build killed without unwinding left behind: the half-written file and the staging folder with
+DuckDB's spill files. The warehouse's lock makes that safe, since no other build is running then.
 
 Keys are PRIMARY KEY constraints. MSHA's files repeat a few keys (a violation listed once per contest docket, an
 inspection once per controller); the build loads one copy of each, chosen deterministically, and writes every copy to
-duplicate_row, so a repeated key is reported rather than dropped unseen. build_check records every rule the build
-verified (unique keys, references between tables, records whose own coal/metal flag is not their mine's, citations
-without regulation text, dropped coordinates) with the number of rows it affected.
+duplicate_row, so a repeated key is reported rather than dropped unseen. A row with a null key column (the lake turns
+MSHA's "?" and empty values into nulls) cannot be loaded under a key; it goes to null_key_row instead of failing the
+build. build_check records every rule the build verified (null and unique keys, references between tables, records
+whose own coal/metal flag is not their mine's, citations without regulation text, dropped coordinates) with the number
+of rows it affected.
 
 The derived columns follow the rules every component shares (definitions.py): an accident's `serious` is its degree of
 injury, a violation's `cfr_section` is the section its citation names, and the `coal_metal` of an inspection, a
@@ -26,6 +30,7 @@ import itertools
 import json
 import logging
 import os
+import shutil
 import tempfile
 import time
 from collections.abc import Iterable
@@ -221,32 +226,42 @@ def table_rows(spec: Load, relation: str) -> str:
 
 
 def load(con: duckdb.DuckDBPyConnection, spec: Load) -> list[dict]:
-    """Fill one table with one row per key. Every copy of a repeated key goes to duplicate_row; the first copy in the
-    order of its full source row (as JSON) is loaded. Returns the table's checks: its unique key and, for a mine's
-    records, those whose own coal/metal flag is not their mine's."""
+    """Fill one table with one row per key. A row with a null key column, which no key can hold, goes to null_key_row;
+    every copy of a repeated key goes to duplicate_row, and the first copy in the order of its full source row (as
+    JSON) is loaded. Returns the table's checks: its null keys, its unique key and, for a mine's records, those whose
+    own coal/metal flag is not their mine's."""
     key = ", ".join(spec.key)
-    con.execute(f"CREATE OR REPLACE TEMP TABLE dup_keys AS SELECT {key} FROM {spec.source} GROUP BY ALL "
-                "HAVING count(*) > 1")
+    null_key = " OR ".join(f"{column} IS NULL" for column in spec.key)
+    con.execute(f"INSERT INTO null_key_row SELECT {sql_text(spec.table)}, row_number() OVER (ORDER BY source_row), "
+                f"source_row FROM (SELECT to_json(s)::VARCHAR AS source_row FROM {spec.source} s WHERE {null_key})")
+    con.execute(f"CREATE OR REPLACE TEMP VIEW keyed AS SELECT * FROM {spec.source} WHERE NOT ({null_key})")
+    con.execute(f"CREATE OR REPLACE TEMP TABLE dup_keys AS SELECT {key} FROM keyed GROUP BY ALL HAVING count(*) > 1")
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE dup_rows AS
         SELECT s.*, row_number() OVER (PARTITION BY {key} ORDER BY to_json(s)::VARCHAR) AS copy_no,
                to_json(s)::VARCHAR AS source_row
-        FROM {spec.source} s SEMI JOIN dup_keys USING ({key})""")
+        FROM keyed s SEMI JOIN dup_keys USING ({key})""")
     con.execute(f"INSERT INTO duplicate_row SELECT {sql_text(spec.table)}, concat_ws('|', {key}), copy_no, "
                 "copy_no = 1, source_row FROM dup_rows")
     # The source rows loaded: every row of a unique key and the first copy of a repeated one.
     con.execute(f"""
         CREATE OR REPLACE TEMP VIEW kept AS
-        SELECT * FROM {spec.source} ANTI JOIN dup_keys USING ({key})
+        SELECT * FROM keyed ANTI JOIN dup_keys USING ({key})
         UNION ALL BY NAME SELECT * EXCLUDE (copy_no, source_row) FROM dup_rows WHERE copy_no = 1""")
     con.execute(f"INSERT INTO {spec.table} BY NAME {table_rows(spec, 'kept')}")
+    nulls, = one(con, f"SELECT count(*) FROM null_key_row WHERE table_name = {sql_text(spec.table)}")
     keys, copies = one(con, "SELECT count(*) FILTER (WHERE copy_no = 1), count(*) FILTER (WHERE copy_no > 1) "
                             "FROM dup_rows")
     differing, = one(con, f"SELECT count(*) FROM (SELECT {key} FROM (SELECT DISTINCT * FROM "
                           f"({table_rows(spec, 'dup_rows')})) GROUP BY ALL HAVING count(*) > 1)")
     detail = (f"{copies} extra copies of {keys} repeated keys not loaded (every copy is in duplicate_row); the copies "
               f"of {differing} keys differ in this table's columns") if keys else "every key is unique"
-    checks = [{"name": f"unique_key:{spec.table}", "table_name": spec.table, "rows": keys, "detail": detail}]
+    checks = [
+        {"name": f"null_key:{spec.table}", "table_name": spec.table, "rows": nulls,
+         "detail": f"rows with a null in the key ({key}) not loaded (every one is in null_key_row)" if nulls
+         else f"no row has a null in the key ({key})"},
+        {"name": f"unique_key:{spec.table}", "table_name": spec.table, "rows": keys, "detail": detail},
+    ]
     if spec.own_flag:
         checks.append(commodity_check(con, spec))
     return checks
@@ -337,6 +352,16 @@ def discard(path: Path) -> None:
         item.unlink(missing_ok=True)
 
 
+def remove_stale_staging(target: Path, prefix: str) -> None:
+    """Remove the staging folders (staged sources and DuckDB's spill files) of earlier builds of `target` that were
+    killed without unwinding (an out-of-memory kill, a host reset). Called under the warehouse's lock, so no other
+    build owns them."""
+    for folder in target.parent.iterdir():
+        if folder.name.startswith(prefix) and folder.is_dir():
+            log.info("removing %s, left by a build that did not finish", folder)
+            shutil.rmtree(folder, ignore_errors=True)
+
+
 def memory_limit() -> str:
     """DuckDB's memory limit for the warehouse's builds and exports (DuckDB's own default is 80% of the host)."""
     return setting("warehouse_memory_limit", "1GB")
@@ -346,13 +371,15 @@ def build(data_root: Path, target: Path) -> dict:
     """Build the warehouse from the data root's lake, bulk store and crawl catalogs (all read only) into `target`,
     replacing it atomically, while holding the warehouse's lock."""
     building = target.with_name(target.name + ".building")
+    staging_prefix = f".{target.name}-"
     target.parent.mkdir(parents=True, exist_ok=True)
     with warehouse_lock(target):
         discard(building)
+        remove_stale_staging(target, staging_prefix)
         started = time.monotonic()
         try:
             # The connection closes before the staging folder (DuckDB's spill space too) is removed.
-            with (tempfile.TemporaryDirectory(prefix=f".{target.name}-", dir=target.parent) as staging,
+            with (tempfile.TemporaryDirectory(prefix=staging_prefix, dir=target.parent) as staging,
                   duckdb.connect(str(building)) as con):
                 con.execute(f"SET memory_limit = {sql_text(memory_limit())}")
                 con.execute("SET preserve_insertion_order = false")

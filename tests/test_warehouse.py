@@ -6,10 +6,12 @@ import sqlite3
 from datetime import date, datetime
 
 import duckdb
+import httpx
 import polars as pl
 import pytest
 
 from safestart_pipeline.acquire.bulk import SCHEMA as BULK_SCHEMA
+from safestart_pipeline.acquire.bulk import BulkAcquirer, BulkFile
 from safestart_pipeline.crawl.store import SCHEMA as CRAWL_SCHEMA
 from safestart_pipeline.lake.msha_ogd import object_path
 from safestart_pipeline.warehouse.build import build
@@ -48,7 +50,8 @@ INSPECTIONS = pl.DataFrame({
     "coal_metal_ind": ["C", "C", "M", "M"], "controller_id": ["C1", "C9", "C2", "C1"],
 })
 # Violation V3 is listed twice, once per contest docket. V6 is the newest (the 12-month anchor) and names an
-# inspection that is not in the file. V7 carries the coal flag though its mine is a metal mine.
+# inspection that is not in the file. V7 carries the coal flag though its mine is a metal mine. The last row has no
+# number (the lake turns MSHA's "?" into a null), so no key can hold it.
 VIOLATION_ROWS = [
     # violation_no, event_no, mine_id, issued, part_section, sig_sub, proposed_penalty, coal_metal, docket_no
     ("V1", "1000001", M1, "2026-03-02", "75.400", "Y", 5000.0, "C", None),
@@ -61,6 +64,7 @@ VIOLATION_ROWS = [
     ("V7", "1000002", M2, "2024-06-01", None, "N", 60.0, "C", None),
     ("V8", "1000003", M1, "2026-01-15", "1.1", "N", 50.0, "C", None),
     ("V9", "1000003", M1, "2026-01-16", "Sec. 103(a)", None, None, "C", None),
+    (None, "1000001", M1, "2026-03-04", "75.400", "Y", 500.0, "C", None),
 ]
 VIOLATIONS = pl.DataFrame({
     "violation_no": [row[0] for row in VIOLATION_ROWS], "event_no": [row[1] for row in VIOLATION_ROWS],
@@ -81,24 +85,28 @@ ACCIDENT_ROWS = [
     ("A5", M2, "2025-01-10", "00", None, None, "OTHER", None, "M"),  # accident only, no injury
     ("A6", M1, "2026-07-15", "02", None, None, "MACHINERY", None, "C"),  # a disability after the newest violation
     ("A7", M2, "2026-03-01", "07", 30, None, "DISORDERS (PHYSICAL AGENTS)", None, "C"),  # an illness, flagged coal
+    ("A8", M2, "2025-11-20", "06", 0, 0, "SLIP OR FALL OF PERSON", None, "M"),  # in a quarter M2 has not reported
+    ("A9", M2, "2026-05-05", "03", 2, None, "HANDLING OF MATERIALS", None, "M"),  # M2 reported that quarter, 0 hours
 ]
 ACCIDENTS = pl.DataFrame({
     "document_no": [row[0] for row in ACCIDENT_ROWS], "mine_id": [row[1] for row in ACCIDENT_ROWS],
     "accident_dt": [D(row[2]) for row in ACCIDENT_ROWS], "degree_injury_cd": [row[3] for row in ACCIDENT_ROWS],
     "degree_injury": ["(description)"] * len(ACCIDENT_ROWS), "classification": [row[6] for row in ACCIDENT_ROWS],
-    "accident_type": ["(type)"] * len(ACCIDENT_ROWS), "no_injuries": [1, 1, 1, 1, 0, 1, 1],
+    "accident_type": ["(type)"] * len(ACCIDENT_ROWS), "no_injuries": [1, 1, 1, 1, 0, 1, 1, 1, 1],
     "days_lost": [row[4] for row in ACCIDENT_ROWS], "days_restrict": [row[5] for row in ACCIDENT_ROWS],
-    "subunit": ["UNDERGROUND"] * 4 + ["STRIP, QUARY, OPEN PIT", "UNDERGROUND", "MILL OPERATION/PREPARATION PLANT"],
+    "subunit": ["UNDERGROUND"] * 4 + ["STRIP, QUARY, OPEN PIT", "UNDERGROUND"]
+               + ["MILL OPERATION/PREPARATION PLANT"] * 3,
     "narrative": ["(narrative)"] * len(ACCIDENT_ROWS), "coal_metal_ind": [row[8] for row in ACCIDENT_ROWS],
     "contractor_id": [row[7] for row in ACCIDENT_ROWS],
 }, schema_overrides={"days_lost": pl.Int64, "days_restrict": pl.Int64})
-# The first quarter of M1 (a coal mine) is reported with the metal flag; the unlisted mine's report keeps its own.
+# The first quarter of M1 (a coal mine) is reported with the metal flag; the unlisted mine's report keeps its own. M2
+# reports 2026 Q1, and 2026 Q2 without hours. M1's last report has no subunit, so no key can hold it.
 QUARTERS = [(2025, 3), (2025, 4), (2026, 1), (2026, 2), (2026, 3)]
 PRODUCTION = pl.DataFrame({
-    "mine_id": [M1] * 5 + [M2, UNLISTED], "cal_yr": [year for year, _ in QUARTERS] + [2026, 2026],
-    "cal_qtr": [quarter for _, quarter in QUARTERS] + [1, 2], "subunit_cd": ["01"] * 5 + ["03", "03"],
-    "avg_employee_cnt": [25.0] * 7, "hours_worked": [50_000] * 5 + [10_000, 5_000],
-    "coal_production": [1000] * 5 + [0, 0], "coal_metal_ind": ["M", "C", "C", "C", "C", "M", "M"],
+    "mine_id": [M1] * 5 + [M2, UNLISTED, M2, M1], "cal_yr": [year for year, _ in QUARTERS] + [2026] * 4,
+    "cal_qtr": [quarter for _, quarter in QUARTERS] + [1, 2, 2, 1], "subunit_cd": ["01"] * 5 + ["03", "03", "03", None],
+    "avg_employee_cnt": [25.0] * 9, "hours_worked": [50_000] * 5 + [10_000, 5_000, 0, 99],
+    "coal_production": [1000] * 5 + [0, 0, 0, 1000], "coal_metal_ind": ["M", "C", "C", "C", "C", "M", "M", "M", "C"],
 })
 TITLE_30 = """<?xml version="1.0" encoding="UTF-8" ?>
 <DLPSTEXTCLASS><HEADER><FILEDESC><TITLESTMT><TITLE>Title 30: Mineral Resources</TITLE></TITLESTMT></FILEDESC></HEADER>
@@ -255,7 +263,7 @@ def test_the_warehouse_has_the_contract_tables_views_and_keys(warehouse):
         "select table_name, constraint_column_names from duckdb_constraints() where constraint_type = 'PRIMARY KEY'"
     ).fetchall() if table in KEYS}
     assert keys == {table: sorted(columns) for table, columns in KEYS.items()}
-    assert summary["rows"] == {"mine": 3, "inspection": 3, "violation": 9, "accident": 7, "production_quarter": 7,
+    assert summary["rows"] == {"mine": 3, "inspection": 3, "violation": 9, "accident": 9, "production_quarter": 8,
                                "cfr_section": 8, "document": 10, "dataset_version": 6}
     assert one(con, "select data_type from information_schema.columns where table_name = 'mart_mine_scorecard'"
                     " and column_name = 'top_sections_12m'") == ("VARCHAR[]",)
@@ -272,6 +280,21 @@ def test_repeated_keys_are_loaded_once_and_every_copy_is_reported(warehouse):
     assert "copies of 0 keys differ" in summary["checks"]["unique_key:inspection"]["detail"]
     assert summary["checks"]["unique_key:mine"] == {"rows": 0, "detail": "every key is unique"}
     assert one(con, "select count(*) from violation where violation_no = 'V3'") == (1,)
+
+
+def test_rows_with_a_null_key_are_left_out_counted_and_kept_for_inspection(warehouse):
+    _, summary, con = warehouse
+    checks = {name: check for name, check in summary["checks"].items() if name.startswith("null_key:")}
+    assert checks["null_key:violation"] == {
+        "rows": 1, "detail": "rows with a null in the key (violation_no) not loaded (every one is in null_key_row)"}
+    assert checks["null_key:production_quarter"]["rows"] == 1
+    assert checks["null_key:mine"] == {"rows": 0, "detail": "no row has a null in the key (mine_id)"}
+    assert sum(check["rows"] for check in checks.values()) == 2
+    rows = {table: json.loads(row) for table, row in con.execute(
+        "select table_name, source_row from null_key_row").fetchall()}
+    assert (rows["violation"]["violation_no"], rows["violation"]["proposed_penalty"]) == (None, 500.0)
+    assert (rows["production_quarter"]["subunit_cd"], rows["production_quarter"]["hours_worked"]) == (None, 99)
+    assert one(con, "select count(*) from violation where violation_no is null or proposed_penalty = 500") == (0,)
 
 
 def test_references_citations_and_coordinates_are_checked(warehouse):
@@ -299,7 +322,7 @@ def test_violations_and_accidents_get_their_derived_columns(warehouse):
                 .fetchall()) == {"V1": True, "V2": False, "V6": None}
     # Serious by the degree of injury alone: 01-05, whatever the day counts say.
     assert dict(con.execute("select document_no, serious from accident").fetchall()) == {
-        "A1": True, "A2": True, "A3": False, "A4": True, "A5": False, "A6": True, "A7": False}
+        "A1": True, "A2": True, "A3": False, "A4": True, "A5": False, "A6": True, "A7": False, "A8": False, "A9": True}
     # The rules the SQL files use are macros made from the shared definitions.
     assert one(con, "select is_fatal('01'), is_fatal('02'), is_injury('06'), is_injury('07'), is_injury(null)") == (
         True, False, True, False, False)
@@ -367,19 +390,31 @@ def test_the_marts_count_the_12_months_up_to_the_newest_violation(warehouse):
     ).fetchall()}
     # Window (2025-06-30, 2026-06-30]; the injury rate pairs the four quarters 2025Q3-2026Q2 with their injuries.
     assert card[M1] == (2, 6, 2, 6450.0, 4, 3, 200_000.0, 3.0, ["75.400", "1.1", "75.1100-3", "77.403"])
-    assert card[M2] == (0, 1, 0, 0.0, 1, 0, 10_000.0, 0.0, ["56.14107"])  # an illness: neither serious nor an injury
+    # An illness and two injuries outside the quarters M2 reported hours for: none counts in its rate.
+    assert card[M2] == (0, 1, 0, 0.0, 3, 1, 10_000.0, 0.0, ["56.14107"])
     assert card[M3] == (0, 0, 0, 0.0, 0, 0, 0.0, None, [])
     # V7, flagged coal, counts under its metal mine.
     assert con.execute("select * from mart_ss_trend order by year, coal_metal").fetchall() == [
         (2024, "M", 2, 1, 0.5), (2025, "C", 1, 0, 0.0), (2026, "C", 5, 2, 0.4), (2026, "M", 1, 0, 0.0)]
-    # Hours count under their mine's commodity, the unlisted mine's under its own flag.
+    # Hours count under their mine's commodity, the unlisted mine's under its own flag. The yearly rate counts every
+    # injury of a quarter with reported hours, whichever mine it happened at.
     rates = {(row[0], row[1]): row[2:] for row in con.execute("select * from mart_injury_rate").fetchall()}
     assert rates == {(2025, "C"): (0, 100_000.0, 0.0), (2026, "C"): (4, 150_000.0, pytest.approx(16 / 3)),
-                     (2026, "M"): (0, 15_000.0, 0.0)}
+                     (2026, "M"): (1, 15_000.0, pytest.approx(40 / 3))}
     assert one(con, "select * from mart_district_year where district = 'C04' and year = 2026") == (
         "C04", 2026, 1, 5, 2, 5)
     assert one(con, "select * from mart_top_cited_sections where cfr_section = '75.400'") == (
         "75.400", "Accumulation of combustible materials.", 2, 1, 0.5, 5300.0, date(2026, 3, 2))
+
+
+def test_a_mines_rate_counts_its_injuries_only_in_the_quarters_it_reported_hours_for(warehouse):
+    _, _, con = warehouse
+    # M2 reported hours only for 2026 Q1 among the rate quarters 2025Q3-2026Q2. Its two injuries fall in 2025 Q4, which
+    # it has not reported, and 2026 Q2, which it reported without hours: neither quarter adds hours or injuries.
+    assert one(con, "select count(*) from accident where mine_id = ? and is_injury(degree_injury_cd)"
+                    " and contractor_id is null and accident_date between '2025-07-01' and '2026-06-30'", M2) == (2,)
+    assert one(con, "select hours_worked_12m, injury_rate_12m from mart_mine_scorecard where mine_id = ?", M2) == (
+        10_000.0, 0.0)
 
 
 def test_every_named_query_states_its_question_and_runs(warehouse):
@@ -444,6 +479,60 @@ def test_a_failed_build_leaves_the_previous_warehouse_in_place(tmp_path):
     assert summary["rows"]["document"] == 7
     assert summary["checks"]["crawl_catalog_missing"] == {"rows": 1, "detail": "no crawl catalog for arlweb"}
     assert sorted(path.name for path in target.parent.iterdir()) == ["warehouse.duckdb", "warehouse.duckdb.lock"]
+
+
+def test_a_build_first_removes_what_a_killed_build_left_behind(tmp_path):
+    root = write_data_root(tmp_path / "data")
+    out = tmp_path / "out"
+    # A build killed without unwinding (an out-of-memory kill, a host reset) leaves its half-written file and its
+    # staging folder with DuckDB's spill files. The staging folder of another warehouse beside it is not its own.
+    killed = out / ".warehouse.duckdb-k1113d"
+    killed.mkdir(parents=True)
+    (killed / "duckdb_temp_storage-0.tmp").write_bytes(b"spilled")
+    (out / "warehouse.duckdb.building").write_bytes(b"half written")
+    (out / ".other.duckdb-a1b2c3").mkdir()
+    build(root, out / "warehouse.duckdb")
+    assert sorted(path.name for path in out.iterdir()) == [
+        ".other.duckdb-a1b2c3", "warehouse.duckdb", "warehouse.duckdb.lock"]
+
+
+ECFR_29 = "https://www.govinfo.gov/ECFR-title29.xml"  # the URL write_data_root records for title 29
+
+
+def failed_check(kind: str):
+    """govinfo answering the next check of a title with one kind of failure."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            if kind == "robots-unreachable":
+                raise httpx.ConnectError("connection refused")
+            return httpx.Response(404)
+        if kind == "network-error":
+            raise httpx.ConnectError("connection reset")
+        if kind == "failed-verification":
+            return httpx.Response(200, content=TITLE_29.encode("utf-8")[:300])  # cut off mid-file
+        return httpx.Response(int(kind))
+    return handler
+
+
+@pytest.mark.parametrize(("kind", "state"), [("503", "error"), ("network-error", "error"), ("404", "not_found"),
+                                             ("robots-unreachable", "error"), ("failed-verification", "error")])
+def test_after_a_failed_check_of_an_ecfr_title_the_warehouse_builds_from_the_copy_held(tmp_path, kind, state):
+    root = write_data_root(tmp_path / "data")
+    held = hashlib.sha256(TITLE_29.encode("utf-8")).hexdigest()
+    with httpx.Client(transport=httpx.MockTransport(failed_check(kind))) as client:
+        acquirer = BulkAcquirer(root, client, sleep=lambda seconds: None)
+        assert acquirer.download(BulkFile("ecfr-govinfo", ECFR_29))["state"] == state
+        acquirer.store.close()
+    bulk = sqlite3.connect(root / "state" / "bulk.sqlite")
+    try:
+        assert bulk.execute("select state, sha256, verified from files where url = ?", (ECFR_29,)).fetchone() == (
+            state, held, 1)
+    finally:
+        bulk.close()
+    target = tmp_path / "out" / "warehouse.duckdb"
+    assert build(root, target)["rows"]["cfr_section"] == 8
+    with duckdb.connect(str(target), read_only=True) as con:
+        assert one(con, "select value from build_info where key = 'ecfr.title29.sha256'") == (held,)
 
 
 def test_a_second_writer_fails_at_once_while_a_build_or_export_holds_the_lock(warehouse, tmp_path):

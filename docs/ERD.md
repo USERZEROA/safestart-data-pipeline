@@ -2,14 +2,16 @@
 
 The warehouse is one DuckDB file (`warehouse_path()`, `SAFESTART_WAREHOUSE_PATH`) built by
 `python -m safestart_pipeline.warehouse build` from three read-only inputs: the current version of five lake datasets,
-the govinfo eCFR XML of titles 29 and 30 in the bulk store, and the three crawl catalogs. The build writes
-`<warehouse>.building` and renames it over the warehouse only when every step succeeded, so readers see the previous
-warehouse or the new one, never a half-built file.
+the verified govinfo eCFR XML of titles 29 and 30 the bulk store holds (a failed check of a title leaves the copy held
+in use), and the three crawl catalogs. The build writes `<warehouse>.building` and renames it over the warehouse only
+when every step succeeded, so readers see the previous warehouse or the new one, never a half-built file. Under the
+warehouse's lock it first removes what a build killed without unwinding left behind: its `.building` file and its
+staging folder `.<warehouse>-*` with DuckDB's spill files.
 
 DuckDB rather than PostgreSQL holds the history because the questions are analytical scans over millions of rows on a
 4 GB host: DuckDB streams the lake's Parquet through SQL without a server. The real build of 2026-11-23 (3.1 million
-violations, 2.8 million production rows) took 30 seconds on a workstation with a peak working set of 1.1 GB (the
-DuckDB memory limit is `SAFESTART_WAREHOUSE_MEMORY_LIMIT`, default `1GB`) and wrote a 643 MB file. PostgreSQL keeps
+violations, 2.8 million production rows) took 27 seconds on a workstation with a peak working set of 1.1 GB (the
+DuckDB memory limit is `SAFESTART_WAREHOUSE_MEMORY_LIMIT`, default `1GB`) and wrote a 639 MB file. PostgreSQL keeps
 only the live event stream (`stream/schema.sql`).
 
 The derived columns follow the definitions every component shares (`src/safestart_pipeline/definitions.py`), so the
@@ -173,11 +175,12 @@ One row per accident, injury or illness report (one person per report), from the
 true when the degree of injury is `01` to `05`: a death, a permanent disability, or days away from work or of
 restricted activity (157,657 rows). The day counts play no part: the degree is set when the accident is reported,
 while the counts arrive once the miner is back at work, and counts also appear on illnesses and other cases that are
-not injuries. Compared with also counting every report with lost or restricted days, the rule adds 866 permanent
-disabilities without counts and leaves out 4,081 reports with counts (3,542 occupational illnesses, 430 natural
-causes, 47 non-employees, 6 other cases, 56 without a degree). `coal_metal` is the mine's commodity, which every
-accident's own flag matches. `contractor_id` goes beyond the warehouse contract: an injury rate over the hours mine
-operators report must leave out contractors' employees, whose hours are reported separately.
+not injuries. Before the shared definitions the warehouse counted degree 01, 03, 04 or 05, or any report with lost or
+restricted days (160,872 reports); against that rule this one adds 866 permanent disabilities (degree 02) without day
+counts and leaves out 4,081 reports with counts (3,542 occupational illnesses, 430 natural causes, 47 non-employees, 6
+other cases, 56 without a degree). `coal_metal` is the mine's commodity, which every accident's own flag matches.
+`contractor_id` goes beyond the warehouse contract: an injury rate over the hours mine operators report must leave out
+contractors' employees, whose hours are reported separately.
 
 ### production_quarter (2,784,528 rows)
 
@@ -221,19 +224,26 @@ Views over the tables, so they always agree with them; each answers in under 0.2
 "12m" is the 12 months up to the newest violation issue date in the data (here 2025-11-22 to 2026-11-21), not today's
 date. An injury in a rate is an injury by the shared rule (`is_injury`, degree `01` to `06`) to a mine operator's
 employee, the people whose hours `production_quarter` holds, and a rate pairs a quarter's injuries with the same
-quarter's hours. A commodity's violations, injuries and hours are those whose `coal_metal`, their mine's, is that
-commodity.
+quarter's hours; a mine's own rate counts its injuries only in the quarters it reported hours for (below). A
+commodity's violations, injuries and hours are those whose `coal_metal`, their mine's, is that commodity.
 
 | View | One row per | Columns |
 |---|---|---|
 | `mart_top_cited_sections` | cited section | `cfr_section`, its title 30 `heading` (null if not in today's CFR), `citations`, `ss_citations`, `ss_share`, `proposed_penalty_total`, `last_cited` |
-| `mart_mine_scorecard` | mine | the mine's identity and location, `inspections_12m`, `violations_12m`, `ss_violations_12m`, `proposed_penalty_12m`, `accidents_12m`, `serious_accidents_12m`, `hours_worked_12m`, `injury_rate_12m` (per 200,000 hours, null without hours), `top_sections_12m` (up to five most cited sections, most cited first, `VARCHAR[]`) |
+| `mart_mine_scorecard` | mine | the mine's identity and location, `inspections_12m`, `violations_12m`, `ss_violations_12m`, `proposed_penalty_12m`, `accidents_12m`, `serious_accidents_12m`, `hours_worked_12m`, `injury_rate_12m` (per 200,000 hours over the quarters the mine reported hours for, null without hours), `top_sections_12m` (up to five most cited sections, most cited first, `VARCHAR[]`) |
 | `mart_ss_trend` | year and commodity | `violations`, `ss_violations`, `ss_share` (S&S share of all violations issued that year) |
 | `mart_injury_rate` | year and commodity | `injuries`, `hours_worked`, `rate_per_200k`, counting only quarters with reported hours (the current year is partial) |
 | `mart_district_year` | district and year | `inspections` (by begin date), `violations`, `ss_violations`, `accidents`, by the mine's district |
 
 In the scorecard, `hours_worked_12m` and `injury_rate_12m` use the four latest quarters with reported hours that end by
 the window's end (2025 Q4 to 2026 Q3 here), since hours are reported per quarter; the other counts use the 12m window.
+A mine's injuries count only in those of the four quarters it reported hours (more than zero) for, so a report not yet
+filed adds neither hours nor injuries. MSHA's file had no 2026 Q3 report yet from 501 mines that reported hours for
+2026 Q2, and 25 of the 4,076 operator injuries of the four quarters, at 19 mines, fell in a quarter their mine had not
+reported hours for; counted against the other quarters' hours, they had raised 16 of the 12,722 rates (Fort Knox Mine's
+from 0.75 to 1.13, 21 Mining's from 0 to 54.54). `mart_injury_rate` pairs each quarter's operator injuries at every
+mine with the quarter's reported hours, so its newest quarter also counts injuries at mines whose report has not
+arrived (9 of the 1,143 in 2026 Q3).
 
 ## Build metadata
 
@@ -242,6 +252,7 @@ the window's end (2025 Q4 to 2026 Q3 here), since hours are reported per quarter
 | `build_info` | `built_at`, the format version (2 since the shared definitions), each eCFR title's SHA-256 and amendment date, the crawl catalogs read |
 | `build_check` | every rule the build verified, with the rows it affected and a detail (below) |
 | `duplicate_row` | every copy of every repeated key, as its full source row in JSON, the loaded copy flagged `kept` |
+| `null_key_row` | every source row with a null key column (the lake turns MSHA's `?` and empty values into nulls), which no key can hold and so is not loaded, as its full source row in JSON; empty in this build |
 
 The warehouse also holds the macros `is_fatal(degree)` and `is_injury(degree)`, the shared rules for plain SQL.
 
@@ -249,6 +260,7 @@ The checks of the 2026-11-23 build:
 
 | Check | Rows | Detail |
 |---|---:|---|
+| `null_key:<table>` | 0 | rows with a null key column, left out of the table and kept in `null_key_row` |
 | `unique_key:<table>` | 1 (inspection), 51 (violation), 0 elsewhere | repeated keys; their copies are identical in the warehouse's columns |
 | `commodity_differs_from_mine:violation` | 89,673 | violations whose own flag is not their mine's (67,619 coal at metal and non-metal mines, 22,054 the reverse); they count under the mine's |
 | `commodity_differs_from_mine:production_quarter` | 784 | production reports whose own flag is not their mine's (766 coal at metal and non-metal mines, 18 the reverse) |

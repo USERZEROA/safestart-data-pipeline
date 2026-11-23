@@ -57,12 +57,12 @@ def read_only(path: Path) -> sqlite3.Connection:
 
 
 def ecfr_file(data_root: Path, title: int) -> tuple[Path, str]:
-    """The current, verified govinfo XML of a title in the bulk store, and its SHA-256."""
+    """The verified govinfo XML of a title the bulk store holds, and its SHA-256, whatever its last check found: an
+    error, a refusal or a download that failed verification leaves the copy held current, as the lake keeps its own."""
     db = read_only(data_root / "state" / "bulk.sqlite")
     try:
         row = db.execute(
-            "select sha256 from files where source = ? and name = ? and state in ('fetched', 'unchanged')"
-            " and verified = 1",
+            "select sha256 from files where source = ? and name = ? and verified = 1 and sha256 is not null",
             (ECFR_SOURCE, f"ECFR-title{title}.xml"),
         ).fetchone()
     finally:

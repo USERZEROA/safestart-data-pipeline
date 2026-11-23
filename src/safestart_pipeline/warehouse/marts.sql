@@ -3,7 +3,9 @@
 -- "12m" is the 12 months up to the newest violation issue date in the data (not today's date), so a scorecard built
 -- from an older download describes that download's last year. Hours are reported per calendar quarter, so an injury
 -- rate pairs a quarter's injuries with the same quarter's hours: the yearly rate counts only quarters with reported
--- hours, and the 12-month rate uses the four latest quarters with reported hours that end by the window's end.
+-- hours, and a mine's 12-month rate uses the four latest quarters with reported hours that end by the window's end,
+-- counting the mine's injuries only in the quarters it reported hours (more than zero) for, so a report not yet filed
+-- adds neither hours nor injuries.
 -- An injury here is an injury by the shared rule (the is_injury macro the build makes from definitions.py) to a mine
 -- operator's employee (no contractor), the people whose hours production_quarter holds; the rate is per 200,000 hours
 -- (100 full-time workers for a year). A record counts under its coal_metal, which is its mine's commodity.
@@ -56,16 +58,23 @@ WITH bounds AS (
     FROM accident a, bounds b
     WHERE a.accident_date > b.window_start AND a.accident_date <= b.window_end
     GROUP BY a.mine_id
-), hours AS (
-    SELECT p.mine_id, sum(p.hours_worked) AS hours_worked
+), reported AS (
+    -- The rate quarters each mine reported hours for; its hours and its injuries both come from these alone.
+    SELECT p.mine_id, p.cal_yr * 4 + p.cal_qtr - 1 AS quarter_no, sum(p.hours_worked) AS hours_worked
     FROM production_quarter p, rate_quarters r
     WHERE p.cal_yr * 4 + p.cal_qtr - 1 BETWEEN r.last_quarter - 3 AND r.last_quarter
-    GROUP BY p.mine_id
+    GROUP BY ALL
+    HAVING sum(p.hours_worked) > 0
+), hours AS (
+    SELECT mine_id, sum(hours_worked) AS hours_worked
+    FROM reported
+    GROUP BY mine_id
 ), injuries AS (
     SELECT a.mine_id, count(*) AS injuries
-    FROM accident a, rate_quarters r
+    FROM accident a
+    JOIN reported q
+      ON q.mine_id = a.mine_id AND q.quarter_no = year(a.accident_date) * 4 + quarter(a.accident_date) - 1
     WHERE is_injury(a.degree_injury_cd) AND a.contractor_id IS NULL
-      AND year(a.accident_date) * 4 + quarter(a.accident_date) - 1 BETWEEN r.last_quarter - 3 AND r.last_quarter
     GROUP BY a.mine_id
 )
 SELECT

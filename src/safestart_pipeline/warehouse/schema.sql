@@ -1,5 +1,6 @@
 -- The warehouse's tables (docs/ERD.md describes each). Keys are PRIMARY KEY constraints; a source row a key rejects is
--- kept in duplicate_row, and every rule the build checked is recorded in build_check, so nothing is dropped unseen.
+-- kept in duplicate_row (a repeated key) or null_key_row (a null key column), and every rule the build checked is
+-- recorded in build_check, so nothing is dropped unseen.
 -- The coal_metal of a mine's records (inspection, violation, accident, production_quarter) is the commodity of their
 -- mine by the shared rule (definitions.commodity_sql), not the flag each record carries.
 
@@ -119,8 +120,8 @@ CREATE TABLE dataset_version (
     PRIMARY KEY (dataset, version)
 );
 
--- Build metadata: when and from which eCFR editions the warehouse was built, every rule the build checked, and every
--- copy of a repeated key (the kept one flagged).
+-- Build metadata: when and from which eCFR editions the warehouse was built, every rule the build checked, every copy
+-- of a repeated key (the kept one flagged) and every row with a null key column, which no key can hold.
 CREATE TABLE build_info (
     key VARCHAR PRIMARY KEY,
     value VARCHAR
@@ -140,4 +141,11 @@ CREATE TABLE duplicate_row (
     kept BOOLEAN NOT NULL,
     source_row VARCHAR NOT NULL,
     PRIMARY KEY (table_name, key, copy_no)
+);
+
+CREATE TABLE null_key_row (
+    table_name VARCHAR NOT NULL,
+    row_no INTEGER NOT NULL,
+    source_row VARCHAR NOT NULL,
+    PRIMARY KEY (table_name, row_no)
 );
