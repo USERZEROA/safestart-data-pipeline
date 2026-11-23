@@ -2,11 +2,19 @@
 
 [![CI](https://github.com/USERZEROA/safestart-data-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/USERZEROA/safestart-data-pipeline/actions/workflows/ci.yml)
 
-SafeStart is a pre-shift hazard assessment (JSA) application for mine crews. This repository is its data pipeline: it
-collects the public U.S. mine and workplace safety record, keeps every version of it, models it into a warehouse,
-streams MSHA's enforcement events through Kafka as they appear, and turns it into what a crew and an analyst need
-before a shift: which standards inspectors cite at a mine, what its recent accidents were, how its record compares,
-and which mines are most likely to have a serious accident next quarter.
+## Executive summary
+
+**Problem.** Mine crews start every shift with a hazard assessment (a JSA). The public record that should inform it is
+large, scattered and moving: 3.1 million MSHA violation records, 276,013 accidents, the federal regulations they cite,
+and tens of thousands of guidance pages on the MSHA and OSHA websites, republished in new versions every week or so.
+SafeStart, the JSA application this pipeline serves, needs that record clean, current and comparable, down to one
+mine.
+
+**What was built.** This repository is SafeStart's data pipeline. It collects the public U.S. mine and workplace safety
+record, keeps every version of it, models it into a warehouse, streams MSHA's enforcement events through Kafka as they
+appear, and turns it into what a crew and an analyst need before a shift: which standards inspectors cite at a mine,
+what its recent accidents were, how its record compares, and which mines are most likely to have a serious accident
+next quarter.
 
 It runs end to end on one small host: polite crawlers and bulk downloads feed a content-addressed raw archive, a
 typed Parquet lake (Polars), a DuckDB warehouse with marts and documented SQL questions, a Kafka stream into PostgreSQL
@@ -22,7 +30,12 @@ by Prefect, packaged with Docker Compose, tested in GitHub Actions and deployed 
 | Stream | Kafka (2 topics) into PostgreSQL: a replay of 374,400 events from 2024 on, plus live watchers |
 | Model | Serious-accident risk per mine and quarter: test ROC AUC 0.909; its riskiest 5% are ten times the base rate |
 | Delivery | Streamlit dashboard (5 pages), SafeStart exports, Prefect flows on a schedule, Google Cloud VM behind HTTPS |
-| Quality | 327 tests; CI runs lint, the tests against PostgreSQL, and the whole Compose stack end to end |
+| Quality | 327 tests; CI runs lint, the tests against PostgreSQL, and the Compose stack end to end |
+
+**Documentation.** This README is the project documentation: the summary above, then the architecture, the key
+components and their implementation. The files in [docs/](docs/) are reference appendices with the full detail of
+each part: [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), [QUERIES](docs/QUERIES.md), [ML](docs/ML.md),
+[SAFESTART_EXPORTS](docs/SAFESTART_EXPORTS.md) and [DEPLOYMENT](docs/DEPLOYMENT.md).
 
 ## Contents
 
@@ -48,14 +61,19 @@ flowchart LR
         BULK[MSHA open data: 20 datasets<br/>eCFR titles 29 and 30]
         FR[Federal Register API]
     end
+    subgraph Workstation
+        CRAWL[Polite crawlers<br/>resumable, days long]
+    end
     subgraph Batch["Batch (Prefect: daily and weekly)"]
-        CRAWL[Polite crawlers] --> RAW[(Raw archive<br/>content-addressed)]
-        ACQ[Bulk downloads] --> RAW
+        ACQ[Bulk downloads] --> RAW[(Raw archive<br/>content-addressed)]
         RAW --> LAKE[(Parquet lake<br/>every version)]
         LAKE --> WH[(DuckDB warehouse<br/>tables + marts)]
+        RAW -. eCFR XML .-> WH
         LAKE --> ML[Accident-risk model]
         WH --> EXP[SafeStart exports]
     end
+    CRAWL --> RAW
+    CRAWL -. crawl catalogs .-> WH
     subgraph Streaming
         REPLAY[Replay producer] --> K{{Kafka}}
         WATCH[Live watchers] --> K
@@ -119,9 +137,9 @@ The data root defaults to `./data`; `SAFESTART_DATA_ROOT` or `data_root` in `pip
 | MSHA open enforcement datasets | bulk download, every version kept | the open-data page's links |
 | Federal Register | its public API, MSHA and OSHA documents (live watcher) | newest first |
 
-The crawls recorded 41,157 OSHA URLs, 32,205 MSHA URLs and 12,394 URLs on MSHA's legacy host; the raw archive holds
-their 84,539 distinct files (10.9, 5.9 and 26.5 GB) and the 63 bulk files (1.3 GB), 44.6 GB in all. Every request
-follows the host's rules:
+The crawls recorded 56,104 OSHA, 32,507 MSHA and 13,859 legacy-host URLs and downloaded 41,157, 32,205 and 12,394
+of them; the raw archive holds their 84,539 distinct files (10.9, 5.9 and 26.5 GB) and the 63 bulk files (1.3 GB),
+44.6 GB in all. Every request follows the host's rules:
 
 - `robots.txt` (RFC 9309), its `Allow`/`Disallow` patterns and its `Crawl-delay`: OSHA asks for 10 seconds between
   requests and excludes every URL with a query string; MSHA sets no delay, so the crawler waits 1 second. Redirect hops
@@ -261,11 +279,12 @@ phone:
 ## Deployment
 
 One image runs every pipeline service; `docker-compose.yml` adds Kafka (KRaft, small heap) and PostgreSQL, with memory
-limits that fit a 4 GB e2-medium. Every service mounts the data root read-only and runs as an unprivileged user without
-Linux capabilities, except the orchestrator, the one writer. On Google Cloud, `deploy/gcp/create-vm.sh` creates the
-VM, a reserved address, a firewall that admits only HTTP and HTTPS, and a service account that can only read the data
-bucket; at boot `deploy/gcp/startup.sh` adds swap, installs Docker, copies the data it lacks from the bucket and starts
-the stack with Caddy serving HTTPS. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) has the steps and a cost estimate.
+limits that fit a 4 GB e2-medium. Every pipeline service runs as an unprivileged user without Linux capabilities and
+mounts the data root read-only, except the orchestrator, the one writer of the data root. On Google Cloud,
+`deploy/gcp/create-vm.sh` creates the VM, a reserved address, a firewall that admits only HTTP and HTTPS, and a service
+account that can only read the data bucket; at boot `deploy/gcp/startup.sh` adds swap, installs Docker, copies the data
+it lacks from the bucket and starts the stack with Caddy serving HTTPS. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) has the
+steps and a cost estimate.
 
 ## Testing and CI
 
@@ -319,8 +338,10 @@ compresses with lz4, the model trains in about two minutes with two threads, and
 600 MB at rest).
 
 **Security.** Secrets come only from the environment: `scripts/start.py` writes a random database password into a
-private `.env` that git ignores. Containers run as uid 10001 without Linux capabilities, with `no-new-privileges` and a
-read-only data mount; only the Caddy gateway listens beyond the host, and the internal ports are bound to 127.0.0.1. On
+private `.env` that git ignores. The pipeline's own containers run as uid 10001 without Linux capabilities and with
+`no-new-privileges`, and all but the orchestrator mount the data root read-only; Kafka and PostgreSQL run their official
+images, reachable only on 127.0.0.1, and the Caddy gateway, the one service listening beyond the host, keeps only the
+capability to bind ports 80 and 443. On
 Google Cloud the firewall admits only HTTP and HTTPS, the bucket is private with public access prevented, and the VM's
 service account may only read that bucket. The dashboard opens its stores read-only with statement timeouts and
 escapes what it displays.
@@ -343,7 +364,8 @@ SafeStart is a separate application and stays unchanged: the pipeline hands it t
 - The model ranks mines by recorded history; it knows nothing a dataset does not record (conditions, staffing) and is a
   screening aid, not a prediction of any one accident.
 - OSHA's sitemap gives no modification dates, so the OSHA watcher finds added and dropped pages only.
-- 90 OSHA URLs refused the crawler (403) and are recorded as such; a refusal is never worked around.
+- 238 OSHA URLs answered 403 (90 of them pages the project needs) and are recorded as such; a refusal is never
+  worked around.
 
 ## Repository layout
 
