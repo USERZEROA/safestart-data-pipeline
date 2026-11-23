@@ -18,7 +18,7 @@ mounts the data root at `/data`, read-only, except the orchestrator, which runs 
 | `analytics-consumer` | pipeline | Daily counts and forecasts | 256 MiB | |
 | `watcher` | pipeline | Live watchers; their state lives in the `watch-state` volume | 640 MiB | |
 | `dashboard` | pipeline | Streamlit, health at `/_stcore/health` | 448 MiB | 127.0.0.1:8501 |
-| `orchestrator` | pipeline | The daily batch (downloads, lake, warehouse, exports) and the weekly model, through Prefect | 1,920 MiB | |
+| `orchestrator` | pipeline | The daily batch (downloads, lake, warehouse, exports) and the weekly model, through Prefect; only with the `orchestrator` profile | 1,920 MiB | |
 | `gateway` (server only) | `caddy:2.11-alpine` | HTTPS for a domain name or an IP address | 96 MiB | 80, 443 |
 
 - One image (`Dockerfile`) runs every pipeline service. It is built from `uv.lock` with all extras; the dependencies
@@ -35,8 +35,8 @@ mounts the data root at `/data`, read-only, except the orchestrator, which runs 
   Kafka's.
 - The services start in order: Kafka and PostgreSQL until healthy, then `init`, then the stream services. `init` runs
   once per start and the replay is restarted only after a failure; every other service restarts unless stopped. The
-  orchestrator needs neither Kafka nor PostgreSQL and starts at once. Container logs rotate at 10 MB, three files per
-  service.
+  orchestrator runs only with its Compose profile (`COMPOSE_PROFILES=orchestrator`), since it writes the data root;
+  it needs neither Kafka nor PostgreSQL and starts at once. Container logs rotate at 10 MB, three files per service.
 - Kafka's log, the stream store and the watcher state are named volumes (`kafka-data`, `postgres-data`,
   `watch-state`); they survive `docker compose down` and are deleted only with `--volumes`.
 
@@ -65,17 +65,20 @@ python scripts/start.py --data-root F:/SafeStartData
 
 `--data-root` names the folder that holds the data root (`raw/`, `state/`, `lake/`, `warehouse/`, `exports/`); without
 it the empty `./data` is used and the stream services start without history until the orchestrator's first batch. The
-first run writes `.env` with a random PostgreSQL password, builds the image, starts every service and waits until the
-dashboard answers. Later runs reuse `.env`: PostgreSQL keeps the password its database was created with, so the
-launcher never replaces it, and it refuses to invent a new one while the database of a lost `.env` still exists. The
-launcher needs only the standard library of Python 3. On Linux the orchestrator writes the data root as uid 10001; the
-launcher says when the folder belongs to someone else (`sudo chown -R 10001:10001 <folder>` hands it over).
+first run writes `.env` with a random PostgreSQL password, builds the image, starts every service but the
+orchestrator and waits until the dashboard answers. The orchestrator writes the data root, so a workstation runs it only
+when asked: `--with-orchestrator` turns it on and `--without-orchestrator` off again, and the choice is kept in `.env`.
+Later runs reuse `.env`: PostgreSQL keeps the password its database was created with, so the launcher never replaces
+it, and it refuses to invent a new one while the database of a lost `.env` still exists. The launcher needs only the
+standard library of Python 3. On Linux the orchestrator writes the data root as uid 10001; with the orchestrator on,
+the launcher says when the folder belongs to someone else (`sudo chown -R 10001:10001 <folder>` hands it over).
 
 | `.env` setting | Meaning |
 |---|---|
 | `POSTGRES_PASSWORD` | Password of the `safestart` database user (random, written once) |
 | `DATA_ROOT` | Host folder mounted at `/data`: read-only, but read-write in the orchestrator |
 | `PUBLIC_DOMAIN` | Domain name or public IPv4 address for the HTTPS gateway; empty on a workstation |
+| `COMPOSE_PROFILES` | `orchestrator` to run the orchestrator (`--with-orchestrator`); empty, the default, leaves it off |
 | `DASHBOARD_HOST_PORT`, `KAFKA_HOST_PORT`, `POSTGRES_HOST_PORT` | Host ports (8501, 19092, 15432), on 127.0.0.1 only |
 | `PREFECT_API_URL`, `PREFECT_API_KEY` | Optional, commented out by default: a Prefect API for the orchestrator (below) |
 
@@ -90,17 +93,18 @@ Then:
   has counted each one exactly once, checks the dashboard, and removes its rows again, the counted-event ledger
   included.
 - State and logs: `docker compose ps`, `docker compose logs -f replay`, `docker compose logs -f watcher`.
-- One writer of the data root at a time: on a workstation that also runs the batch or the model by hand
-  (`ssp pipeline`, `python -m safestart_pipeline.flows run`) on the same folder, stop the orchestrator first with
-  `docker compose stop orchestrator`. File locks do not reach across Docker Desktop's file sharing, so the warehouse
+- One writer of the data root at a time: on a workstation that runs the orchestrator and also runs the batch or the
+  model by hand (`ssp pipeline`, `python -m safestart_pipeline.flows run`) on the same folder, stop the orchestrator
+  first with `docker compose stop orchestrator`. File locks do not reach across Docker Desktop's file sharing, so the warehouse
   lock cannot keep a process on the host and one in a container apart.
 - Stop with `docker compose stop` or `docker compose down`; `docker compose down --volumes` also deletes Kafka's log,
   the stream store and the watcher state (the next start creates them again with the password in `.env`).
 
 ### The orchestrator and Prefect
 
-Without a Prefect API the orchestrator keeps the schedule in its own process (batch every day at 14:00 UTC, model every
-Sunday at 15:00 UTC) and logs each run: `docker compose logs -f orchestrator`. With Prefect Cloud, put the workspace's
+`python scripts/start.py --with-orchestrator` turns the orchestrator on (the server's startup script does). Without a
+Prefect API it keeps the schedule in its own process (batch every day at 14:00 UTC, model every Sunday at 15:00 UTC)
+and logs each run: `docker compose logs -f orchestrator`. With Prefect Cloud, put the workspace's
 API URL and an API key in `.env` and recreate the service:
 
 ```bash
@@ -205,8 +209,8 @@ workstation that holds the data. `<project>`, `<bucket>`, `<billing account>` an
    `deploy/gcp/startup.sh` as its startup script. Each step reuses what an earlier run made. `DOMAIN=<name>` serves a
    domain instead of the address; `REGION`, `ZONE`, `NAME`, `REPO` and `BRANCH` override the defaults.
 
-6. Verify. The first boot adds the swap file, installs Docker, copies the data, builds the image and starts the stack
-   in about ten minutes:
+6. Verify. The first boot adds the swap file, installs Docker, copies the data, builds the image and starts the stack,
+   the orchestrator included, in about ten minutes:
 
    ```bash
    gcloud compute instances get-serial-port-output safestart-pipeline --zone=us-central1-a | grep safestart:

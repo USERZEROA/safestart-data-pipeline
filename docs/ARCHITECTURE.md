@@ -151,7 +151,8 @@ reported again. An event is serious, for the counts, when it is a violation with
   arrival for the Live page), `daily_counts`, `counted_events` (the analytics consumer's ledger), `forecasts`,
   `source_checks`.
 - DuckDB warehouse (`warehouse_path()`): built into a new file and swapped in, so readers never see a half-built
-  warehouse; one writer at a time holds a lock beside it. Core tables `mine`, `inspection`, `violation`, `accident`,
+  warehouse; its build and its exports hold a lock beside it (`warehouse/lock.py`), so one writer works at a time
+  whoever starts it. Core tables `mine`, `inspection`, `violation`, `accident`,
   `production_quarter`, `cfr_section`, `document`, `dataset_version`; marts as views. The ERD is in `docs/ERD.md`.
   The dashboard opens it read-only, with a memory limit and a spill folder of its own: DuckDB's default spill folder
   sits beside the database file, which the containers mount read-only.
@@ -162,13 +163,18 @@ The orchestrator service (`python -m safestart_pipeline.flows serve`) runs the b
 (bulk downloads, lake, warehouse, exports) and the model flow every Sunday at 15:00 UTC, one at a time. With
 `PREFECT_API_URL` and `PREFECT_API_KEY` set it serves both flows as Prefect deployments (Prefect Cloud shows their runs
 and can start one); without them it keeps the same schedule in its own process. `python -m safestart_pipeline.flows
-run batch|model` runs one now. It is the only service that writes the data root.
+run batch|model` (or `ssp pipeline [--model]`) runs one now. It is the only service that writes the data root, so
+Compose starts it only with its profile (`COMPOSE_PROFILES=orchestrator`, `scripts/start.py --with-orchestrator`): the
+server turns it on, a workstation when asked. Served runs execute in processes of their own; the package's progress
+lines reach their Prefect logs through `PREFECT_LOGGING_EXTRA_LOGGERS`.
 
 ## Entry points
 
 | Command | Does |
 |---|---|
 | `ssp lake` | Builds the Parquet lake |
+| `ssp pipeline [--no-download] [--model]` | Runs the batch flow once (downloads, lake, warehouse, exports), then the model flow |
+| `ssp warehouse build\|query [name]\|export`, `ssp ml train\|analyze` | The warehouse and model commands below |
 | `python -m safestart_pipeline.warehouse build` | Builds the DuckDB warehouse |
 | `python -m safestart_pipeline.stream.init` | Creates the Kafka topics and the PostgreSQL schema |
 | `python -m safestart_pipeline.stream.replay` | Replays enforcement history through Kafka |
@@ -182,7 +188,8 @@ run batch|model` runs one now. It is the only service that writes the data root.
 
 `docker-compose.yml` runs every service above on one host from one image, and `docs/DEPLOYMENT.md` explains it. Every
 service mounts the data root read-only at `/data` except the orchestrator; the watchers keep their state in a volume
-of their own and log to standard error, which Docker keeps and rotates.
+of their own and log to standard error, which Docker keeps and rotates. Where the data root is read-only no crawl can
+run, so the sitemap watcher asks a site without the crawl's lock there.
 
 ## Constraints
 
