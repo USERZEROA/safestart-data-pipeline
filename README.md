@@ -2,6 +2,27 @@
 
 [![CI](https://github.com/USERZEROA/safestart-data-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/USERZEROA/safestart-data-pipeline/actions/workflows/ci.yml)
 
+<table>
+<tr>
+<td width="44%" valign="top">
+<a href="https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@4ef40659f5233b9699fbe707d936c8ec84b0b95d/docs/SafeStart-data-pipeline-video.mp4"><img src="docs/images/video-thumbnail.png" alt="Video walkthrough, 7 min 38 s: click to watch" width="100%"></a>
+</td>
+<td valign="top">
+
+**Video walkthrough** (7 min 38 s): the pipeline told as a story, from a scattered public record to a mine brief
+served live.
+[Watch it in the browser](https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@4ef40659f5233b9699fbe707d936c8ec84b0b95d/docs/SafeStart-data-pipeline-video.mp4),
+or [download the file](https://github.com/USERZEROA/safestart-data-pipeline/raw/main/docs/SafeStart-data-pipeline-video.mp4).
+
+**Project documentation** (PDF, 10 pages): the executive summary, the architecture, the key components and their
+implementation. [Open the PDF](docs/SafeStart-data-pipeline-documentation.pdf).
+
+**Live deployment**: the dashboard at <https://35.254.13.119>, on Google Cloud and fed by the Kafka stream.
+
+</td>
+</tr>
+</table>
+
 ## Executive summary
 
 **Problem.** Mine crews start every shift with a hazard assessment (a JSA). The public record that should inform it is
@@ -21,7 +42,7 @@ typed Parquet lake (Polars), a DuckDB warehouse with marts and documented SQL qu
 with an anomaly forecaster, an accident-risk model, a Streamlit dashboard and flat exports for SafeStart, orchestrated
 by Prefect, packaged with Docker Compose, tested in GitHub Actions and deployed on Google Cloud.
 
-| | |
+| Part | What it is |
 |---|---|
 | Sources | MSHA and OSHA websites, MSHA's legacy host, eCFR titles 29 and 30, MSHA's 20 open enforcement datasets, and the Federal Register API (live) |
 | Raw archive | 84,602 content-addressed files, 44.6 GB, every version kept |
@@ -34,10 +55,10 @@ by Prefect, packaged with Docker Compose, tested in GitHub Actions and deployed 
 | Quality | 403 tests; CI runs lint and the tests against PostgreSQL, then the whole stack on a synthetic sample data root |
 
 **Documentation.** This README is the project documentation: the summary above, then the architecture, the key
-components and their implementation. The files in [docs/](docs/) are reference appendices with the full detail of
-each part: [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), [QUERIES](docs/QUERIES.md), [ML](docs/ML.md),
-[SAFESTART_EXPORTS](docs/SAFESTART_EXPORTS.md) and [DEPLOYMENT](docs/DEPLOYMENT.md). For print, the same document
-is [docs/SafeStart-data-pipeline-documentation.pdf](docs/SafeStart-data-pipeline-documentation.pdf).
+components and their implementation; the PDF above is the same document, printed. The files in [docs/](docs/) are
+reference appendices with the full detail of each part: [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md),
+[QUERIES](docs/QUERIES.md), [ML](docs/ML.md), [SAFESTART_EXPORTS](docs/SAFESTART_EXPORTS.md) and
+[DEPLOYMENT](docs/DEPLOYMENT.md).
 
 ## Contents
 
