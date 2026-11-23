@@ -28,13 +28,14 @@ def setting(name: str, default: str) -> str:
 
 
 def postgres_url() -> str:
-    """The streaming store. The default is the local Compose database (host port 15432)."""
-    return setting("postgres_url", "postgresql://safestart:safestart@localhost:15432/safestart")
+    """The streaming store. The default is the local Compose database (host port 15432), addressed as 127.0.0.1: the
+    host ports listen on IPv4 only, and on Windows "localhost" tries IPv6 (::1) first, which stalls every connection."""
+    return setting("postgres_url", "postgresql://safestart:safestart@127.0.0.1:15432/safestart")
 
 
 def kafka_bootstrap() -> str:
-    """Kafka brokers. The default is the local Compose broker (host port 19092)."""
-    return setting("kafka_bootstrap", "localhost:19092")
+    """Kafka brokers. The default is the local Compose broker (host port 19092), at 127.0.0.1 for the same reason."""
+    return setting("kafka_bootstrap", "127.0.0.1:19092")
 
 
 def warehouse_path() -> Path:
