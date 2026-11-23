@@ -48,6 +48,7 @@ flowchart LR
 | `dashboard/` | Streamlit app over the warehouse and the streaming store |
 | `flows/` | Prefect flows that run and schedule the batch and the model (`python -m safestart_pipeline.flows`) |
 | `verify.py` | Completeness reports of the crawls and the bulk downloads (`ssp verify`) |
+| `sample.py` | A small synthetic data root the whole stack runs on, for CI and for readers without the data (`python -m safestart_pipeline.sample`) |
 
 ## Shared rules (`definitions.py`)
 
@@ -171,8 +172,10 @@ pass, which the analytics consumer's clock reads.
   `source_checks`.
 - DuckDB warehouse (`warehouse_path()`): built into a new file and swapped in, so readers never see a half-built
   warehouse; its build and its exports hold a lock beside it (`warehouse/lock.py`), so one writer works at a time
-  whoever starts it. Core tables `mine`, `inspection`, `violation`, `accident`,
-  `production_quarter`, `cfr_section`, `document`, `dataset_version`; marts as views. The ERD is in `docs/ERD.md`.
+  whoever starts it, and a build first removes what a killed build left behind. Core tables `mine`, `inspection`,
+  `violation`, `accident`, `production_quarter`, `cfr_section`, `document`, `dataset_version`; marts as views; what
+  the build found goes to `build_check`, every repeated key to `duplicate_row` and every row without a key to
+  `null_key_row`. The ERD is in `docs/ERD.md`.
   The dashboard opens it read-only, with a memory limit and a spill folder of its own: DuckDB's default spill folder
   sits beside the database file, which the containers mount read-only.
 
@@ -186,6 +189,12 @@ run batch|model` (or `ssp pipeline [--model]`) runs one now. It is the only serv
 Compose starts it only with its profile (`COMPOSE_PROFILES=orchestrator`, `scripts/start.py --with-orchestrator`): the
 server turns it on, a workstation when asked. Served runs execute in processes of their own; the package's progress
 lines reach their Prefect logs through `PREFECT_LOGGING_EXTRA_LOGGERS`.
+
+The batch and model flows and `ssp lake` hold one writer lock on the data root (`state/pipeline.lock`) from start to
+end, so a second run started meanwhile, by hand or by the schedule, fails at once instead of writing the same files.
+Without a Prefect API, a run that raises before it can start (Prefect's local server not answering, for example) is
+tried again 15 minutes later, up to three times, and the schedule goes on; the orchestrator gives that local server
+120 seconds to start.
 
 ## Entry points
 
@@ -202,6 +211,7 @@ lines reach their Prefect logs through `PREFECT_LOGGING_EXTRA_LOGGERS`.
 | `python -m safestart_pipeline.flows serve` | Runs the batch and model flows on their schedules |
 | `python -m safestart_pipeline.ml train` | Builds features and trains the accident-risk model |
 | `streamlit run src/safestart_pipeline/dashboard/app.py` | The dashboard |
+| `python -m safestart_pipeline.sample <folder>` | Writes the synthetic sample data root (docs/DEPLOYMENT.md) |
 
 ## Deployment
 
