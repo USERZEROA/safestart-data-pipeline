@@ -4,6 +4,7 @@ the schedules, and `python -m safestart_pipeline.flows serve|run`."""
 import asyncio
 import json
 import logging
+import os
 from datetime import UTC, datetime, timedelta, timezone
 from functools import partial
 
@@ -258,6 +259,7 @@ def unexpected(*args, **kwargs):
 def test_serve_registers_both_flows_with_the_prefect_api_when_one_is_set(monkeypatch):
     served = []
     monkeypatch.setenv("PREFECT_API_URL", "http://127.0.0.1:4200/api")
+    monkeypatch.delenv("PREFECT_LOGGING_EXTRA_LOGGERS", raising=False)
     monkeypatch.setattr(flows_main, "serve", lambda *deployments, **options: served.append((deployments, options)))
     monkeypatch.setattr(flows_main, "run_on_schedule", unexpected)
     assert flows_main.main(["serve"]) == 0
@@ -269,6 +271,13 @@ def test_serve_registers_both_flows_with_the_prefect_api_when_one_is_set(monkeyp
         ("safestart-batch", "daily", "safestart_pipeline.flows.pipeline.batch", [("0 14 * * *", "UTC")]),
         ("safestart-model", "weekly", "safestart_pipeline.flows.model.model", [("0 15 * * 0", "UTC")]),
     ]
+    assert os.environ["PREFECT_LOGGING_EXTRA_LOGGERS"] == "safestart_pipeline"  # inherited by the runs' processes
+
+
+def test_a_flow_lets_the_stages_progress_lines_through(batch_steps):
+    logging.getLogger("safestart_pipeline").setLevel(logging.WARNING)  # as in a served run's own process
+    pipeline.batch(download=False)
+    assert logging.getLogger("safestart_pipeline").level == logging.INFO
 
 
 def test_serve_keeps_the_schedule_in_this_process_without_a_prefect_api(monkeypatch):

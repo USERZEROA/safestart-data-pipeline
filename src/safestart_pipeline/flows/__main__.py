@@ -24,6 +24,7 @@ from prefect import Flow, serve
 from prefect.schedules import Cron
 from prefect.types.entrypoint import EntrypointType
 
+from . import PACKAGE, report_progress
 from .model import model
 from .pipeline import batch
 from .schedule import SUNDAY, Schedule, run_on_schedule
@@ -81,10 +82,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "run" and args.no_download and args.flow != "batch":
         parser.error("--no-download applies to the batch flow")
-    logging.getLogger("safestart_pipeline").setLevel(logging.INFO)  # the stages' progress joins Prefect's console log
+    report_progress()  # the stages' progress joins the console log
     if args.command == "run":
         return run_once([args.flow], download=not args.no_download)
     if os.environ.get("PREFECT_API_URL"):
+        # Served runs execute in processes of their own, which inherit this setting: their package lines reach the API.
+        os.environ.setdefault("PREFECT_LOGGING_EXTRA_LOGGERS", PACKAGE)
         serve_deployments()
         return 0
     try:

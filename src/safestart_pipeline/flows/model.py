@@ -14,6 +14,7 @@ from prefect import flow, get_run_logger, task
 from prefect.cache_policies import NO_CACHE
 
 from ..config import data_root
+from . import report_progress
 
 
 def lake() -> Path:
@@ -44,6 +45,7 @@ def analyze_task() -> dict[str, int]:
 @flow(name="safestart-model")
 def model() -> dict[str, object]:
     """The accident-risk model and the lake analysis tables, from the lake's current versions."""
+    report_progress()
     summary: dict[str, object] = {}
     problems: list[str] = []
     for step in (train_task, analyze_task):

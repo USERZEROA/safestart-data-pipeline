@@ -23,6 +23,7 @@ from prefect.cache_policies import NO_CACHE
 from prefect.client.schemas.objects import TaskRun
 
 from ..config import data_root, warehouse_path
+from . import report_progress
 from .acquire import acquire_bulk
 
 
@@ -71,6 +72,7 @@ def batch(download: bool = True) -> dict[str, object]:
     """Downloads, lake, warehouse and SafeStart exports, each built from the step before."""
     from ..lake.msha_ogd import LakeBuildError
 
+    report_progress()
     logger = get_run_logger()
     summary: dict[str, object] = {}
     problems: list[str] = []
