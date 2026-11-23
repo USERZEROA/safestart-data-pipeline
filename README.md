@@ -58,14 +58,27 @@ orchestration, analysis and the dashboard).
 
 ## Lake
 
-`ssp lake` turns the current download of each of MSHA's 20 open datasets into typed Parquet under
+`ssp lake` turns every downloaded version of each of MSHA's 20 open datasets into typed Parquet under
 `<data root>/lake/msha_ogd/<dataset>/`, one file per source version named after the zip's SHA-256, so a rebuild of an
-unchanged version does nothing and every row traces back to the exact file it came from. Polars reads each
-pipe-delimited file (Windows-1252, decoded to UTF-8) and casts every column to the type MSHA's definition file declares
-(`VARCHAR2` to text, `DATE` to a date, `NUMBER(p)` to an integer, `NUMBER(p,s)` to a float). Spaces are trimmed, MSHA's
-markers for unknown values (`?`, `NO VALUE FOUND`) and empty strings become nulls, and a value that does not parse as
-its declared type becomes a null counted per column in the dataset's `manifest.json`. `_dictionary.parquet` collects
-every column's declared type and MSHA's description.
+unchanged version does nothing, every row traces back to the exact file it came from, and consecutive versions can be
+compared. The newest version is the dataset's `current` one in its `manifest.json`.
+
+- Reading: each file is pipe-delimited Windows-1252 text, decoded to UTF-8. MSHA wraps text in double quotes but never
+  escapes a quote inside it (`"54" ROLL CR. #4"`), and one contractor name holds the separator (`"AZZ|Central
+  Electric"`), so a quote-honoring CSV reader runs records together (it kept 41,410 of the 92,129 mine records). Every
+  record is one line: the lake splits each line itself, and a quoted field ends only at a quote followed by the
+  separator or the line end. A build fails if the Parquet row count differs from the source's line count; the
+  manifest counts the lines read each way.
+- The 107(a) orders export is written for Excel (a `sep=|` line, a title and a "Data as of" line before the header,
+  readable column names); the preamble is dropped and kept in the manifest.
+- Types: every column is cast to the type MSHA's definition file declares (`VARCHAR2` to text, `DATE` to a date,
+  `NUMBER(p)` to an integer, `NUMBER(p,s)` to a float). Where the data contradicts the declaration, an override with its
+  reason is recorded in the manifest and the dictionary (the yearly contractor head count is an average with two
+  decimals, though declared `NUMBER(9)`).
+- Cleaning: spaces (and the tab MSHA puts before IDs for Excel) are trimmed, MSHA's markers for unknown values (`?`,
+  `NO VALUE FOUND`) and empty strings become nulls, and a value that does not parse as its type becomes a null counted
+  per column in the manifest.
+- `_dictionary.parquet` collects every column's declared and lake type, any override, and MSHA's description.
 
 ## Completeness
 
