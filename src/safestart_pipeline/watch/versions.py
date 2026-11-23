@@ -38,7 +38,9 @@ from .publish import Publisher, publish_new
 from .state import WatchState
 
 SOURCE = "versions"
-MEMORY_LIMIT = "1GB"  # the cloud host has 4 GB, shared with Kafka and PostgreSQL
+# Well below the watcher container's 512 MiB (docker-compose.yml): comparing two versions of the 3.1 million
+# violations peaked at 343 MiB in the image, against 607 MiB with 1 GB; DuckDB spills to disk beyond it.
+MEMORY_LIMIT = "256MB"
 THREADS = 2
 FETCH_ROWS = 1000
 # A version is refused when more than this many of its records, and more than this share of them, look new.

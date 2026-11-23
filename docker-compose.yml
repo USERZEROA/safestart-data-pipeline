@@ -5,7 +5,7 @@
 #
 # Memory limits are ceilings sized for a 4 GiB e2-medium with a 2 GiB swap file (deploy/gcp/startup.sh), leaving 1 GiB
 # of its memory to the system and Docker; tests/test_deployment_files.py keeps them there. The services that keep
-# running may use 2.7 GiB together, the HTTPS gateway of docker-compose.public.yml included, so they never need swap.
+# running may use 2.6 GiB together, the HTTPS gateway of docker-compose.public.yml included, so they never need swap.
 # Kafka has the largest share of them: a 384 MiB heap plus the JVM's own memory (the broker measured 320 MiB at rest
 # and 400 MiB while a health check ran). The orchestrator's limit covers its largest run, the weekly model training
 # (1.35 GiB measured in this image with two threads) beside Prefect (0.4 GiB with its local server); with it and the
@@ -167,11 +167,11 @@ services:
   # The live watchers keep what they have seen (the events they published, the dataset versions they compared, when
   # each source was checked) and the version check's DuckDB spill folder in their own volume, since the data root is
   # read-only, and they log to standard error only. Their limit covers the version check: comparing two versions of
-  # the 3.1 million violations took up to 607 MiB in this image while DuckDB may use 1 GB (watch/versions.py).
+  # the 3.1 million violations peaked at 343 MiB in this image, with DuckDB held to 256 MB (watch/versions.py).
   watcher:
     <<: *app
     command: ["python", "-m", "safestart_pipeline.watch", "loop"]
-    mem_limit: 640m
+    mem_limit: 512m
     environment:
       <<: *app-env
       SAFESTART_WATCH_STATE: /state/watch.sqlite

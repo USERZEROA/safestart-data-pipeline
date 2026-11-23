@@ -32,9 +32,9 @@ RAM, SWAP, SYSTEM = 4096, 2048, 1024
 ONE_OFF = {"init", "replay"}  # they exit once their work is done
 # Peaks measured in the image on the real lake (peak resident memory, MiB): training the model with two threads, 1,350,
 # with Prefect and its local server beside it, 400; the watcher comparing two versions of the 3.1 million violations
-# while DuckDB may use 1 GB, 607.
+# with DuckDB held to 256 MB, 343.
 ORCHESTRATOR_PEAK = 1350 + 400
-WATCHER_PEAK = 607
+WATCHER_PEAK = 343
 
 
 def services(name: str) -> dict:

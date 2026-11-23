@@ -16,7 +16,7 @@ mounts the data root at `/data`, read-only, except the orchestrator, which runs 
 | `replay` | pipeline | Replays the enforcement history from the lake through Kafka | 384 MiB | |
 | `storage-consumer` | pipeline | Stores every event in `stream.events` | 192 MiB | |
 | `analytics-consumer` | pipeline | Daily counts and forecasts | 256 MiB | |
-| `watcher` | pipeline | Live watchers; their state lives in the `watch-state` volume | 640 MiB | |
+| `watcher` | pipeline | Live watchers; their state lives in the `watch-state` volume | 512 MiB | |
 | `dashboard` | pipeline | Streamlit, health at `/_stcore/health` | 448 MiB | 127.0.0.1:8501 |
 | `orchestrator` | pipeline | The daily batch (downloads, lake, warehouse, exports) and the weekly model, through Prefect; only with the `orchestrator` profile | 1,920 MiB | |
 | `gateway` (server only) | `caddy:2.11-alpine` | HTTPS for a domain name or an IP address | 96 MiB | 80, 443 |
@@ -25,12 +25,12 @@ mounts the data root at `/data`, read-only, except the orchestrator, which runs 
   sit in their own layer, so a code change rebuilds in seconds. The services run as the unprivileged user `safestart`
   (uid 10001) without Linux capabilities and cannot change their own code.
 - Memory is budgeted for an e2-medium (4 GiB) with a 2 GiB swap file, leaving 1 GiB to the system and Docker
-  (`tests/test_deployment_files.py` holds the files to it). The services that keep running may use 2.7 GiB together,
+  (`tests/test_deployment_files.py` holds the files to it). The services that keep running may use 2.6 GiB together,
   the gateway included, so they never need swap. The orchestrator's limit covers its largest run, the weekly model
   training, which peaked at 1.35 GiB in this image with two threads, beside Prefect and its local server (0.4 GiB);
   with it and the replay at their limits as well, the host may swap but never runs out of memory. Measured in the
   image on the real lake: the warehouse build peaks at 1.0 GiB, the watcher's comparison of two versions of the 3.1
-  million violations at 607 MiB, and the dashboard at 300 MiB rendering every page from the real warehouse. At rest,
+  million violations at 343 MiB (DuckDB held to 256 MB), and the dashboard at 300 MiB rendering every page from the real warehouse. At rest,
   Kafka, PostgreSQL, both consumers, the dashboard and the orchestrator used about 600 MiB together, 370 MiB of it
   Kafka's.
 - The services start in order: Kafka and PostgreSQL until healthy, then `init`, then the stream services. `init` runs
