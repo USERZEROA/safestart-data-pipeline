@@ -16,11 +16,16 @@ splitter wrote.
 
 A few lines of free text were pasted as UTF-8 into the Windows-1252 files (Mines.txt writes the degree sign as two
 bytes): a line whose bytes form valid UTF-8 is decoded as UTF-8, any other as Windows-1252, and the manifest counts
-both, along with the bytes Windows-1252 leaves undefined (each becomes U+FFFD).
+both, along with the bytes Windows-1252 leaves undefined (each becomes U+FFFD). Definition files are decoded line by
+line the same way, so a pasted description can neither garble nor stop the build.
 
 Cleaning is deliberately small and recorded: surrounding spaces are trimmed, the values MSHA uses for "unknown" ("?",
 "NO VALUE FOUND") and empty strings become nulls, and every value that does not parse as its declared type becomes a
 null that is counted per column in the manifest rather than dropped without a trace.
+
+Each dataset's outcome is logged, and a dataset that cannot be built (its definition file unreadable, its current
+version broken) fails alone: the others are still built, and LakeBuildError, carrying every dataset's result, ends the
+run.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from __future__ import annotations
 import codecs
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -80,10 +86,16 @@ SEPARATOR = "|"
 # quoting at all.
 LAKE_SEPARATOR = chr(0x1F)
 BYTE_ORDER_MARK = chr(0xFEFF)
+log = logging.getLogger(__name__)
 
 
 class LakeBuildError(RuntimeError):
-    """Raised after a run in which the current version of one or more datasets could not be built."""
+    """Raised after a run in which the current version of one or more datasets could not be built; `results` holds
+    every dataset's outcome, those built included."""
+
+    def __init__(self, message: str, results: dict[str, dict] | None = None):
+        super().__init__(message)
+        self.results = results or {}
 
 
 @dataclass(frozen=True)
@@ -121,11 +133,12 @@ def snake(name: str) -> str:
 
 
 def read_definitions(path: Path) -> dict[str, ColumnDef]:
-    """Column definitions by source column name, from a pipe-delimited definition file with a header row."""
-    text = path.read_bytes().decode(SOURCE_ENCODING)
+    """Column definitions by source column name, from a pipe-delimited definition file with a header row. Each line is
+    decoded as a data line is (`decode_line`): pasted UTF-8 as UTF-8, any other text as Windows-1252."""
     columns: dict[str, ColumnDef] = {}
-    for line in text.splitlines()[1:]:
-        parts = [part.strip() for part in line.split("|")]
+    counts: Counter[str] = Counter()
+    for raw in path.read_bytes().splitlines()[1:]:
+        parts = [part.strip() for part in decode_line(raw, counts).split("|")]
         if len(parts) < 4 or not parts[1]:
             continue
         description = "|".join(parts[4:]).strip() if len(parts) > 4 else ""
@@ -447,27 +460,47 @@ def current_files(data_root: Path) -> dict[str, str]:
     return held_files(data_root)[0]
 
 
+def dictionary_rows(name: str, definitions: dict[str, ColumnDef]) -> list[dict]:
+    """The data dictionary's rows of one dataset: every declared column with the type the lake gives it."""
+    rows = []
+    for definition in definitions.values():
+        length, reason = TYPE_OVERRIDES.get((name, definition.source), (definition.length, None))
+        lake_type = ColumnDef(definition.source, definition.oracle_type, length, definition.description).dtype
+        rows.append({"dataset": name, **asdict(definition), "column": definition.name, "type": str(lake_type),
+                     "override": reason})
+    return rows
+
+
 def build_lake(data_root: Path, only: list[str] | None = None) -> dict[str, dict]:
     """Bring the lake up to date with every held version of every dataset (or of the ones named); the newest version
     is each dataset's current one. Definitions come from the current definition file. An older version that cannot be
-    built is reported and skipped; if a dataset's current version cannot be built, the other datasets are still built
-    and LakeBuildError is raised at the end."""
+    built is reported and skipped; if a dataset's definition file cannot be read or its current version cannot be
+    built, the other datasets are still built and LakeBuildError is raised at the end (a definition file only fails
+    the run when its dataset is among those built). Every dataset's outcome is logged."""
     files, states, held = held_files(data_root)
     out_dir = data_root / "lake" / "msha_ogd"
     results: dict[str, dict] = {}
     dictionary: list[dict] = []
     failed: dict[str, str] = {}
     for name, (zip_name, definition_name) in DATASETS.items():
+        asked = not only or name in only
         if zip_name not in files or definition_name not in files:
             results[name] = {"built": False, "missing": [item for item in (zip_name, definition_name) if item not in files]}
+            if asked:
+                log.warning("%s: not built, no verified download of %s", name, " or ".join(results[name]["missing"]))
             continue
         definition_path = object_path(data_root, files[definition_name])
-        for definition in read_definitions(definition_path).values():
-            length, reason = TYPE_OVERRIDES.get((name, definition.source), (definition.length, None))
-            lake_type = ColumnDef(definition.source, definition.oracle_type, length, definition.description).dtype
-            dictionary.append({"dataset": name, **asdict(definition), "column": definition.name, "type": str(lake_type),
-                               "override": reason})
-        if only and name not in only:
+        try:
+            definitions = read_definitions(definition_path)
+        except (OSError, ValueError) as problem:
+            error = f"definition file {definition_name}: {problem}"[:300]
+            results[name] = {"built": False, "error": error, "last_check": states.get(definition_name)}
+            if asked:
+                failed[name] = error
+            log.error("%s: not built, %s", name, error)
+            continue
+        dictionary += dictionary_rows(name, definitions)
+        if not asked:
             continue
         *older, newest = held[zip_name]
         built, skipped = 0, []
@@ -479,6 +512,7 @@ def build_lake(data_root: Path, only: list[str] | None = None) -> dict[str, dict
                 built += bool(outcome["built"])
             except (OSError, ValueError, zipfile.BadZipFile) as problem:
                 skipped.append({"version": version.sha256[:16], "reason": str(problem)[:300]})
+                log.warning("%s: older version %s skipped: %s", name, version.sha256[:16], skipped[-1]["reason"])
         try:
             outcome = build_dataset(name, object_path(data_root, newest.sha256), definition_path, out_dir, newest.sha256,
                                     zip_name, first_seen_at=newest.first_seen_at, last_modified=newest.last_modified,
@@ -487,6 +521,7 @@ def build_lake(data_root: Path, only: list[str] | None = None) -> dict[str, dict
             failed[name] = str(problem)[:300]
             results[name] = {"built": False, "error": failed[name], "versions": len(held[zip_name]),
                              "skipped_versions": skipped, "last_check": states.get(zip_name)}
+            log.error("%s: current version %s not built: %s", name, newest.sha256[:16], failed[name])
             continue
         built += bool(outcome["built"])
         mark_current(out_dir / name, outcome["parquet"])
@@ -496,6 +531,8 @@ def build_lake(data_root: Path, only: list[str] | None = None) -> dict[str, dict
             "last_check": states.get(zip_name),
             **({"skipped_versions": skipped} if skipped else {}),
         }
+        log.info("%s: %s current, %d rows; %d of %d versions built now", name, outcome["parquet"], outcome["rows"],
+                 built, len(held[zip_name]))
     if dictionary:
         out_dir.mkdir(parents=True, exist_ok=True)
         # An explicit schema: "override" is null in all but a few late rows, which inference from the first rows misses.
@@ -505,5 +542,5 @@ def build_lake(data_root: Path, only: list[str] | None = None) -> dict[str, dict
         pl.DataFrame(dictionary, schema=schema).write_parquet(temp)
         os.replace(temp, out_dir / "_dictionary.parquet")
     if failed:
-        raise LakeBuildError(f"current version not built for {sorted(failed)}: {failed}")
+        raise LakeBuildError(f"current version not built for {sorted(failed)}: {failed}", results)
     return results

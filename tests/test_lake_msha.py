@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import zipfile
 from datetime import date
 
@@ -64,6 +65,23 @@ def mines_zip(path):
     return path
 
 
+def hold(root, blobs, state="fetched"):
+    """A bulk store holding each file (name -> content) as the current verified copy of its MSHA file."""
+    store = BulkStore(root / "state" / "bulk.sqlite")
+    for name, blob in blobs.items():
+        digest = hashlib.sha256(blob).hexdigest()
+        target = object_path(root, digest)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(blob)
+        store.db.execute(
+            "insert into files (url, source, name, listed_at, state, sha256, verified)"
+            " values (?, 'msha-ogd', ?, '2026-11-23T00:00:00Z', ?, ?, 1)",
+            (f"https://example.test/{name}", name, state, digest),
+        )
+    store.close()
+    return root
+
+
 def test_definitions_give_each_column_a_type(tmp_path):
     definition = tmp_path / "def.txt"
     definition.write_bytes(DEFINITION.encode("cp1252"))
@@ -73,6 +91,36 @@ def test_definitions_give_each_column_a_type(tmp_path):
         "LATITUDE": "Float64", "RETIRED_COL": "String",
     }
     assert columns["NO_EMPLOYEES"].name == "no_employees"
+
+
+def test_definition_files_are_decoded_as_data_lines_are(tmp_path):
+    # A description pasted as UTF-8 (the closing quote's bytes E2 80 9D end in one Windows-1252 leaves undefined), and
+    # a byte Windows-1252 leaves undefined in a line that is not UTF-8.
+    definition = tmp_path / "def.txt"
+    definition.write_bytes(DEFINITION.replace("Name of the mine.", "Name of the “mine”.").encode("utf-8")
+                           + b"MINES|ODD_COL|VARCHAR2|1|An odd \x81 byte.\r\n")
+    columns = read_definitions(definition)
+    assert columns["CURRENT_MINE_NAME"].description == "Name of the “mine”."
+    assert columns["ODD_COL"].description == "An odd � byte." and columns["LATITUDE"].length == "9,6"
+
+
+def test_a_definition_file_that_cannot_be_read_fails_only_its_dataset(tmp_path):
+    root = tmp_path / "root"
+    definition = DEFINITION.encode("cp1252") + b"MINES|GONE_COL|VARCHAR2|1|Gone.\r\n"
+    hold(root, {"Mines.zip": mines_zip(tmp_path / "Mines.zip").read_bytes(), "Mines_Definition_File.txt": definition,
+                "Accidents.zip": mines_zip(tmp_path / "Accidents.zip").read_bytes(),
+                "Accidents_Definition_File.txt": DEFINITION.encode("cp1252")})
+    object_path(root, hashlib.sha256(definition).hexdigest()).unlink()  # the store lost the definition's file
+    with pytest.raises(LakeBuildError, match="mines") as failed:
+        build_lake(root)
+    lake = root / "lake" / "msha_ogd"
+    assert (lake / "accidents" / "manifest.json").exists() and not (lake / "mines").exists()
+    assert set(pl.read_parquet(lake / "_dictionary.parquet")["dataset"]) == {"accidents"}
+    results = failed.value.results
+    assert "Mines_Definition_File.txt" in results["mines"]["error"] and results["accidents"]["rows"] == 3
+    with pytest.raises(LakeBuildError, match="mines"):
+        build_lake(root, only=["mines"])
+    assert build_lake(root, only=["accidents"])["mines"]["built"] is False  # not asked for: reported, not failed
 
 
 def test_a_dataset_becomes_typed_parquet_with_its_failures_counted(tmp_path):
@@ -320,7 +368,25 @@ def test_a_current_version_that_cannot_be_built_fails_the_run_after_the_others(t
             (f"https://example.test/{name}", name, digest),
         )
     store.close()
-    with pytest.raises(LakeBuildError, match="accidents"):
+    with pytest.raises(LakeBuildError, match="accidents") as failed:
         build_lake(root)
     assert (root / "lake" / "msha_ogd" / "mines" / "manifest.json").exists()  # the other datasets were built
     assert (root / "lake" / "msha_ogd" / "_dictionary.parquet").exists()
+    assert failed.value.results["mines"]["rows"] == 3 and "zip" in failed.value.results["accidents"]["error"]
+
+
+def test_each_datasets_outcome_is_logged(tmp_path, caplog):
+    root = hold(tmp_path / "root", {"Mines.zip": mines_zip(tmp_path / "Mines.zip").read_bytes(),
+                                    "Mines_Definition_File.txt": DEFINITION.encode("cp1252"),
+                                    "Accidents.zip": b"not a zip file",
+                                    "Accidents_Definition_File.txt": DEFINITION.encode("cp1252")})
+    caplog.set_level(logging.INFO, logger="safestart_pipeline.lake.msha_ogd")
+    with pytest.raises(LakeBuildError):
+        build_lake(root, only=["mines", "accidents", "violations"])
+    lines = {record.getMessage().split(":")[0]: (record.levelname, record.getMessage()) for record in caplog.records
+             if record.name == "safestart_pipeline.lake.msha_ogd"}
+    assert lines["mines"][0] == "INFO" and lines["mines"][1].endswith("current, 3 rows; 1 of 1 versions built now")
+    assert lines["accidents"][0] == "ERROR" and "current version" in lines["accidents"][1]
+    missing = "violations: not built, no verified download of Violations.zip or violations_Definition_File.txt"
+    assert lines["violations"] == ("WARNING", missing)
+    assert set(lines) == {"mines", "accidents", "violations"}  # the datasets not asked for are not mentioned
