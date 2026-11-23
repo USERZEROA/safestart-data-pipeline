@@ -30,7 +30,7 @@ by Prefect, packaged with Docker Compose, tested in GitHub Actions and deployed 
 | Stream | Kafka (2 topics) into PostgreSQL: a replay of 374,400 events from 2024 on, plus live watchers |
 | Model | Serious-accident risk per mine and quarter: test ROC AUC 0.909; its riskiest 5% are ten times the base rate |
 | Delivery | Streamlit dashboard (5 pages), SafeStart exports, Prefect flows on a schedule, Google Cloud VM behind HTTPS |
-| Quality | 327 tests; CI runs lint, the tests against PostgreSQL, and the Compose stack end to end |
+| Quality | 403 tests; CI runs lint and the tests against PostgreSQL, then the whole stack on a synthetic sample data root |
 
 **Documentation.** This README is the project documentation: the summary above, then the architecture, the key
 components and their implementation. The files in [docs/](docs/) are reference appendices with the full detail of
@@ -114,6 +114,15 @@ uv run --extra stream python scripts/smoke_test.py                      # events
 The dashboard is then at <http://localhost:8501> (`DASHBOARD_HOST_PORT` in `.env` moves it). `--with-orchestrator`
 also starts the Prefect orchestrator, which runs the batch flows on their schedules and writes the data root.
 
+Without the 4.5 GB data root, try it on a small synthetic one, the root CI runs the whole stack on
+([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#without-the-data-the-sample-data-root)):
+
+```bash
+uv run python -m safestart_pipeline.sample sample-data   # about 300 KB: two versions of five datasets, eCFR, a catalog
+python scripts/start.py --data-root sample-data --with-orchestrator
+docker compose exec orchestrator python -m safestart_pipeline.flows run batch --no-download   # warehouse and exports
+```
+
 Build the data yourself (each step is resumable and polite to the sources):
 
 ```bash
@@ -196,9 +205,9 @@ compared; the newest is the dataset's `current` one in its `manifest.json`.
 **Warehouse.** `ssp warehouse build` loads the current lake versions, the eCFR text of titles 29 and 30 and the three
 crawl catalogs into `mine`, `inspection`, `violation`, `accident`, `production_quarter`, `cfr_section`, `document` and
 `dataset_version`, with primary keys, and builds the marts as views. It builds into a new file and swaps it in, so
-readers never see a half-built warehouse, and it records what it found in `build_check` (repeated keys, dangling
-references, citations of sections no longer in Title 30) rather than hiding it. The ERD and every table are in
-[docs/ERD.md](docs/ERD.md).
+readers never see a half-built warehouse, and it records what it found in `build_check` (repeated keys, rows without a
+key, dangling references, citations of sections no longer in Title 30) rather than hiding it. The ERD and every table
+are in [docs/ERD.md](docs/ERD.md).
 
 **Shared definitions.** One module, [`definitions.py`](src/safestart_pipeline/definitions.py), states the rules every
 component counts by: a serious accident is degree of injury 01 to 05 by its code, an injury 01 to 06, a violation's
@@ -234,7 +243,7 @@ The lake build is a Polars pipeline; the analysis and the model read it with Pol
   accident in the quarter itself. It splits by time (train to 2021, validate 2022, test 2023 and 2024), compares a
   logistic-regression baseline with histogram gradient boosting, and scores every mine for the open quarter.
 
-On the test quarters the selected gradient boosting reaches ROC AUC 0.909 and PR AUC 0.479; of the 5% of mine-quarters
+On the test quarters the selected gradient boosting reaches ROC AUC 0.909 and PR AUC 0.478; of the 5% of mine-quarters
 it ranks riskiest, 43% had a serious accident, ten times the 4.2% base rate. [docs/ML.md](docs/ML.md) has the leakage
 guards, the calibration, the feature importances and the limits.
 
@@ -248,12 +257,17 @@ changes, Federal Register documents). The `event_id` is the source's own key, so
   source day by default: 374,400 events from 2024 to 2026 in about 90 minutes), month by month in flat memory.
 - The live watchers compare each new dataset version with the one before (only new records become events), read MSHA's
   and OSHA's sitemaps against the crawl inventories for added, changed and dropped pages, and ask the Federal Register
-  API for new MSHA and OSHA documents, each on its own schedule and under the same robots.txt rules as the crawls. The
-  replay and the version watcher share one record-to-event mapping (`stream/records.py`).
+  API for new MSHA and OSHA documents, each on its own schedule and under the same robots.txt rules as the crawls (and
+  never while that site's crawl is writing). The replay and the version watcher share one record-to-event mapping
+  (`stream/records.py`).
 - The storage consumer stores each event once in PostgreSQL; the analytics consumer keeps daily counts per kind and
   district exactly once (a ledger of counted events), and forecasts each day one step ahead with an exponentially
-  weighted average of the same weekday over 26 weeks, flagging days more than three standard deviations from it.
-  Offsets are committed only after the database commit, so a crash replays a batch instead of losing it.
+  weighted average of the same weekday over 26 weeks, flagging days more than three scales above or below it (the
+  weighted standard deviation, at least a Poisson count's and at least 1). Offsets are committed only after the
+  database commit, so a crash replays a batch instead of losing it.
+- The forecasts' clock follows the replay: each replayed event carries the last day of its pass, live events found
+  meanwhile are counted at once but forecast only when the replay has passed their days, and after the pass the live
+  days move the clock, so the days the watcher finds are forecast and judged as soon as they are complete.
 
 ## Orchestration
 
@@ -288,12 +302,19 @@ steps and a cost estimate.
 
 ## Testing and CI
 
-`uv run pytest` runs 327 tests: each package against small fixtures (synthetic lake versions, crawl stores, eCFR XML,
+`uv run pytest` runs 403 tests: each package against small fixtures (synthetic lake versions, crawl stores, eCFR XML,
 HTTP mocks of the sources), the PostgreSQL consumers against a real database when `TEST_DATABASE_URL` is set, the flows
-under a temporary Prefect API, the dashboard pages through Streamlit's AppTest, and the deployment files themselves
-(memory budget, mounts, users, the cloud scripts against a stand-in gcloud). The GitHub Actions workflow
-(`.github/workflows/ci.yml`) runs ruff and the whole suite against a PostgreSQL service, then builds the image, starts
-the Compose stack and sends events end to end with `scripts/smoke_test.py`.
+under a temporary Prefect API, the dashboard pages through Streamlit's AppTest on a warehouse the real build made, and
+the deployment files themselves (memory budget, mounts, users, the cloud scripts against a stand-in gcloud).
+
+The GitHub Actions workflow (`.github/workflows/ci.yml`) tests the parts, then the whole system:
+
+- `test`: ruff, and the whole suite against a PostgreSQL service;
+- `stack`: builds the image, writes the synthetic sample data root (`python -m safestart_pipeline.sample`), starts every
+  service on it, runs the batch flow in the orchestrator (lake, warehouse, SafeStart exports), the replay and the
+  version watcher, then checks the events by mode and kind, the daily counts and the version check in PostgreSQL, the
+  warehouse's tables, the export files against their manifest, the dashboard's health, and sends contract events
+  through Kafka into PostgreSQL with `scripts/smoke_test.py`.
 
 ## Undercurrents of data engineering
 
@@ -311,13 +332,14 @@ envelope (`stream/events.py`) and the export files (docs/SAFESTART_EXPORTS.md).
 
 **Reusability.** One rule set (`definitions.py`) serves DuckDB SQL, Polars and Python; one record-to-event mapping
 (`stream/records.py`) serves the replay and the live watcher; the robots.txt client (`crawl/robots.py`) serves the
-crawlers, the completeness checks and the watchers; one Docker image runs every pipeline service.
+crawlers, the bulk downloads, the completeness checks and the watchers; one Docker image runs every pipeline service.
 
 **Observability.** Nothing is dropped silently: every URL ends in a recorded state with a reason, the lake's manifests
-count the lines read each way, the decoding and every failed cast per column, the warehouse records its checks in
-`build_check` and every repeated key in `duplicate_row`, each live check writes a row to `stream.source_checks` (shown
-on the dashboard's Sources page), Prefect keeps every flow and task run with its logs, and `scripts/smoke_test.py`
-proves the stream end to end.
+count the lines read each way, the decoding and every failed cast per column, the lake build logs each dataset's
+outcome, the warehouse records its checks in `build_check`, every repeated key in `duplicate_row` and every row without
+a key in `null_key_row`, a failed request in a live completeness check is reported without losing the rest of the
+report, each live check writes a row to `stream.source_checks` (shown on the dashboard's Sources page), Prefect keeps
+every flow and task run with its logs, and `scripts/smoke_test.py` proves the stream end to end.
 
 **Data governance.** Every lake file is named after the SHA-256 of the source file it came from and its manifest names
 that file, when it was first seen and its Last-Modified date; events carry their dataset and version; the warehouse
@@ -327,15 +349,17 @@ MSHA's own description, and each type override states its reason. The crawls fol
 and what is left out is recorded with a reason. Only public data is collected, and the cloud bucket is private.
 
 **Reliability.** Writes are atomic (a temporary file renamed into place for every lake file, manifest, warehouse and
-export); a lock keeps one warehouse writer at a time; crawls and downloads resume from their state; flows retry their
-tasks and let later steps run on held data; a version that cannot be read correctly fails loudly rather than shifting
-values; the stream commits Kafka offsets after the database commit and counts each event exactly once across replays
-and restarts; Compose restarts services and checks their health; the cloud data copy never overwrites or deletes.
+export); one writer lock on the data root keeps a second batch, model or lake run out, and another keeps one warehouse
+writer at a time; crawls and downloads resume from their state, and a failed download keeps the verified copy in use;
+flows retry their tasks, let later steps run on held data, and the local scheduler retries a run that fails to start; a
+version that cannot be read correctly fails loudly rather than shifting values; the stream commits Kafka offsets after
+the database commit and counts each event exactly once across replays and restarts; Compose restarts services and checks
+their health; the cloud data copy never overwrites or deletes.
 
 **Efficiency.** Re-checks are conditional requests (unchanged files cost a 304), an unchanged lake version is never
 rebuilt (a full lake check takes under a second), the lake keeps 40 versions of 20 datasets in 0.84 GB of Parquet, Kafka
-compresses with lz4, the model trains in about two minutes with two threads, and the whole stack fits a 4 GB VM (about
-600 MB at rest).
+compresses with lz4, the model trains in under two minutes with two threads in the image, and the whole stack fits a 4
+GB VM (about 600 MB at rest).
 
 **Security.** Secrets come only from the environment: `scripts/start.py` writes a random database password into a
 private `.env` that git ignores. The pipeline's own containers run as uid 10001 without Linux capabilities and with
@@ -370,7 +394,8 @@ SafeStart is a separate application and stays unchanged: the pipeline hands it t
 ## Repository layout
 
 ```
-src/safestart_pipeline/   crawl, acquire, lake, warehouse, stream, watch, ml, dashboard, flows, definitions, cli
+src/safestart_pipeline/   crawl, acquire, lake, warehouse, stream, watch, ml, dashboard, flows,
+                          definitions, sample, cli
 tests/                    pytest suite (fixtures only; never the real data root)
 docs/                     ARCHITECTURE, ERD, QUERIES, ML, SAFESTART_EXPORTS, DEPLOYMENT
 deploy/                   Caddyfile and the Google Cloud scripts
