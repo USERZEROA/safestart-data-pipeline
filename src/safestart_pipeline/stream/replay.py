@@ -1,11 +1,12 @@
 """`python -m safestart_pipeline.stream.replay`: MSHA's enforcement history pushed through Kafka in source-time order.
 
 The replay reads the current Parquet file of four lake datasets (inspections, violations, 107(a) orders and accidents)
-with DuckDB, joins each record to its mine for the district, state and commodity, and sends one `replay` event per
-source record from a start date (2024-01-01 by default), oldest first. DuckDB sorts one calendar month at a time and
-hands it over in small chunks, so memory stays flat however long the window (sorting all of 2024-2026 at once took
-the process to 258 MB). A source key that appears twice in a dataset (51 violation numbers and one inspection number
-do) is sent once.
+with DuckDB and sends one `replay` event per source record from a start date (2024-01-01 by default), oldest first.
+Records become events through `stream/records.py`, the mapping the version watcher uses too, so a record the watcher
+announced is the same event here: its source date, mine, title and details, and the one copy kept of a key MSHA
+repeats. That copy is chosen among all of a key's copies before the first month is read, so a key whose copies fall in
+different months is sent once. DuckDB sorts one calendar month at a time and hands it over in small chunks, so memory
+stays flat however long the window (sorting all of 2024-2026 at once took the process to 258 MB).
 
 The source clock: source day `start + n` begins `n * day_seconds` after the replay starts, and each day's events are
 spread evenly across that day's interval, at most `max_rate` per second. At the default 5 seconds per day the stream
@@ -13,12 +14,6 @@ keeps the rhythm of the record (MSHA's inspectors work weekdays) and the 2024-20
 A replay that falls behind (a slow broker) sends without pausing until it has caught up. With `--loop` it starts again
 from the start date after the newest record, reading the lake afresh; the event ids are unchanged, so the consumers
 keep what they already have and store and count nothing twice.
-
-Commodity is the mine's: 15% of the 2024-2026 violations carry the other program's C/M flag (a coal inspector citing
-part 56 at a stone quarry), so the record's own flag is used only for a mine missing from the mines dataset. An
-accident is serious when it was fatal, its degree of injury is days away from work or restricted duty (codes 03, 04,
-05), or it records lost or restricted days: the degree is set when the accident is reported, while the day counts
-arrive when the miner is back at work (1,003 code-03 accidents since 2024 have none yet).
 """
 
 from __future__ import annotations
@@ -40,60 +35,8 @@ import duckdb
 from ..config import data_root
 from .events import Event
 from .kafka import make_publisher, stop_on_signals
+from .records import BY_NAME, KINDS, Kind, event, mine_sql, one_copy_sql, select_sql
 
-DATASETS = {"inspection": "inspections", "violation": "violations", "order_107a": "orders_107a",
-            "accident": "accidents"}
-DEGREES = {
-    "00": "Accident without injury", "01": "Fatal accident", "02": "Permanent disability", "03": "Days-away injury",
-    "04": "Days-away and restricted injury", "05": "Restricted-duty injury", "06": "Injury without lost time",
-    "07": "Occupational illness", "08": "Natural-causes injury", "09": "Non-employee injury", "10": "Other injury",
-}
-# Within one source day: inspections first (violations are cited during them), then violations, orders and accidents.
-QUERY = """
-WITH record AS (
-    SELECT inspection_begin_dt AS day, 0 AS kind_order, 'inspection' AS kind, event_no AS key, mine_id,
-           coal_metal_ind AS own_coal_metal, NULL AS own_state, NULL AS own_name,
-           to_json({{'activity_code': activity_code, 'activity': activity, 'begin_date': inspection_begin_dt,
-                     'end_date': inspection_end_dt}}) AS details
-    FROM read_parquet({inspections}) WHERE inspection_begin_dt >= $start AND inspection_begin_dt < $until
-    UNION ALL
-    SELECT violation_issue_dt, 1, 'violation', violation_no, mine_id, coal_metal_ind, NULL, mine_name,
-           to_json({{'event_no': event_no,
-                     'cfr_section': nullif(regexp_extract(part_section, '^[0-9]+[.][0-9]+(-[0-9]+)?'), ''),
-                     'part_section': part_section, 'sig_sub': CASE sig_sub WHEN 'Y' THEN true WHEN 'N' THEN false END,
-                     'likelihood': likelihood, 'injury_illness': inj_illness, 'negligence': negligence,
-                     'proposed_penalty': proposed_penalty}})
-    FROM read_parquet({violations}) WHERE violation_issue_dt >= $start AND violation_issue_dt < $until
-    UNION ALL
-    SELECT violation_date_issued, 2, 'order_107a', violation_no, mine_id, coal_or_metal, state_abbreviation, mine_name,
-           to_json({{'termination_date': termination_date}})
-    FROM read_parquet({orders_107a}) WHERE violation_date_issued >= $start AND violation_date_issued < $until
-    UNION ALL
-    SELECT accident_dt, 3, 'accident', document_no, mine_id, coal_metal_ind, NULL, NULL,
-           to_json({{'degree_injury_cd': degree_injury_cd, 'degree_injury': degree_injury,
-                     'serious': coalesce(degree_injury_cd IN ('01', '03', '04', '05') OR days_lost > 0
-                                         OR days_restrict > 0, false),
-                     'classification': classification, 'accident_type': accident_type, 'no_injuries': no_injuries,
-                     'days_lost': days_lost}})
-    FROM read_parquet({accidents}) WHERE accident_dt >= $start AND accident_dt < $until
-), chosen AS (
-    SELECT * FROM record WHERE key IS NOT NULL
-    QUALIFY row_number() OVER (PARTITION BY kind, key ORDER BY details) = 1
-)
-SELECT c.day, row_number() OVER (PARTITION BY c.day ORDER BY c.kind_order, c.mine_id, c.key) - 1 AS day_index,
-       count(*) OVER (PARTITION BY c.day) AS day_events, c.kind, c.key, c.mine_id, m.district,
-       coalesce(m.state, c.own_state), coalesce(m.coal_metal_ind, c.own_coal_metal),
-       coalesce(m.current_mine_name, c.own_name), c.details
-FROM chosen c LEFT JOIN read_parquet({mines}) m ON m.mine_id = c.mine_id
-ORDER BY c.day, day_index
-"""
-NEWEST = """
-SELECT max(day) FROM (
-    SELECT max(inspection_begin_dt) AS day FROM read_parquet({inspections})
-    UNION ALL SELECT max(violation_issue_dt) FROM read_parquet({violations})
-    UNION ALL SELECT max(violation_date_issued) FROM read_parquet({orders_107a})
-    UNION ALL SELECT max(accident_dt) FROM read_parquet({accidents}))
-"""
 log = logging.getLogger(__name__)
 
 
@@ -103,12 +46,7 @@ class Row(NamedTuple):
     day_events: int  # how many records the source day has
     kind: str
     key: str
-    mine_id: str | None
-    district: str | None
-    state: str | None
-    coal_metal: str | None
-    mine_name: str | None
-    details: str  # JSON
+    record: dict[str, Any]  # the record as `records.mine_sql` reads it
 
 
 def current_parquet(lake: Path, dataset: str) -> Path:
@@ -120,47 +58,71 @@ def next_month(day: date) -> date:
     return date(day.year + day.month // 12, day.month % 12 + 1, 1)
 
 
+def parquet_sql(path: Path) -> str:
+    return "read_parquet('" + path.as_posix().replace("'", "''") + "')"
+
+
+def newest_sql(files: Mapping[str, str]) -> str:
+    return "SELECT max(day) FROM (" + " UNION ALL ".join(
+        f"SELECT max({kind.date}) AS day FROM {files[kind.name]} r" for kind in KINDS) + ")"
+
+
+def repeated_sql(kind: Kind, file: str) -> str:
+    """The copy kept of each key with a copy in [$start, $until) and another anywhere in the file."""
+    window = f"SELECT r.{kind.key} FROM {file} r WHERE {kind.date} >= $start AND {kind.date} < $until"
+    repeated = f"SELECT r.{kind.key} FROM {file} r WHERE r.{kind.key} IN ({window}) GROUP BY ALL HAVING count(*) > 1"
+    return one_copy_sql(kind, f"(SELECT * FROM {file} r WHERE r.{kind.key} IN ({repeated}))")
+
+
+def month_sql(kind: Kind, file: str) -> str:
+    """The kind's records in [$start, $until): those with a key of their own, and the copy kept of a repeated key."""
+    return (f"SELECT {select_sql(kind)} FROM {file} r WHERE {kind.date} >= $start AND {kind.date} < $until"
+            f" AND r.{kind.key} IS NOT NULL AND r.{kind.key} NOT IN (SELECT key FROM repeated_{kind.name})"
+            f" UNION ALL SELECT * FROM repeated_{kind.name} WHERE occurred >= $start AND occurred < $until")
+
+
+def rows_sql(files: Mapping[str, str], mines: str) -> str:
+    """Every kind's records in [$start, $until), source day by source day, each day's in the kind order of `KINDS`.
+    The kinds read different columns, so a column holds one kind's values and is null in the others' records."""
+    records = " UNION ALL BY NAME ".join(
+        f"SELECT {order} AS kind_order, '{kind.name}' AS kind, * FROM ({month_sql(kind, files[kind.name])})"
+        for order, kind in enumerate(KINDS))
+    return (f"SELECT occurred AS day, row_number() OVER (PARTITION BY occurred ORDER BY kind_order, mine_id, key) - 1"
+            f" AS day_index, count(*) OVER (PARTITION BY occurred) AS day_events, *"
+            f" FROM ({mine_sql(records, mines)}) ORDER BY day, day_index")
+
+
 def read_rows(lake: Path, start: date, until: date | None = None, *, chunk: int = 2000) -> Iterator[Row]:
     """The records from `start` up to (not including) `until`, in source-time order, one calendar month at a time."""
-    files = {name: current_parquet(lake, name) for name in (*DATASETS.values(), "mines")}
-    paths = {name: "'" + path.as_posix().replace("'", "''") + "'" for name, path in files.items()}
+    files = {kind.name: parquet_sql(current_parquet(lake, kind.dataset)) for kind in KINDS}
     with tempfile.TemporaryDirectory(prefix="replay-duckdb-") as spill:
         con = duckdb.connect(config={"memory_limit": "256MB", "threads": 2, "temp_directory": spill})
         try:
-            newest = con.execute(NEWEST.format(**paths)).fetchone()[0]
+            newest = con.execute(newest_sql(files)).fetchone()[0]
             end = min(until or date.max, newest + timedelta(days=1)) if newest else start
+            for kind in KINDS:
+                con.execute(f"CREATE TEMP TABLE repeated_{kind.name} AS {repeated_sql(kind, files[kind.name])}",
+                            {"start": start, "until": end})
+            query = rows_sql(files, parquet_sql(current_parquet(lake, "mines")))
             month = start
             while month < end:
                 after = min(next_month(month), end)
-                cursor = con.execute(QUERY.format(**paths), {"start": month, "until": after})
+                cursor = con.execute(query, {"start": month, "until": after})
+                names = [column[0] for column in cursor.description]
                 while rows := cursor.fetchmany(chunk):
-                    yield from (Row(*row) for row in rows)
+                    for values in rows:
+                        record = dict(zip(names, values, strict=True))
+                        yield Row(record["day"], record["day_index"], record["day_events"], record["kind"],
+                                  record["key"], record)
                 month = after
         finally:
             con.close()
 
 
-def title(kind: str, details: Mapping[str, Any], place: str) -> str:
-    if kind == "inspection":
-        return f"{details['activity'] or 'Inspection'} began at {place}"
-    if kind == "violation":
-        cited = f" of 30 CFR {details['part_section']}" if details["part_section"] else ""
-        return f"{'S&S violation' if details['sig_sub'] else 'Violation'}{cited} at {place}"
-    if kind == "order_107a":
-        return f"Imminent-danger order (107(a)) at {place}"
-    what = f"{DEGREES.get(details['degree_injury_cd'], 'Accident')} at {place}"
-    return f"{what}: {details['classification'].capitalize()}" if details["classification"] else what
-
-
 def build_event(row: Row, versions: Mapping[str, str]) -> Event:
     """The replay event of one record; `versions` names the lake version each kind was read from."""
-    details = json.loads(row.details)
-    place = row.mine_name or (f"mine {row.mine_id}" if row.mine_id else "an unknown mine")
-    return Event.new(
-        kind=row.kind, key=row.key, mode="replay", occurred_at=row.day, title=title(row.kind, details, place),
-        details=details, source={"dataset": DATASETS[row.kind], "version": versions[row.kind]}, mine_id=row.mine_id,
-        district=row.district, state=row.state, coal_metal=row.coal_metal,
-    )
+    kind = BY_NAME[row.kind]
+    return event(kind, row.record, mode="replay", source={"dataset": kind.dataset, "version": versions[kind.name]})
 
 
 class Pacer:
@@ -191,7 +153,7 @@ def replay(send: Callable[[Event], None], lake: Path, *, start: date, until: dat
     sent, passes, clock = 0, 0, None
     began = reported = now()
     while not stop.is_set():
-        versions = {kind: current_parquet(lake, dataset).stem for kind, dataset in DATASETS.items()}
+        versions = {kind.name: current_parquet(lake, kind.dataset).stem for kind in KINDS}
         pacer = Pacer(start, day_seconds, max_rate, now=now, sleep=stop.wait)
         for row in read_rows(lake, start, until):
             pacer.wait(row.day, row.day_index, row.day_events)
