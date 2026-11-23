@@ -1,5 +1,5 @@
 """Bulk files: list them from their publisher, download each politely and conditionally, verify it, and keep every
-distinct version (SHA-256) so weekly replacements and regulation updates become a version history."""
+distinct verified version (SHA-256) so weekly replacements and regulation updates become a version history."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import httpx
 from lxml import etree, html
 
 from ..config import USER_AGENT
+from ..crawl.crawler import MAX_RETRY_AFTER_SECONDS
 from ..crawl.fetcher import FetchResult, ObjectStore, fetch
 from ..crawl.robots import Robots
 from ..crawl.urls import extension, normalize
@@ -173,11 +174,24 @@ class BulkStore:
 
     def summary(self) -> dict[str, object]:
         rows = self.db.execute("select source, state, count(*), sum(verified) from files group by 1, 2").fetchall()
-        return {f"{source}/{state}": {"files": count, "verified": verified or 0} for source, state, count, verified in rows}
+        return {f"{source}/{state}": {"files": count, "verified": verified or 0}
+                for source, state, count, verified in rows}
+
+
+def refusal(robots: Robots) -> str:
+    """Why robots.txt keeps a URL from being asked: it is unreachable, or it disallows the URL."""
+    return "robots.txt unreachable" if robots.unreachable else "disallowed by robots.txt"
 
 
 class BulkAcquirer:
-    """Downloads listed bulk files one at a time with a pause between requests, honoring each host's robots.txt."""
+    """Downloads listed bulk files one at a time, as the crawlers ask: nothing robots.txt disallows (the open-data page
+    included), and each request at least the acquirer's delay or the host's Crawl-delay after the one before, longer
+    when the host asks for it with Retry-After (at most an hour). An unreachable robots.txt allows nothing; it is a
+    failed check, asked again by the next request, so a retry goes ahead once the host answers.
+
+    A copy held stays current until a new download of its file is verified: an error, a refusal or a download that
+    fails verification changes only the file's state, so the lake and the warehouse keep building from the copy held,
+    and the next check asks with that copy's validators instead of getting a 304 for the rejected download."""
 
     def __init__(
         self,
@@ -197,20 +211,32 @@ class BulkAcquirer:
         self._robots: dict[str, Robots] = {}
 
     def robots_for(self, url: str) -> Robots:
+        """The rules of the URL's host, read once (again while its robots.txt is unreachable)."""
         host = httpx.URL(url).host
-        if host not in self._robots:
+        if host not in self._robots or self._robots[host].unreachable:
             try:
                 response = self.client.get(f"https://{host}/robots.txt", follow_redirects=True)
                 status, text = response.status_code, response.text if response.status_code < 300 else ""
             except httpx.HTTPError:
                 status, text = None, ""
             self._robots[host] = Robots(status, text, USER_AGENT)
-            self.sleep(self.delay)
+            self.pause(url)
         return self._robots[host]
 
+    def pause(self, url: str, retry_after: float | None = None) -> None:
+        """Wait before the next request: the acquirer's delay or the host's Crawl-delay, whichever is longer, or the
+        Retry-After the host asked for when that is longer still (at most an hour)."""
+        robots = self._robots.get(httpx.URL(url).host)
+        crawl_delay = (robots.crawl_delay() if robots else None) or 0.0
+        self.sleep(max(self.delay, crawl_delay, min(retry_after or 0.0, MAX_RETRY_AFTER_SECONDS)))
+
     def list_msha(self) -> list[BulkFile]:
+        """The data sets and definition files MSHA's open-data page lists, the page asked only if robots.txt allows."""
+        robots = self.robots_for(MSHA_LISTING)
+        if not robots.allowed(MSHA_LISTING):
+            raise RuntimeError(f"MSHA open-data page not asked: {refusal(robots)}")
         result = fetch(self.client, MSHA_LISTING, self.objects, max_bytes=5 * 1024 * 1024)
-        self.sleep(self.delay)
+        self.pause(MSHA_LISTING, result.retry_after)
         if result.path is None:
             raise RuntimeError(f"MSHA open-data page unavailable: {result.status or result.error}")
         files = [BulkFile("msha-ogd", url) for url in msha_dataset_links(result.path.read_bytes())]
@@ -227,9 +253,11 @@ class BulkAcquirer:
     def download(self, item: BulkFile) -> dict[str, object]:
         robots = self.robots_for(item.url)
         if not robots.allowed(item.url):
-            self.store.record(item.url, state="skipped", error="disallowed by robots.txt", fetched_at=utc_iso())
+            # A disallow is final until robots.txt changes; an unreachable robots.txt is a check that failed.
+            state = "error" if robots.unreachable else "skipped"
+            self.store.record(item.url, state=state, error=refusal(robots), fetched_at=utc_iso())
             self.store.db.commit()
-            return {"url": item.url, "state": "skipped"}
+            return {"url": item.url, "state": state}
         previous = self.store.get(item.url)
         result = fetch(
             self.client, item.url, self.objects,
@@ -239,7 +267,7 @@ class BulkAcquirer:
         )
         outcome = self._apply(item, result)
         self.store.db.commit()
-        self.sleep(max(self.delay, min(result.retry_after or 0.0, 3600.0)))
+        self.pause(item.url, result.retry_after)
         return outcome
 
     def _apply(self, item: BulkFile, result: FetchResult) -> dict[str, object]:
@@ -250,13 +278,19 @@ class BulkAcquirer:
             return {"url": item.url, "state": "unchanged"}
         if result.path is not None:
             ok, note, details = verify(result.path, item.name)
+            if not ok:
+                # Not a version: the row keeps the copy held (its digest, validators and verification), and the error
+                # names the rejected download.
+                error = f"download {result.sha256} failed verification: {note}"
+                self.store.record(item.url, state="error", error=error, **common)
+                return {"url": item.url, "state": "error", "verified": False, "note": note}
             new_version = self.store.add_version(item.url, result.sha256, result.size, result.last_modified)
             self.store.record(
                 item.url, state="fetched", content_type=result.content_type, content_length=result.size,
-                sha256=result.sha256, etag=result.etag, last_modified=result.last_modified, verified=int(ok),
+                sha256=result.sha256, etag=result.etag, last_modified=result.last_modified, verified=1,
                 verify_note=note, details=json.dumps(details), error=None, **common,
             )
-            return {"url": item.url, "state": "fetched", "verified": ok, "note": note, "new_version": new_version}
+            return {"url": item.url, "state": "fetched", "verified": True, "note": note, "new_version": new_version}
         if result.too_large:
             self.store.record(item.url, state="skipped", error=f"over the {self.max_bytes} byte cap", **common)
             return {"url": item.url, "state": "skipped"}
