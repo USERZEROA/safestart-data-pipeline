@@ -30,6 +30,7 @@ by Prefect, packaged with Docker Compose, tested in GitHub Actions and deployed 
 | Stream | Kafka (2 topics) into PostgreSQL: a replay of 374,400 events from 2024 on, plus live watchers |
 | Model | Serious-accident risk per mine and quarter: test ROC AUC 0.909; its riskiest 5% are ten times the base rate |
 | Delivery | Streamlit dashboard (5 pages), SafeStart exports, Prefect flows on a schedule, Google Cloud VM behind HTTPS |
+| Live | **<https://35.254.13.119>**: the dashboard served from the Google Cloud VM, fed by the live stream; Prefect Cloud runs its batch |
 | Quality | 403 tests; CI runs lint and the tests against PostgreSQL, then the whole stack on a synthetic sample data root |
 
 **Documentation.** This README is the project documentation: the summary above, then the architecture, the key
@@ -290,6 +291,18 @@ phone:
   injury rate, the standards cited most there with their text, and its recent accidents;
 - **Sources**: every dataset's versions, the downloaded corpus by site and kind, and the freshness of each live check.
 
+The mine brief of one of the largest underground coal mines, as the live dashboard serves it (desktop and phone):
+
+<p>
+<img src="docs/images/dashboard-mine-brief.png" alt="Mine brief of Marshall County Mine: 12-month record, standards cited most with their text, recent accidents" width="640">
+<img src="docs/images/dashboard-mine-brief-phone.png" alt="The same mine brief at phone width" width="180">
+</p>
+
+The Enforcement page while the replay streams 2024: daily violations by district, each day's one-step-ahead forecast,
+and the days the analytics consumer flagged:
+
+<img src="docs/images/dashboard-enforcement.png" alt="Enforcement page: violations by day and district, observed against forecast, flagged anomalies" width="640">
+
 ## Deployment
 
 One image runs every pipeline service; `docker-compose.yml` adds Kafka (KRaft, small heap) and PostgreSQL, with memory
@@ -299,6 +312,10 @@ mounts the data root read-only, except the orchestrator, the one writer of the d
 account that can only read the data bucket; at boot `deploy/gcp/startup.sh` adds swap, installs Docker, copies the data
 it lacks from the bucket and starts the stack with Caddy serving HTTPS. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) has the
 steps and a cost estimate.
+
+It runs that way now: an e2-medium in us-central1 serves the dashboard at <https://35.254.13.119> with a Let's Encrypt
+certificate for the address, the replay and the live watchers feed its stream, and its orchestrator serves the daily
+batch and the weekly model as Prefect Cloud deployments.
 
 ## Testing and CI
 
@@ -390,6 +407,8 @@ SafeStart is a separate application and stays unchanged: the pipeline hands it t
 - OSHA's sitemap gives no modification dates, so the OSHA watcher finds added and dropped pages only.
 - 238 OSHA URLs answered 403 (90 of them pages the project needs) and are recorded as such; a refusal is never
   worked around.
+- MSHA writes some quotes inside text doubled (`4"" x 3""`); the lake keeps text as MSHA wrote it, so 14,278 accident
+  narratives show doubled quotes.
 
 ## Repository layout
 
