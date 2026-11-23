@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Creates the pipeline's server on Google Cloud: an e2-medium VM (2 shared vCPUs, 4 GB) with a 50 GB balanced disk and a
 # reserved public IPv4 address, on a network of its own whose firewall admits only HTTP and HTTPS. Its startup script
-# (startup.sh) installs Docker, copies lake/, warehouse/ and exports/ from the bucket and starts the stack behind the
-# HTTPS gateway. Run it in Cloud Shell from a checkout of the repository; docs/DEPLOYMENT.md has the whole procedure.
+# (startup.sh) adds swap, installs Docker, copies raw/bulk/, state/, lake/, warehouse/ and exports/ from the bucket and
+# starts the stack behind the HTTPS gateway. Run it in Cloud Shell from a checkout of the repository; docs/DEPLOYMENT.md
+# has the whole procedure.
 #
 #   BUCKET=<bucket> bash deploy/gcp/create-vm.sh
 #

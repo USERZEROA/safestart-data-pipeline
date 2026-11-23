@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# Copies the data root's raw/, lake/, warehouse/ and exports/ to gs://<bucket>/<folder>/ with `gcloud storage rsync`.
-# Resumable: a rerun skips what already arrived and continues an interrupted large file. It never deletes anything in
-# the bucket. --dry-run lists what would be copied without copying it. (On Windows, upload-to-gcs.ps1 does the same.)
+# Copies the parts of the data root the server needs (raw/bulk/, state/, lake/, warehouse/, exports/) to
+# gs://<bucket>/<folder>/ with `gcloud storage rsync`; `--only raw` copies the whole raw archive instead, the crawls'
+# 43 GB included, which the server never reads. Resumable: a rerun skips what already arrived and continues an
+# interrupted large file. It never deletes anything in the bucket. --dry-run lists what would be copied without copying
+# it. (On Windows, upload-to-gcs.ps1 does the same.)
 #
 #   deploy/gcp/upload-to-gcs.sh <bucket> [--data-root DIR] [--only "lake warehouse"] [--dry-run]
 #
 # The data root defaults to $SAFESTART_DATA_ROOT, else F:/SafeStartData. A folder the data root lacks is skipped.
+# Upload state/ while no crawl, download or lake build is writing to it, so that each database is copied whole.
 set -Eeuo pipefail
 
 usage() {
-  echo "usage: $0 <bucket> [--data-root DIR] [--only \"raw lake warehouse exports\"] [--dry-run]" >&2
+  echo "usage: $0 <bucket> [--data-root DIR] [--only \"raw/bulk state lake warehouse exports raw\"] [--dry-run]" >&2
   exit 2
 }
 
 bucket=
 data_root=${SAFESTART_DATA_ROOT:-F:/SafeStartData}
-folders="raw lake warehouse exports"
+folders="raw/bulk state lake warehouse exports"
 dry_run=
 while (($#)); do
   case $1 in
@@ -32,13 +35,15 @@ if ! command -v gcloud >/dev/null; then
   exit 1
 fi
 
-# Partial downloads of a running crawl (objects/tmp/) and half-written lake files (*.partial) are not data. The
-# patterns avoid backslashes and '|' so they pass unchanged through any shell.
-exclude='.*objects.tmp.*,.*[.]partial$'
+# Not data: partial downloads of a running crawl (objects/tmp/), half-written lake files (*.partial), and the journal
+# files of a database in use (SQLite's -wal, -shm and -journal; the warehouse's DuckDB .wal, a build in progress and its
+# staging folder), which must never meet another copy of their database. The patterns avoid backslashes and '|' so
+# they pass unchanged through any shell.
+exclude='.*objects.tmp.*,.*[.]partial$,.*[.]sqlite-[a-z]+$,.*[.]duckdb[.-].*'
 for folder in $folders; do
   case $folder in
-    raw | lake | warehouse | exports) ;;
-    *) echo "unknown folder $folder (raw, lake, warehouse or exports)" >&2; exit 2 ;;
+    raw/bulk | state | lake | warehouse | exports | raw) ;;
+    *) echo "unknown folder $folder (raw/bulk, state, lake, warehouse, exports or raw)" >&2; exit 2 ;;
   esac
   if [[ ! -d $data_root/$folder ]]; then
     echo "Skipped $folder/: not in $data_root."

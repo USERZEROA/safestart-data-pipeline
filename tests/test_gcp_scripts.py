@@ -1,10 +1,12 @@
 """The Google Cloud scripts, run against a stand-in gcloud that records its arguments: the server gets the machine,
-disk, address, identity and firewall the deployment promises, and the upload copies the data root without deleting."""
+disk, address, identity and firewall the deployment promises, the upload copies the parts of the data root the server
+needs without deleting, and neither side copies a database's journal or work in progress."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -14,7 +16,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 GCP = ROOT / "deploy" / "gcp"
-EXCLUDE = "--exclude=.*objects.tmp.*,.*[.]partial$"
+EXCLUDE = "--exclude=.*objects.tmp.*,.*[.]partial$,.*[.]sqlite-[a-z]+$,.*[.]duckdb[.-].*"
+SERVER_FOLDERS = ("raw/bulk", "state", "lake", "warehouse", "exports")
 STUB = """\
 import json, os, sys
 
@@ -119,20 +122,33 @@ def test_a_rerun_updates_the_existing_server_instead_of_creating_one(gcloud):
 
 @pytest.fixture
 def data_root(tmp_path):
+    """A data root with the bulk downloads, the crawls' archive, the state and the lake, but no warehouse or exports."""
     root = tmp_path / "SafeStartData"
-    for folder in ("raw/osha/objects", "lake/msha_ogd"):
+    for folder in ("raw/bulk/objects", "raw/osha/objects", "state", "lake/msha_ogd"):
         (root / folder).mkdir(parents=True)
     return root
 
 
-def test_upload_copies_each_present_folder_and_never_deletes(gcloud, data_root):
+def test_upload_copies_what_the_server_needs_and_never_deletes(gcloud, data_root):
     env, calls = gcloud
     result = run_script("upload-to-gcs.sh", "gs://safestart-data/", "--data-root", data_root.as_posix(), "--dry-run",
                         env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert calls() == [["storage", "rsync", "--recursive", "--dry-run", EXCLUDE, f"{data_root.as_posix()}/{folder}",
-                        f"gs://safestart-data/{folder}"] for folder in ("raw", "lake")]
+                        f"gs://safestart-data/{folder}"] for folder in SERVER_FOLDERS[:3]]  # not the crawls' raw/osha
     assert "Skipped warehouse/" in result.stdout and "Skipped exports/" in result.stdout
+
+
+def test_upload_copies_the_whole_raw_archive_only_on_request(gcloud, data_root):
+    env, calls = gcloud
+    result = run_script("upload-to-gcs.sh", "safestart-data", "--data-root", data_root.as_posix(), "--only", "raw",
+                        env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls() == [["storage", "rsync", "--recursive", EXCLUDE, f"{data_root.as_posix()}/raw",
+                        "gs://safestart-data/raw"]]
+    refused = run_script("upload-to-gcs.sh", "safestart-data", "--data-root", data_root.as_posix(), "--only",
+                         "raw/osha", env=env)
+    assert refused.returncode == 2 and len(calls()) == 1
 
 
 def test_upload_refuses_a_bad_bucket_name(gcloud, data_root):
@@ -146,14 +162,46 @@ def test_the_windows_upload_passes_the_same_arguments_through_gcloud(gcloud, dat
     if not shell:
         pytest.skip("PowerShell is not installed")
     env, calls = gcloud
-    result = run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-                  str(GCP / "upload-to-gcs.ps1"), "-Bucket", "gs://safestart-data", "-DataRoot", str(data_root),
-                  "-Only", "lake,warehouse", "-DryRun"], env)
+    command = [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+               str(GCP / "upload-to-gcs.ps1"), "-Bucket", "gs://safestart-data", "-DataRoot", str(data_root)]
+    result = run([*command, "-DryRun"], env)
     assert result.returncode == 0, result.stdout + result.stderr
-    [lake] = calls()
-    assert lake[:4] == ["storage", "rsync", "--recursive", EXCLUDE] and lake[-1] == "--dry-run"
-    assert Path(lake[4]) == data_root / "lake" and lake[5] == "gs://safestart-data/lake"
-    assert "Skipped warehouse/" in result.stdout
+    made = calls()
+    assert [call[:4] for call in made] == [["storage", "rsync", "--recursive", EXCLUDE]] * 3
+    assert [(Path(call[4]), call[5], call[6]) for call in made] == [
+        (data_root / folder, f"gs://safestart-data/{folder}", "--dry-run") for folder in SERVER_FOLDERS[:3]]
+    assert "Skipped warehouse/" in result.stdout and "Skipped exports/" in result.stdout
+    result = run([*command, "-Only", "lake,warehouse"], env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls()[3:] == [["storage", "rsync", "--recursive", EXCLUDE, str(data_root / "lake"),
+                            "gs://safestart-data/lake"]]
+
+
+@pytest.mark.parametrize(("path", "copied"), [
+    ("state/bulk.sqlite", True), ("state/bulk.sqlite-wal", False), ("state/crawl-osha.sqlite-shm", False),
+    ("state/bulk.sqlite-journal", False), ("warehouse/safestart.duckdb", True),
+    ("warehouse/safestart.duckdb.wal", False), ("warehouse/safestart.duckdb.building", False),
+    ("warehouse/.safestart.duckdb-x1y2/mine-0.parquet", False),
+    ("lake/msha_ogd/violations/7943d78c6aba1c23.parquet", True),
+    ("lake/msha_ogd/mines/.c4ba9edb.parquet.partial", False),
+    ("raw/bulk/objects/tmp/download", False), ("raw/bulk/objects/0a/1b/0a1b2c", True),
+])
+def test_files_in_use_are_never_copied(path, copied):
+    """gcloud matches each pattern (a Python regular expression) against a file's path below the folder it copies,
+    written with backslashes on Windows."""
+    patterns = EXCLUDE.removeprefix("--exclude=").split(",")
+    below = path.partition("/")[2]
+    for name in (path, below, below.replace("/", "\\")):
+        assert (not any(re.match(pattern, name) for pattern in patterns)) == copied, name
+
+
+def test_the_server_copies_what_it_lacks_of_the_folders_it_needs():
+    script = (GCP / "startup.sh").read_text(encoding="utf-8")
+    assert f"for part in {' '.join(SERVER_FOLDERS)}; do" in script
+    rsync = re.search(r"gcloud storage rsync (.+?)\\\n\s+--exclude='([^']+)'", script)
+    assert rsync and rsync[1].split() == ["--recursive", "--no-clobber"]  # never replaces nor deletes on the server
+    assert f"--exclude={rsync[2]}" == EXCLUDE  # the same files left out both ways
+    assert "chown -R 10001:10001 \"$data\"" in script  # the image's user, as whom the orchestrator writes
 
 
 def test_the_startup_script_parses():
