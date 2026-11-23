@@ -212,13 +212,69 @@ def test_a_first_check_compares_only_the_two_newest_versions(lake):
     state.close()
 
 
-def test_a_version_whose_keys_changed_is_refused_and_left_uncompared(lake):
+def refused(state: WatchState) -> set[str]:
+    return {row[0] for row in state.db.execute("select version from compared where refused = 1")}
+
+
+def test_a_version_whose_keys_changed_is_refused_and_announces_nothing(lake):
     add_version(lake, "violations", [violation(str(number)) for number in range(1500)], OLD)
     add_version(lake, "violations", [violation(f"0{number}") for number in range(1500)], NEW)
     state, publisher = WatchState(lake / "state" / "watch.sqlite"), ListPublisher()
     check = check_versions(lake, state, publisher, {"violations": WATCHED["violations"]})
     assert check.status == "error" and "1,500 of 1,500 records look new" in check.note
-    assert publisher.events == [] and state.compared_versions("violations") == set()
+    assert publisher.events == [] and refused(state) == state.compared_versions("violations") == {NEW}
+    state.close()
+
+
+def test_the_versions_after_a_refused_one_are_compared_with_it(lake):
+    """MSHA renumbers a dataset's keys once; the versions after it keep the new keys and add records as usual."""
+    only_violations = {"violations": WATCHED["violations"]}
+    add_version(lake, "violations", [violation(str(number)) for number in range(1200)], OLD)
+    add_version(lake, "violations", [violation(str(number)) for number in range(1201)], NEW)
+    state, publisher = WatchState(lake / "state" / "watch.sqlite"), ListPublisher()
+    assert check_versions(lake, state, publisher, only_violations).found == 2  # violation:1200 and the version
+
+    add_version(lake, "violations", [violation(f"R{number}") for number in range(1201)], NEWER)  # renumbered
+    first = check_versions(lake, state, publisher, only_violations)
+    assert first.status == "error" and f"{NEWER}: 1,201 of 1,201 records look new" in first.note
+    assert len(publisher.events) == 2 and refused(state) == {NEWER}
+
+    add_version(lake, "violations", [violation(f"R{number}") for number in range(1202)], NEWEST)
+    second = check_versions(lake, state, publisher, only_violations)
+    assert (second.status, second.found) == ("ok", 2) and "look new" not in second.note  # reported once
+    assert [event.event_id for event in publisher.events[2:]] == [
+        "violation:R1201", f"dataset_version:violations:{NEWEST}"]
+    assert by_id(publisher)[f"dataset_version:violations:{NEWEST}"].details["previous_version"] == NEWER
+    state.close()
+
+
+def test_a_refused_version_and_the_one_after_it_found_in_the_same_check(lake):
+    only_violations = {"violations": WATCHED["violations"]}
+    add_version(lake, "violations", [violation(str(number)) for number in range(1200)], OLD)
+    add_version(lake, "violations", [violation(str(number)) for number in range(1201)], NEW)
+    state, publisher = WatchState(lake / "state" / "watch.sqlite"), ListPublisher()
+    check_versions(lake, state, publisher, only_violations)
+    add_version(lake, "violations", [violation(f"R{number}") for number in range(1201)], NEWER)
+    add_version(lake, "violations", [violation(f"R{number}") for number in range(1202)], NEWEST)
+    check = check_versions(lake, state, publisher, only_violations)
+    assert (check.status, check.found) == ("error", 2) and f"{NEWER}: 1,201 of 1,201" in check.note
+    assert f"violations {NEWER} -> {NEWEST}: 1 new" in check.note
+    assert state.compared_versions("violations") == {NEW, NEWER, NEWEST} and refused(state) == {NEWER}
+    state.close()
+
+
+def test_a_state_file_from_before_refusals_were_kept_is_upgraded(tmp_path):
+    path = tmp_path / "watch.sqlite"
+    old = sqlite3.connect(path)
+    old.execute("create table compared (dataset text not null, version text not null, previous_version text not null,"
+                " rows integer not null, new_rows integer not null, compared_at text not null,"
+                " primary key (dataset, version))")
+    old.execute("insert into compared values ('violations', ?, ?, 2, 1, '2026-11-16T15:00:00Z')", (NEW, OLD))
+    old.commit()
+    old.close()
+    state = WatchState(path)
+    state.add_comparison("violations", NEWER, NEW, 3, 2000, "2026-11-23T15:00:00Z", refused=True)
+    assert state.compared_versions("violations") == {NEW, NEWER} and refused(state) == {NEWER}
     state.close()
 
 

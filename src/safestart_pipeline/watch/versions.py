@@ -12,8 +12,10 @@ its source date, mine, title and details, and the one copy kept of a key MSHA re
 The watcher compares from the newest version it has already compared (on a first run, the second newest held version)
 to the newest held version, one consecutive pair at a time, so versions that arrive while it is stopped are not
 skipped, and a record that leaves a version and comes back is not announced twice (`publish.publish_new`). A version
-in which a large share of the records looks new has changed its format or keys rather than gained news, so it is
-reported as an error and left uncompared.
+in which a large share of the records looks new has changed its format or keys rather than gained news: it is refused,
+reported as an error in the check that finds it, and none of its records is announced, nor the version itself. It is
+remembered as refused all the same, and the next version is compared with it, since the versions after a change of
+keys keep the new keys; otherwise every later version would be held back behind it.
 """
 
 from __future__ import annotations
@@ -151,12 +153,16 @@ def version_event(dataset: str, older: Version, newer: Version, new_rows: int, p
 def compare(db: duckdb.DuckDBPyConnection, data_root: Path, state: WatchState, publisher: Publisher, dataset: str,
             older: Version, newer: Version, mines: Path, kind: Kind) -> tuple[int, str]:
     """Publish one pair's new records and its dataset_version event, then remember the pair. Returns the count of events
-    sent and a note."""
+    sent and a note. SuspectVersion when too many records look new: the newer version is then remembered as refused,
+    with nothing published, so that it is the baseline of the next pair."""
     files = {"new": str(newer.path), "old": str(older.path)}
     new_rows, undated = db.execute(count_sql(kind), files).fetchone()
     if new_rows > SUSPECT_NEW_ROWS and new_rows > SUSPECT_SHARE * newer.rows:
+        state.add_comparison(dataset, newer.name, older.name, newer.rows, new_rows, utc_now(), refused=True)
+        state.commit()
         raise SuspectVersion(f"{newer.name}: {new_rows:,} of {newer.rows:,} records look new against {older.name},"
-                             " so its keys or format changed; left uncompared")
+                             " so its keys or format changed; refused, nothing announced, and the next version is"
+                             " compared with it")
     summary = version_event(dataset, older, newer, new_rows, published_at(data_root / "state" / "bulk.sqlite", newer))
     rows = fetch_rows(db.execute(rows_sql(kind), {**files, "mines": str(mines)}))
     source = {"dataset": dataset, "version": newer.name}
@@ -185,8 +191,12 @@ def check_versions(data_root: Path, state: WatchState, publisher: Publisher,
         for dataset, kind in datasets.items():
             try:  # one dataset's damaged manifest, file or version does not hold back the others
                 for older, newer in pending_pairs(held_versions(lake / dataset), state.compared_versions(dataset)):
-                    sent, note = compare(db, data_root, state, publisher, dataset, older, newer, current_mines(lake),
-                                         kind)
+                    try:
+                        sent, note = compare(db, data_root, state, publisher, dataset, older, newer,
+                                             current_mines(lake), kind)
+                    except SuspectVersion as refused:  # remembered as the baseline: the next pair goes on
+                        errors.append(f"{dataset}: {refused}"[:500])
+                        continue
                     found += sent
                     notes.append(note)
             except (duckdb.Error, sqlite3.Error, OSError, KeyError, ValueError) as problem:

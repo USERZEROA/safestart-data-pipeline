@@ -1,11 +1,11 @@
 """The watchers' own state: a small SQLite file, `<data root>/state/watch.sqlite`.
 
 It remembers the id of every event a watcher has published, so nothing is published twice however checks overlap; the
-dataset versions already compared; and named times, such as when each source was last checked. The watchers find a few
-thousand records a week, so the file stays small. SAFESTART_WATCH_STATE (or `watch_state` in pipeline.local.toml) names
-another file, so a check can run against a data root it must only read: the containers mount the data root read-only
-and keep the state at /state/watch.sqlite on a volume of its own. The version check spills DuckDB's overflow into a
-folder beside this file, so that folder must be writable too.
+dataset versions already compared, a refused one marked as such; and named times, such as when each source was last
+checked. The watchers find a few thousand records a week, so the file stays small. SAFESTART_WATCH_STATE (or
+`watch_state` in pipeline.local.toml) names another file, so a check can run against a data root it must only read:
+the containers mount the data root read-only and keep the state at /state/watch.sqlite on a volume of its own. The
+version check spills DuckDB's overflow into a folder beside this file, so that folder must be writable too.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ create table if not exists compared (
   rows integer not null,
   new_rows integer not null,
   compared_at text not null,
+  refused integer not null default 0,
   primary key (dataset, version)
 );
 create table if not exists times (name text primary key, value text not null);
@@ -47,6 +48,8 @@ class WatchState:
         self.db = sqlite3.connect(path, timeout=60)
         self.db.execute("pragma journal_mode=wal")
         self.db.executescript(SCHEMA)
+        if "refused" not in {row[1] for row in self.db.execute("pragma table_info(compared)")}:  # an older file
+            self.db.execute("alter table compared add column refused integer not null default 0")
 
     def close(self) -> None:
         self.db.commit()
@@ -72,22 +75,27 @@ class WatchState:
                             [(event_id, at) for event_id in event_ids])
 
     def any_emitted(self, kind: str) -> bool:
-        """Whether an event of this kind was ever published. Its ids start with '<kind>:', and ';' sorts right after
-        ':', so the primary key answers with a range."""
+        """Whether an event of this kind was ever published (its ids start with '<kind>:')."""
+        return self.any_emitted_starting(f"{kind}:")
+
+    def any_emitted_starting(self, prefix: str) -> bool:
+        """Whether a published id starts with `prefix`. Those ids sort from the prefix up to the prefix with its last
+        character raised by one, so the primary key answers with a range."""
         row = self.db.execute("select 1 from emitted where event_id >= ? and event_id < ? limit 1",
-                              (f"{kind}:", f"{kind};")).fetchone()
+                              (prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1))).fetchone()
         return row is not None
 
     # Dataset versions -------------------------------------------------------------------------------------------------
 
     def compared_versions(self, dataset: str) -> set[str]:
+        """The versions compared with the one before, refused ones included: each is the next one's baseline."""
         return {row[0] for row in self.db.execute("select version from compared where dataset = ?", (dataset,))}
 
     def add_comparison(self, dataset: str, version: str, previous_version: str, rows: int, new_rows: int,
-                       at: str) -> None:
+                       at: str, *, refused: bool = False) -> None:
         self.db.execute(
-            "insert or replace into compared (dataset, version, previous_version, rows, new_rows, compared_at)"
-            " values (?, ?, ?, ?, ?, ?)", (dataset, version, previous_version, rows, new_rows, at))
+            "insert or replace into compared (dataset, version, previous_version, rows, new_rows, compared_at, refused)"
+            " values (?, ?, ?, ?, ?, ?, ?)", (dataset, version, previous_version, rows, new_rows, at, int(refused)))
 
     # Named times ------------------------------------------------------------------------------------------------------
 
