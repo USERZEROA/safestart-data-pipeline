@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -67,6 +68,8 @@ class FakeSite:
         self.clock = clock
         self.requests: list[tuple[str, float]] = []
         self.broken: set[str] = set()
+        self.bodies: dict[str, str | bytes] = {"/sitemap-index.xml": INDEX, "/pages-1.xml": PAGES_1,
+                                               "/pages-2.xml": PAGES_2}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -77,9 +80,10 @@ class FakeSite:
             return httpx.Response(200, text=ROBOTS)
         if path == "/sitemap.xml":
             return httpx.Response(301, headers={"location": "/sitemap-index.xml"})
-        bodies = {"/sitemap-index.xml": INDEX, "/pages-1.xml": PAGES_1, "/pages-2.xml": PAGES_2}
-        if path in bodies:
-            return httpx.Response(200, text=bodies[path], headers={"content-type": "application/xml"})
+        if path in self.bodies:
+            body = self.bodies[path]
+            return httpx.Response(200, content=body.encode() if isinstance(body, str) else body,
+                                  headers={"content-type": "application/xml"})
         return httpx.Response(404)
 
     def paths(self) -> list[str]:
@@ -97,6 +101,10 @@ class Bench:
     def check(self, publisher: ListPublisher | None = None, now: datetime = NOW) -> Check:
         return check_sitemaps(SITE, self.root, self.state, publisher or ListPublisher(), self.client,
                               sleep=self.clock.sleep, clock=self.clock.monotonic, now=lambda: now)
+
+
+def by_id(publisher: ListPublisher) -> dict:
+    return {event.event_id: event for event in publisher.events}
 
 
 @pytest.fixture
@@ -153,6 +161,30 @@ def test_dropped_pages_are_not_judged_when_a_sitemap_cannot_be_read(bench):
     assert result.status == "error" and "dropped pages not judged" in result.note and "HTTP 500" in result.note
 
 
+def test_a_damaged_gzip_sitemap_is_one_unreadable_sitemap_and_the_others_are_still_read(bench):
+    bench.fake.bodies["/pages-1.xml"] = gzip.compress(PAGES_1.encode())[:-10]  # truncated
+    publisher = ListPublisher()
+    result = bench.check(publisher)
+    assert [event.event_id for event in publisher.events] == [f"page_change:{HOST}/new|added|2026-11-21T10:00:00Z"]
+    assert result.status == "error" and "pages-1.xml: not a readable gzip sitemap" in result.note
+
+
+def test_a_page_the_crawl_never_recorded_is_added_once_and_changed_after(bench):
+    """The inventory is only read, so /new stays unknown to it; a later lastmod of it is an edit, not a new page."""
+    publisher = ListPublisher()
+    bench.check(publisher)
+    assert f"page_change:{HOST}/new|added|2026-11-21T10:00:00Z" in by_id(publisher)
+    assert bench.check(publisher).found == 0  # listed again as it was: nothing new
+
+    bench.fake.bodies["/pages-2.xml"] = PAGES_2.replace("2026-11-21T10:00:00Z", "2026-11-27T08:00:00Z")
+    edited = bench.check(publisher)
+    assert (edited.found, edited.note) == (1, "5 URLs listed; 0 added, 2 changed, 1 dropped")  # /b and /c as before
+    event = publisher.events[-1]
+    assert event.event_id == f"page_change:{HOST}/new|changed|2026-11-27T08:00:00Z"
+    assert (event.title, event.details["change"]) == (f"EXAMPLE page changed: {HOST}/new", "changed")
+    assert bench.check(publisher).found == 0
+
+
 def test_a_site_is_not_asked_while_its_crawl_runs_or_without_an_inventory(bench):
     with SiteLock(bench.root / "state" / "crawl-example.lock"):
         result = bench.check()
@@ -163,14 +195,40 @@ def test_a_site_is_not_asked_while_its_crawl_runs_or_without_an_inventory(bench)
     assert bench.check(now=NOW + timedelta(hours=6)).note == "no example crawl inventory to compare with"
 
 
-def test_a_data_root_that_cannot_be_written_is_asked_without_the_crawl_lock(bench, monkeypatch):
-    """The containers mount the data root read-only: no crawl can run there, and no lock file can be created."""
+def touch(path: Path, moment: datetime) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    os.utime(path, (moment.timestamp(), moment.timestamp()))
+
+
+@pytest.fixture
+def read_only_state(bench, monkeypatch):
+    """The data root as the containers mount it: its state folder cannot be written, and a crawl on the host may be
+    writing it all the same (its lock does not reach into a container). The inventory was last written an hour ago."""
     state, access = bench.root / "state", os.access
     monkeypatch.setattr(sitemaps.os, "access",
                         lambda path, mode, *args, **kwargs: (Path(path) != state or mode != os.W_OK)
                         and access(path, mode, *args, **kwargs))
+    touch(state / "crawl-example.sqlite", NOW - timedelta(hours=1))
+    return state
+
+
+@pytest.mark.parametrize("written", ["state/crawl-example.sqlite", "state/crawl-example.sqlite-wal",
+                                     "raw/example/objects/tmp/0f3e9a"])
+def test_where_the_lock_cannot_be_seen_a_crawl_still_writing_keeps_its_site_from_being_asked(bench, read_only_state,
+                                                                                         written):
+    """The inventory's -wal changes at every commit, and a long download grows its temporary file the whole time."""
+    touch(bench.root / written, NOW - sitemaps.CRAWL_QUIET + timedelta(minutes=1))
+    result = bench.check()
+    assert result.status == "skipped" and "crawl is running" in result.note and Path(written).name in result.note
+    assert bench.fake.requests == [] and not (read_only_state / "crawl-example.lock").exists()
+
+
+def test_where_the_lock_cannot_be_seen_a_quiet_crawl_lets_its_site_be_asked(bench, read_only_state):
+    touch(read_only_state / "crawl-example.sqlite-wal", NOW - sitemaps.CRAWL_QUIET - timedelta(minutes=1))
+    touch(bench.root / "raw" / "example" / "objects" / "tmp" / "left-by-a-stopped-crawl", NOW - timedelta(days=2))
     assert bench.check().status == "ok"
-    assert not (state / "crawl-example.lock").exists()
+    assert not (read_only_state / "crawl-example.lock").exists()  # no lock file is made on a read-only mount
 
 
 def test_a_site_with_a_minimum_interval_is_read_at_most_that_often(bench, monkeypatch):

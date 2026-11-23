@@ -2,16 +2,20 @@
 
 A page is "added" when today's sitemaps list a URL the crawl never recorded, "changed" when its sitemap lastmod is after
 the crawl last fetched it, and "dropped" when the crawl's inventory has it from a sitemap and today's sitemaps no longer
-list it. Dropped pages are judged only when every sitemap could be read, since an unreadable sitemap would seem to drop
-all of its pages. Each finding becomes a page_change event keyed by the URL, the change and the lastmod, so a change is
-reported once while a later edit of the same page is reported again.
+list it. The inventory is only read, so a page the crawl never recorded stays unknown to it: once the watcher has
+announced such a page as added, a later lastmod of it is a change. Dropped pages are judged only when every sitemap
+could be read, since an unreadable sitemap would seem to drop all of its pages. Each finding becomes a page_change event
+keyed by the URL, the change and the lastmod, so a change is reported once while a later edit of the same page is
+reported again.
 
 The watcher asks the way the crawl does: robots.txt through crawl/robots.py, the site's own delay or its Crawl-delay if
-longer, and never while that site's crawl runs (it holds the crawl's lock while it asks). A data root the watcher cannot
-write, as the containers mount it, holds no running crawl, since a crawl writes its state there, so there it asks
-without the lock. The inventory is only read.
-OSHA asks for 10 seconds between requests, so its sitemaps are read at most once a day whatever the schedule; OSHA's
-sitemap gives no lastmod, so only added and dropped pages are found there.
+longer, and not while that site's crawl runs. Where it can write the data root's state folder, it holds the crawl's
+lock while it asks. Where it cannot, as the containers mount the data root read-only, a crawl may still run outside
+them: the workstation's crawls run on the host, into the folder the stack mounts, and their file locks do not reach
+into a container. There the site is skipped while anything its crawl writes changed within CRAWL_QUIET: the inventory
+or its -wal (a commit after every request) or a download in progress (`raw/<site>/objects/tmp`). A crawl that has
+just stopped is waited for as long. OSHA asks for 10 seconds between requests, so its sitemaps are read at most once a
+day whatever the schedule; OSHA's sitemap gives no lastmod, so only added and dropped pages are found there.
 """
 
 from __future__ import annotations
@@ -19,9 +23,9 @@ from __future__ import annotations
 import os
 import time
 from collections import Counter
-from collections.abc import Callable
-from contextlib import AbstractContextManager, ExitStack, nullcontext
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from contextlib import AbstractContextManager, ExitStack, nullcontext, suppress
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -40,6 +44,10 @@ from .state import WatchState
 
 # The least time between two reads of a site's sitemaps, whatever the schedule or a forced check asks.
 MIN_INTERVAL = {"msha": timedelta(0), "osha": timedelta(days=1)}
+# Where the crawl's lock cannot be seen, a crawl is taken to run until what it writes has been still this long. A crawl
+# commits its inventory after every request and a long download grows its file all the while; only the crawl's own
+# pauses are longer (a Retry-After or a suspected block, while it sends nothing).
+CRAWL_QUIET = timedelta(minutes=15)
 PARAMETERS = 500  # URLs per inventory query
 CHANGES = ("added", "changed", "dropped")
 
@@ -138,22 +146,56 @@ def compare(inventory: Path, listed: Listed, *, judge_dropped: bool) -> list[Cha
     return changes
 
 
+def page_key(change: Change) -> str:
+    """A page_change event's source key: the URL, the change and the lastmod, so a change is reported once."""
+    return f"{change.url}|{change.change}|{change.lastmod or ''}"
+
+
 def page_event(site: Site, change: Change, checked_at: datetime) -> Event:
     """A page_change event; it happened at the page's own lastmod when the sitemap gives one, else at the check."""
     occurred = lastmod_time(change.lastmod) if change.change != "dropped" else None
     return Event.new(
-        kind="page_change", key=f"{change.url}|{change.change}|{change.lastmod or ''}", mode="live",
-        occurred_at=occurred or checked_at, title=f"{site.name.upper()} page {change.change}: {change.url}",
+        kind="page_change", key=page_key(change), mode="live", occurred_at=occurred or checked_at,
+        title=f"{site.name.upper()} page {change.change}: {change.url}",
         details={"site": site.name, "url": change.url, "lastmod": change.lastmod, "change": change.change},
         source={"site": site.name, **({"sitemap": change.sitemap} if change.sitemap else {})})
 
 
-def crawl_lock(data_root: Path, site: Site) -> AbstractContextManager[object]:
-    """The site's crawl lock, or nothing to hold where the state folder cannot be written (no crawl runs there)."""
+def announced(changes: Iterable[Change], state: WatchState) -> list[Change]:
+    """The changes as the feed reports them: a page the crawl never recorded that the watcher announced as added under
+    another lastmod before has changed since."""
+    reported = []
+    for change in changes:
+        # The ids of the page as added all start like the id of an added page without a lastmod.
+        if (change.change == "added" and not state.emitted([f"page_change:{page_key(change)}"])
+                and state.any_emitted_starting(f"page_change:{page_key(replace(change, lastmod=None))}")):
+            change = replace(change, change="changed")
+        reported.append(change)
+    return reported
+
+
+def crawl_writes(data_root: Path, site: Site) -> list[Path]:
+    """What the site's crawl writes while it runs: its inventory, the inventory's -wal, and downloads in progress."""
+    inventory = data_root / "state" / f"crawl-{site.name}.sqlite"
+    paths = [inventory, inventory.with_name(f"{inventory.name}-wal")]
+    with suppress(OSError):  # no download folder: nothing being downloaded
+        paths += (data_root / "raw" / site.name / "objects" / "tmp").iterdir()
+    return paths
+
+
+def crawl_lock(data_root: Path, site: Site, now: datetime) -> AbstractContextManager[object]:
+    """The site's crawl lock where the state folder can be written. Where it cannot, RuntimeError, as from a lock
+    another process holds, while anything the crawl writes changed within CRAWL_QUIET of `now`; else nothing to hold."""
     state = data_root / "state"
-    if not os.access(state, os.W_OK):
-        return nullcontext()
-    return SiteLock(state / f"crawl-{site.name}.lock")
+    if os.access(state, os.W_OK):
+        return SiteLock(state / f"crawl-{site.name}.lock")
+    for path in crawl_writes(data_root, site):
+        with suppress(OSError):  # gone meanwhile (a finished download, a checkpointed -wal)
+            changed = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+            if now - changed < CRAWL_QUIET:
+                raise RuntimeError(f"{path.name} changed at {changed:%Y-%m-%d %H:%M} UTC, in the last"
+                                   f" {CRAWL_QUIET.seconds // 60} minutes")
+    return nullcontext()
 
 
 def check_sitemaps(site: Site, data_root: Path, state: WatchState, publisher: Publisher, client: httpx.Client, *,
@@ -168,13 +210,14 @@ def check_sitemaps(site: Site, data_root: Path, state: WatchState, publisher: Pu
         return Check(source, "skipped", note=f"no {site.name} crawl inventory to compare with")
     with ExitStack() as stack:
         try:
-            stack.enter_context(crawl_lock(data_root, site))
-        except RuntimeError:
-            return Check(source, "skipped", note=f"the {site.name} crawl is running, so its host was not asked")
+            stack.enter_context(crawl_lock(data_root, site, started))
+        except RuntimeError as busy:
+            return Check(source, "skipped", note=f"the {site.name} crawl is running ({busy}), so its host was not"
+                                                 " asked")
         state.set_time(f"{source}:read_at", started)
         state.commit()
         listed, problems = read_sitemaps(site, PoliteClient(client, min_delay=site.min_delay, sleep=sleep, clock=clock))
-    changes = compare(inventory, listed, judge_dropped=not problems)
+    changes = announced(compare(inventory, listed, judge_dropped=not problems), state)
     found = publish_new((page_event(site, change, started) for change in changes), publisher, state)
     counts = Counter(change.change for change in changes)
     note = f"{len(listed):,} URLs listed; " + ", ".join(f"{counts[name]:,} {name}" for name in CHANGES)
