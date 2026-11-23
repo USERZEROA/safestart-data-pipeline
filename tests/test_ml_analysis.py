@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 
 from ml_fixtures import accident, mine, production, violation, write_lake
+from safestart_pipeline import definitions
 from safestart_pipeline.ml.analysis import write_tables
 
 
@@ -55,3 +57,34 @@ def test_the_tables_for_the_docs(tmp_path):
     assert sections.select("cfr_section", "citations", "ss_citations", "mines", "proposed_penalty").rows() == [
         ("56.14107", 2, 2, 1, 0), ("75.400", 2, 1, 1, 1201), ("56.5001", 1, 0, 1, 0), ("75.202", 1, 0, 1, 0)]
     assert "| 75.400" in (tmp_path / "analysis" / "tables.md").read_text(encoding="utf-8")
+
+
+def listed_twice(root: Path) -> Path:
+    """A lake whose S&S violation v1 is listed once per contest docket, as MSHA lists a contested violation."""
+    v1 = violation("v1", "0100001", date(2002, 5, 10), ss="Y", section="75.400(a)", penalty=1000.0)
+    return write_lake(root, {
+        "mines": [mine("0100001")],
+        "mines_prod_quarterly": production("0100001", (2002, 1), (2002, 4)),
+        "violations": [v1 | {"docket_no": "D1"}, v1 | {"docket_no": "D2"},
+                       violation("v2", "0100001", date(2002, 6, 1), section="75.400", penalty=200.0)],
+    })
+
+
+def ss_and_sections(lake: Path, out: Path) -> tuple[list[tuple], list[tuple]]:
+    """The rows of the S&S table and the counts of the section table, as `write_tables` writes them."""
+    write_tables(lake, out)
+    sections = pl.read_csv(out / "top_cited_sections.csv", schema_overrides={"cfr_section": pl.String})
+    return (pl.read_csv(out / "ss_share_by_year.csv").rows(),
+            sections.select("cfr_section", "citations", "ss_citations", "proposed_penalty").rows())
+
+
+def test_a_violation_listed_twice_counts_once(tmp_path):
+    # As in the warehouse's marts: two violations, one of them S&S, with $1,200 of penalties.
+    assert ss_and_sections(listed_twice(tmp_path), tmp_path / "out") == (
+        [(2002, "C", 2, 1, 0.5)], [("75.400", 2, 1, 1200)])
+
+
+def test_the_ss_counts_follow_the_shared_mapping(tmp_path, monkeypatch):
+    monkeypatch.setitem(definitions.SIG_SUB, "N", True)  # were N to mean S&S as well, v2 would count too
+    assert ss_and_sections(listed_twice(tmp_path), tmp_path / "out") == (
+        [(2002, "C", 2, 2, 1.0)], [("75.400", 2, 2, 1200)])

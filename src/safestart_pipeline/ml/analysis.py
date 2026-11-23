@@ -2,11 +2,13 @@
 year and commodity, injury rates per 200,000 hours worked, and the most cited sections of 30 CFR. Each table is written
 as CSV and, together, as Markdown.
 
-Injuries, serious injuries, cited sections and the commodity (coal or metal/nonmetal) follow the rules every component
-shares (`safestart_pipeline.definitions`): injuries and serious injuries by the degree of injury alone, a section as
-the shared pattern's match in the citation (a citation that names no section is left out of the section table), and a
-record's commodity as its mine's flag in the mines dataset, the record's own only for a mine missing there, so a mine's
-violations, injuries and hours fall under one commodity.
+Injuries, serious injuries, S&S, cited sections and the commodity (coal or metal/nonmetal) follow the rules every
+component shares (`safestart_pipeline.definitions`): injuries and serious injuries by the degree of injury alone, S&S
+by the SIG_SUB mapping, a section as the shared pattern's match in the citation (a citation that names no section is
+left out of the section table), and a record's commodity as its mine's flag in the mines dataset, the record's own only
+for a mine missing there, so a mine's violations, injuries and hours fall under one commodity. The lake is read one copy
+per key (`features.scan`), as the warehouse loads it, so a violation MSHA lists once per contest docket counts once
+here as in the warehouse's marts.
 
 Injuries are those of the operator's own employees: the quarterly reports hold only the operator's hours (contractors
 report theirs per contractor, not per mine), so contractor injuries would inflate the rate. 200,000 hours is 100
@@ -21,7 +23,7 @@ from pathlib import Path
 import polars as pl
 
 from ..definitions import INJURY_DEGREES
-from .features import cfr_section, coal_metal, quarter_of, reported_quarters, scan, serious_accident
+from .features import cfr_section, coal_metal, quarter_of, reported_quarters, scan, serious_accident, ss_violation
 
 TOP_SECTIONS = 25
 PER_HOURS = 200_000
@@ -40,7 +42,7 @@ def ss_share(lake: Path) -> pl.LazyFrame:
         with_coal_metal(lake, "violations")
         .filter(pl.col("violation_issue_dt").dt.year() >= 2000)  # a few dozen stray earlier citations
         .group_by(pl.col("violation_issue_dt").dt.year().alias("year"), "coal_metal")
-        .agg(pl.len().alias("violations"), (pl.col("sig_sub") == "Y").sum().alias("ss_violations"))
+        .agg(pl.len().alias("violations"), ss_violation().sum().alias("ss_violations"))
         .with_columns((pl.col("ss_violations") / pl.col("violations")).round(4).alias("ss_share"))
         .sort("year", "coal_metal")
     )
@@ -83,7 +85,7 @@ def top_sections(lake: Path, top: int = TOP_SECTIONS) -> pl.LazyFrame:
         .group_by("cfr_section")
         .agg(
             pl.len().alias("citations"),
-            (pl.col("sig_sub") == "Y").sum().alias("ss_citations"),
+            ss_violation().sum().alias("ss_citations"),
             pl.col("mine_id").n_unique().alias("mines"),
             ((cents.sum() + 50) // 100).alias("proposed_penalty"),
             pl.col("violation_issue_dt").max().alias("last_cited"),

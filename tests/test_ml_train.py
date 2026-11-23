@@ -78,6 +78,7 @@ def test_the_command_trains_from_a_lake_and_writes_the_analysis(tmp_path, capsys
     assert metrics["run"]["lake"]["violations"] == "v1.parquet" and metrics["run"]["peak_memory_mb"] > 0
     scores = pl.read_parquet(tmp_path / "model" / "risk_scores.parquet")
     assert scores.columns[:5] == ["mine_id", "mine_name", "status", "period", "risk_score"]
+    assert scores["newest_report_missing"].to_list() == [False] * 40  # every generated mine reports through 2025Q2
 
     assert main(["analyze", "--lake", str(lake), "--out", str(tmp_path / "analysis")]) == 0
     assert json.loads(capsys.readouterr().out)["rows"]["top_cited_sections"] == 3

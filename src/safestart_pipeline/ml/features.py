@@ -6,21 +6,23 @@ cited, accidents and serious accidents, hours worked and average employees. Its 
 serious accident in `t` itself. A source row of quarter `s` is spread to the target quarters s+1 to s+4 and never to
 `s`, so no feature can see the quarter it predicts.
 
-Features hold only what was known two weeks into the quarter, when a score is made. Inspections, violations and
-accidents count by the day they happened (accidents are reported within ten working days, 30 CFR 50.20). A penalty
-counts by the quarter MSHA billed it, a median of 49 days after the citation in 2015-2024, since a penalty not yet
-proposed was not known. Hours worked come from the operators' quarterly reports, filed within 15 days after a quarter
-ends (30 CFR 50.30).
+Every feature is dated before `t`: inspections, violations and accidents count by the day they happened, hours worked
+by the quarter worked, and a penalty by the quarter MSHA billed it (a median of 49 days after the citation in
+2015-2024), since a penalty not yet proposed was not known. The values, though, are the lake's current record, not
+what MSHA held when a score for `t` is made, 15 days into `t` once the quarterly reports of hours are due (30 CFR
+50.30): reports filed late, accidents entered after the fact and degrees of injury revised later are all in the
+history. A score made at the time sees less, so the test metrics overstate its quality somewhat (docs/ML.md).
 
-The population is every mine that reported hours worked in at least one of the four prior quarters, which is known
-when the score is made, so the model is trained on the population it later scores. The coal/metal flag, commodity,
-mine type, state and district are MSHA's current values for the mine; its status is left out because it records the
+The population is every mine that reported hours worked in at least one of the four prior quarters, so it depends on
+the past alone, and the model is trained on the population it later scores. The coal/metal flag, commodity, mine
+type, state and district are MSHA's current values for the mine; its status is left out because it records the
 future (a mine abandoned after an accident).
 
-Serious accidents, cited sections and the coal/metal flag follow the rules every component shares
-(`safestart_pipeline.definitions`): an accident is serious by its degree of injury alone, a cited section is what the
-shared pattern matches in the citation, and a mine's flag is the mines dataset's. A mine missing from that dataset takes
-the flag of its newest production report, the records that put it in the population.
+Serious accidents, S&S, cited sections and the coal/metal flag follow the rules every component shares
+(`safestart_pipeline.definitions`): an accident is serious by its degree of injury alone, a violation is S&S by the
+SIG_SUB mapping of its flag, a cited section is what the shared pattern matches in the citation, and a mine's flag is
+the mines dataset's. A mine missing from that dataset takes the flag of its newest production report, the records that
+put it in the population. As in the warehouse, every record counts once: `scan` keeps one copy of each key.
 """
 
 from __future__ import annotations
@@ -30,9 +32,12 @@ from pathlib import Path
 
 import polars as pl
 
-from ..definitions import CFR_SECTION_PATTERN, SERIOUS_DEGREES, commodity_sql
+from ..definitions import CFR_SECTION_PATTERN, SERIOUS_DEGREES, SIG_SUB, commodity_sql
 
 DATASETS = ("mines", "inspections", "violations", "accidents", "mines_prod_quarterly")  # what the panel reads
+# The datasets whose exports repeat keys, each with the key the warehouse loads it by (`scan` keeps one copy of each).
+# The warehouse build checks every table's key (`build_check`), so a repeat in another dataset would show there.
+REPEATED_KEYS = {"inspections": "event_no", "violations": "violation_no"}
 WINDOW = 4  # quarters of history behind each target quarter
 COUNTS = ("inspections", "violations", "ss_violations", "accidents", "serious_accidents")
 AMOUNTS = ("proposed_penalty", "hours_worked", "avg_employees")
@@ -57,7 +62,20 @@ def current_parquet(lake: Path, dataset: str) -> Path:
 
 
 def scan(lake: Path, dataset: str) -> pl.LazyFrame:
-    return pl.scan_parquet(current_parquet(lake, dataset))
+    """A dataset's current version, one copy of each key. MSHA's inspections and violations repeat a few keys, with
+    copies that differ only in columns read nowhere here (in November 2026, 51 violations listed once per contest
+    docket and one inspection once per controller); the warehouse loads one copy of each, and so does every read here,
+    or the model and the analysis would count those records twice. The repeated keys are found first, in a pass over
+    the key alone, because deduplicating every row at once raised the panel's peak memory by about a quarter. Every row
+    of another key, or of none, passes through; of a repeated key the copy kept is the first in the order of all its
+    columns, nulls last, so the choice depends neither on the file's order nor on the reader."""
+    rows = pl.scan_parquet(current_parquet(lake, dataset))
+    if dataset not in REPEATED_KEYS:
+        return rows
+    key = REPEATED_KEYS[dataset]
+    repeated = rows.group_by(key).len().filter(pl.col("len") > 1).select(key).collect(engine="streaming").lazy()
+    kept = rows.join(repeated, on=key, how="semi").sort(pl.all(), nulls_last=True).unique(subset=key, keep="first")
+    return pl.concat([rows.join(repeated, on=key, how="anti"), kept.collect(engine="streaming").lazy()])
 
 
 def quarter_of(column: str) -> pl.Expr:
@@ -82,6 +100,12 @@ def period(column: str = "quarter") -> pl.Expr:
 def serious_accident() -> pl.Expr:
     """An accident whose degree of injury is one of the shared SERIOUS_DEGREES; the day counts play no part."""
     return pl.col("degree_injury_cd").is_in(SERIOUS_DEGREES).fill_null(False)
+
+
+def ss_violation() -> pl.Expr:
+    """A violation's S&S designation by the shared SIG_SUB mapping: true, false, or null where none applies, so that a
+    sum counts the S&S violations."""
+    return pl.col("sig_sub").replace_strict(SIG_SUB, default=None, return_dtype=pl.Boolean)
 
 
 def cfr_section(column: str = "part_section") -> pl.Expr:
@@ -114,7 +138,7 @@ def quarterly_activity(lake: Path) -> pl.LazyFrame:
         scan(lake, "inspections").group_by("mine_id", quarter_of("inspection_begin_dt").alias("quarter"))
         .agg(pl.len().alias("inspections")),
         violations.group_by("mine_id", quarter_of("violation_issue_dt").alias("quarter"))
-        .agg(pl.len().alias("violations"), (pl.col("sig_sub") == "Y").sum().alias("ss_violations")),
+        .agg(pl.len().alias("violations"), ss_violation().sum().alias("ss_violations")),
         violations.group_by("mine_id", quarter_of("bill_print_dt").alias("quarter"))
         .agg(pl.col("proposed_penalty").sum()),
         scan(lake, "accidents").group_by("mine_id", quarter_of("accident_dt").alias("quarter"))
@@ -181,10 +205,16 @@ def mine_attributes(lake: Path) -> pl.LazyFrame:
 
 
 def mine_details(lake: Path) -> pl.LazyFrame:
-    """Name and current status, for the risk scores (not features: the status records the future)."""
-    return scan(lake, "mines").select(
-        "mine_id", pl.col("current_mine_name").alias("mine_name"), pl.col("current_mine_status").alias("status")
-    )
+    """For the risk scores, not features: each reporting mine's name and current status (the status records the
+    future), and whether its report for the newest quarter is missing, not filed yet or no longer filed, which makes the
+    mine look idle in `hours_worked_1q` either way."""
+    _, latest = reported_quarters(lake)
+    reports = scan(lake, "mines_prod_quarterly").group_by("mine_id").agg(
+        (report_quarter() != latest).all().alias("newest_report_missing"))
+    names = scan(lake, "mines").select(
+        "mine_id", pl.col("current_mine_name").alias("mine_name"), pl.col("current_mine_status").alias("status"))
+    return reports.join(names, on="mine_id", how="left").select(
+        "mine_id", "mine_name", "status", "newest_report_missing")
 
 
 def build_panel(lake: Path) -> pl.LazyFrame:

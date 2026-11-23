@@ -190,7 +190,8 @@ def train(
 ) -> dict[str, Any]:
     """Fit, compare and test both models, refit the better one on every labeled quarter, and write to `out`:
     model.joblib, metrics.json, permutation_importance.csv and risk_scores.parquet (the open quarter's scores).
-    `details` (mine_id, mine_name, status) labels the scores; `run` is added to the metrics as the run record."""
+    `details` (mine_id, mine_name, status, newest_report_missing: `features.mine_details`) labels the scores; `run`
+    is added to the metrics as the run record."""
     started = time.perf_counter()
     parts = split_panel(panel, split)
     for name, part in parts.items():

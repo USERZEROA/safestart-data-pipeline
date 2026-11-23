@@ -1,4 +1,6 @@
-"""Synthetic lakes and panels for the ML tests: small, seeded, written to temporary directories."""
+"""Synthetic lakes and panels for the ML tests: small, seeded, written to temporary directories. A violation's docket
+and an inspection's controller are read by no feature; MSHA's repeated rows differ in such columns, so tests can build
+copies of a record the way MSHA lists them."""
 
 from __future__ import annotations
 
@@ -15,10 +17,11 @@ SCHEMAS = {
     "mines": {"mine_id": pl.String, "current_mine_name": pl.String, "coal_metal_ind": pl.String,
               "current_mine_type": pl.String, "current_mine_status": pl.String, "state": pl.String,
               "district": pl.String, "primary_canvass": pl.String},
-    "inspections": {"event_no": pl.String, "mine_id": pl.String, "inspection_begin_dt": pl.Date},
+    "inspections": {"event_no": pl.String, "mine_id": pl.String, "inspection_begin_dt": pl.Date,
+                    "controller_id": pl.String},
     "violations": {"violation_no": pl.String, "mine_id": pl.String, "violation_issue_dt": pl.Date,
                    "sig_sub": pl.String, "part_section": pl.String, "proposed_penalty": pl.Float64,
-                   "bill_print_dt": pl.Date, "coal_metal_ind": pl.String},
+                   "bill_print_dt": pl.Date, "coal_metal_ind": pl.String, "docket_no": pl.String},
     "accidents": {"document_no": pl.String, "mine_id": pl.String, "accident_dt": pl.Date,
                   "degree_injury_cd": pl.String, "days_lost": pl.Int64, "days_restrict": pl.Int64,
                   "contractor_id": pl.String, "coal_metal_ind": pl.String},

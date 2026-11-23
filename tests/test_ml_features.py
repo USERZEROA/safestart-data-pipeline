@@ -13,8 +13,11 @@ from safestart_pipeline.ml.features import (
     build_panel,
     cfr_section,
     coal_metal,
+    mine_details,
     quarter_label,
+    scan,
     serious_accident,
+    ss_violation,
 )
 
 
@@ -121,6 +124,56 @@ def test_nothing_from_the_target_quarter_or_later_changes_a_feature(tmp_path):
         upto(before, True).select("mine_id", "quarter", *FEATURES))
     assert upto(after, False).equals(upto(before, False))
     assert row(after, "0100001", 2002, 3)[TARGET] is True  # the new fatality is the target of its own quarter
+
+
+def test_scan_keeps_one_copy_of_each_key(tmp_path):
+    # v1 is listed once per contest docket, the dearer copy first; the copy kept is the first by every column, so the
+    # file's order does not decide. Rows without a key cannot be told apart and all stay.
+    lake = write_lake(tmp_path, {"violations": [
+        violation("v1", "1", date(2020, 1, 1), penalty=300.0) | {"docket_no": "D2"},
+        violation("v2", "1", date(2020, 1, 2)),
+        violation("v1", "1", date(2020, 1, 1), penalty=100.0) | {"docket_no": "D1"},
+        violation(None, "1", date(2020, 1, 3)),
+        violation(None, "1", date(2020, 1, 4)),
+    ]})
+    kept = scan(lake, "violations").collect().sort("violation_no", "violation_issue_dt", nulls_last=True)
+    assert kept.select("violation_no", "proposed_penalty", "docket_no").rows() == [
+        ("v1", 100.0, "D1"), ("v2", None, None), (None, None, None), (None, None, None)]
+
+
+def test_a_record_listed_twice_counts_once(tmp_path):
+    # MSHA lists a violation once per contest docket and an inspection once per controller; as in the warehouse, each
+    # counts once, so the copies change no feature.
+    rows = lake_rows()
+    v1, *others = rows["violations"]
+    listed = rows | {
+        "violations": [v1 | {"docket_no": "D1"}, *others, v1 | {"docket_no": "D2"}],
+        "inspections": [record | {"controller_id": controller} for record in rows["inspections"]
+                        for controller in ("C1", "C2")],
+    }
+    once = build_panel(write_lake(tmp_path / "once", rows)).collect()
+    assert build_panel(write_lake(tmp_path / "listed", listed)).collect().equals(once)
+
+
+def test_ss_is_read_by_the_shared_mapping(tmp_path, monkeypatch):
+    codes = ["Y", "N", None, "y", ""]
+    ss = pl.DataFrame({"sig_sub": codes}).select(ss_violation())["sig_sub"].to_list()
+    assert ss == [definitions.SIG_SUB.get(code) for code in codes] == [True, False, None, None, None]
+    # The panel counts by the mapping itself: were N to mean S&S as well, both citations of 2002Q2 would count.
+    monkeypatch.setitem(definitions.SIG_SUB, "N", True)
+    assert row(build_panel(write_lake(tmp_path, lake_rows())).collect(), "0100001", 2002, 3)["ss_violations_4q"] == 2
+
+
+def test_the_details_mark_a_missing_newest_report(tmp_path):
+    # The newest quarter with hours is 2003Q4. Mine 1 reported it; mine 2 last reported in 2000Q1 and mine 3, missing
+    # from the mines dataset, in 2003Q3; mine 4 reported 2003Q4 with no hours, which is a report, not a missing one.
+    rows = lake_rows()
+    rows["mines_prod_quarterly"] += [*production("0100003", (2003, 3), (2003, 3)),
+                                     *production("0100004", (2003, 4), (2003, 4), hours=0)]
+    details = mine_details(write_lake(tmp_path, rows)).collect().sort("mine_id")
+    assert details.rows() == [("0100001", "Mine 0100001", "Active", False),
+                              ("0100002", "Mine 0100002", "Abandoned", True),
+                              ("0100003", None, None, True), ("0100004", None, None, False)]
 
 
 def test_a_serious_accident_is_read_from_its_degree_alone():
