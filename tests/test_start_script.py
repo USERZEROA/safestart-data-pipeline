@@ -92,12 +92,32 @@ def test_the_default_data_root_is_created_and_any_other_must_exist(checkout, cap
 
 def test_on_linux_the_data_root_goes_to_the_orchestrators_user(checkout, monkeypatch, capsys):
     monkeypatch.setattr(start.sys, "platform", "win32")  # Docker Desktop shares a folder whatever its owner
-    start.data_folder(checkout, "./data")
+    start.data_folder(checkout, "./data", orchestrator=True)
     assert "chown" not in capsys.readouterr().out
     monkeypatch.setattr(start.sys, "platform", "linux")
-    folder = start.data_folder(checkout, "./data")
+    start.data_folder(checkout, "./data")  # without the orchestrator nothing writes the data root
+    assert "chown" not in capsys.readouterr().out
+    folder = start.data_folder(checkout, "./data", orchestrator=True)
     assert folder.stat().st_uid != start.SERVICE_UID  # this test's own folder
     assert f"`sudo chown -R 10001:10001 {folder}`" in capsys.readouterr().out
+
+
+def test_the_orchestrator_runs_only_when_asked_for_and_the_choice_is_kept(checkout, monkeypatch):
+    monkeypatch.setattr(start, "ROOT", checkout)
+    monkeypatch.setattr(start, "docker_volume_exists", no_volume)
+
+    def profiles(*argv: str) -> str:
+        assert start.main(["--no-start", *argv]) == 0
+        return start.read_env((checkout / ".env").read_text(encoding="utf-8"))["COMPOSE_PROFILES"]
+
+    assert profiles() == ""  # off on a first start
+    assert profiles("--with-orchestrator") == "orchestrator"
+    assert profiles() == "orchestrator"  # kept
+    assert profiles("--without-orchestrator") == ""
+    with pytest.raises(SystemExit):
+        start.main(["--no-start", "--with-orchestrator", "--without-orchestrator"])
+    assert start.orchestrator_on({"COMPOSE_PROFILES": "monitoring, orchestrator"})
+    assert not start.orchestrator_on({"COMPOSE_PROFILES": ""}) and not start.orchestrator_on({})
 
 
 def test_the_gateway_overlay_is_added_only_for_a_public_domain():
@@ -113,7 +133,8 @@ def test_start_brings_the_stack_up_and_waits_for_the_dashboard(checkout, monkeyp
     assert start.start(checkout, {"PUBLIC_DOMAIN": "34.120.7.15", "DASHBOARD_HOST_PORT": "8600"}, timeout=5) == 0
     assert commands == [(["docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.public.yml", "up",
                           "--detach", "--build", "--remove-orphans"], {"cwd": checkout, "check": True})]
-    assert "Dashboard: https://34.120.7.15" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Dashboard: https://34.120.7.15" in out and "Orchestrator: off" in out
     monkeypatch.setattr(start, "healthy", lambda url: False)
     assert start.start(checkout, {}, timeout=-1) == 1
     assert "not healthy" in capsys.readouterr().err

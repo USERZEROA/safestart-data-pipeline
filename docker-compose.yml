@@ -212,9 +212,12 @@ services:
   # exports, every Sunday the model. With PREFECT_API_URL and PREFECT_API_KEY set in .env it serves them as Prefect
   # deployments; without them it keeps the same schedule by itself. The only service that writes the data root, as the
   # image's user (uid 10001); it needs neither Kafka nor PostgreSQL, so it starts on its own. Polars and the model's
-  # libraries use two threads, as many as the e2-medium has.
+  # libraries use two threads, as many as the e2-medium has. It starts only with the "orchestrator" profile
+  # (COMPOSE_PROFILES in .env, set by `scripts/start.py --with-orchestrator`), so a workstation's data root is never
+  # written unless asked; the server's startup script turns it on.
   orchestrator:
     <<: *pipeline
+    profiles: [orchestrator]
     command: ["python", "-m", "safestart_pipeline.flows", "serve"]
     mem_limit: 1920m
     environment:

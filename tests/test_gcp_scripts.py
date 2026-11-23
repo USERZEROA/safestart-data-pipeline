@@ -202,6 +202,7 @@ def test_the_server_copies_what_it_lacks_of_the_folders_it_needs():
     assert rsync and rsync[1].split() == ["--recursive", "--no-clobber"]  # never replaces nor deletes on the server
     assert f"--exclude={rsync[2]}" == EXCLUDE  # the same files left out both ways
     assert "chown -R 10001:10001 \"$data\"" in script  # the image's user, as whom the orchestrator writes
+    assert re.search(r"scripts/start[.]py .*--with-orchestrator", script)  # the server runs the batch flows
 
 
 def test_the_startup_script_parses():

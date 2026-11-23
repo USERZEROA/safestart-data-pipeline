@@ -79,5 +79,5 @@ fi
 chown -R 10001:10001 "$data"
 
 cd "$app"
-python3 scripts/start.py --public-domain "$domain" --data-root "$data"
+python3 scripts/start.py --public-domain "$domain" --data-root "$data" --with-orchestrator
 echo "safestart: running at https://$domain"

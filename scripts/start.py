@@ -4,10 +4,11 @@
 The first run writes `.env` from `.env.example` with a random PostgreSQL password. PostgreSQL keeps the password its
 database was created with, so later runs never replace it, and a first run refuses to invent a new one while the
 database of an earlier `.env` still exists. `--data-root` names the host folder of the data root (read-only in every
-service but the orchestrator, whose batch flows write it) and `--public-domain` adds the HTTPS gateway of
-docker-compose.public.yml for a domain name or the server's public IPv4 address; both are kept in `.env` for the next
-run. `--no-start` stops once `.env` is ready (CI). Only the standard library is used, so the launcher runs before any
-dependency is installed.
+service but the orchestrator, whose batch flows write it), `--public-domain` adds the HTTPS gateway of
+docker-compose.public.yml for a domain name or the server's public IPv4 address, and `--with-orchestrator` (or
+`--without-orchestrator`) turns the orchestrator's Compose profile on (off); all three are kept in `.env` for the next
+run, and the orchestrator stays off until asked for. `--no-start` stops once `.env` is ready (CI). Only the standard
+library is used, so the launcher runs before any dependency is installed.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_VOLUME = "safestart_postgres-data"  # <the `name` in docker-compose.yml>_<volume>
 SERVICE_UID = 10001  # the image's user (Dockerfile), as whom the orchestrator writes the data root
+ORCHESTRATOR = "orchestrator"  # the Compose profile of the orchestrator service
 LABEL = re.compile(r"(?!-)[a-z0-9-]{1,63}(?<!-)")
 
 
@@ -97,7 +99,7 @@ def docker_volume_exists(name: str) -> bool:
 
 
 def prepare_env(root: Path, *, data_root: str | None = None, public_domain: str | None = None,
-                volume_exists: Callable[[str], bool] | None = None) -> dict[str, str]:
+                profiles: str | None = None, volume_exists: Callable[[str], bool] | None = None) -> dict[str, str]:
     """The settings in root/.env, created on the first run and updated with the options given."""
     path = root / ".env"
     if path.exists():
@@ -105,8 +107,8 @@ def prepare_env(root: Path, *, data_root: str | None = None, public_domain: str 
         values = read_env(text)
         if not values.get("POSTGRES_PASSWORD"):
             raise SystemExit(f"{path} has no POSTGRES_PASSWORD. Put back the password the database was created with.")
-        updates = {key: value for key, value in (("DATA_ROOT", data_root), ("PUBLIC_DOMAIN", public_domain))
-                   if value is not None and values.get(key) != value}
+        given = (("DATA_ROOT", data_root), ("PUBLIC_DOMAIN", public_domain), ("COMPOSE_PROFILES", profiles))
+        updates = {key: value for key, value in given if value is not None and values.get(key) != value}
         if updates:
             write_private(path, with_values(text, updates))
         return {**values, **updates}
@@ -116,16 +118,20 @@ def prepare_env(root: Path, *, data_root: str | None = None, public_domain: str 
                          "`docker compose down --volumes` and run this again.")
     template = (root / ".env.example").read_text(encoding="utf-8")
     created = {"POSTGRES_PASSWORD": secrets.token_hex(24), "DATA_ROOT": data_root or "./data",
-               "PUBLIC_DOMAIN": public_domain or ""}
+               "PUBLIC_DOMAIN": public_domain or "", "COMPOSE_PROFILES": profiles or ""}
     write_private(path, with_values(template, created))
     print(f"Created {path} with a random PostgreSQL password.")
     return {**read_env(template), **created}
 
 
-def data_folder(root: Path, value: str) -> Path:
+def orchestrator_on(env: dict[str, str]) -> bool:
+    return ORCHESTRATOR in (env.get("COMPOSE_PROFILES") or "").replace(" ", "").split(",")
+
+
+def data_folder(root: Path, value: str, *, orchestrator: bool = False) -> Path:
     """The data root on the host. The default ./data is created empty; any other folder must exist already. On Linux
-    the orchestrator writes it as the image's user, so a folder of another owner gets a note on how to hand it over
-    (Docker Desktop, on Windows and macOS, shares a folder whatever its owner)."""
+    the orchestrator writes it as the image's user, so when it runs, a folder of another owner gets a note on how to
+    hand it over (Docker Desktop, on Windows and macOS, shares a folder whatever its owner)."""
     folder = Path(value) if Path(value).is_absolute() else root / value
     if not folder.is_dir():
         if value != "./data":
@@ -134,7 +140,7 @@ def data_folder(root: Path, value: str) -> Path:
     for part, user in (("lake", "the replay"), ("warehouse", "the dashboard")):
         if not (folder / part).is_dir():
             print(f"Note: {folder} has no {part}/ yet, which {user} reads; the orchestrator's daily batch builds it.")
-    if sys.platform == "linux" and folder.stat().st_uid != SERVICE_UID:
+    if orchestrator and sys.platform == "linux" and folder.stat().st_uid != SERVICE_UID:
         print(f"Note: the orchestrator writes {folder} as user {SERVICE_UID}; hand the folder over with "
               f"`sudo chown -R {SERVICE_UID}:{SERVICE_UID} {folder}`.")
     return folder
@@ -178,6 +184,8 @@ def start(root: Path, env: dict[str, str], timeout: float) -> int:
         return 1
     domain = env.get("PUBLIC_DOMAIN")
     print(f"Dashboard: {f'https://{domain}' if domain else f'http://localhost:{port}'}")
+    print("Orchestrator: " + ("on, running the batch flows on their schedules (it writes the data root)"
+                              if orchestrator_on(env) else "off (start.py --with-orchestrator turns it on)"))
     print(f"Kafka for local tools: 127.0.0.1:{env.get('KAFKA_HOST_PORT') or '19092'}")
     print(f"PostgreSQL: postgresql://safestart@127.0.0.1:{env.get('POSTGRES_HOST_PORT') or '15432'}/safestart "
           "(the password is in .env)")
@@ -192,6 +200,12 @@ def main(argv: list[str] | None = None) -> int:
                              "(kept in .env)")
     parser.add_argument("--data-root", metavar="PATH",
                         help="host folder with lake/ and warehouse/, mounted read-only (kept in .env; default ./data)")
+    orchestrator = parser.add_mutually_exclusive_group()
+    orchestrator.add_argument("--with-orchestrator", dest="profiles", action="store_const", const=ORCHESTRATOR,
+                              help="also run the orchestrator, which runs the batch flows and writes the data root "
+                                   "(kept in .env)")
+    orchestrator.add_argument("--without-orchestrator", dest="profiles", action="store_const", const="",
+                              help="stop running the orchestrator (kept in .env)")
     parser.add_argument("--no-start", action="store_true", help="only prepare .env and the data root")
     parser.add_argument("--timeout", type=float, default=300, help="seconds to wait for a healthy dashboard")
     args = parser.parse_args(argv)
@@ -202,8 +216,9 @@ def main(argv: list[str] | None = None) -> int:
     data_root = Path(args.data_root).expanduser().absolute() if args.data_root else None
     if data_root and not data_root.is_dir():
         parser.error(f"--data-root {data_root} is not a folder")
-    env = prepare_env(ROOT, data_root=data_root.as_posix() if data_root else None, public_domain=domain)
-    data_folder(ROOT, env.get("DATA_ROOT") or "./data")
+    env = prepare_env(ROOT, data_root=data_root.as_posix() if data_root else None, public_domain=domain,
+                      profiles=args.profiles)
+    data_folder(ROOT, env.get("DATA_ROOT") or "./data", orchestrator=orchestrator_on(env))
     return 0 if args.no_start else start(ROOT, env, args.timeout)
 
 

@@ -109,6 +109,8 @@ def test_the_dashboard_shows_a_viewers_toolbar():
 
 def test_the_orchestrator_takes_prefect_from_env_and_needs_no_stream_service():
     orchestrator = services("docker-compose.yml")["orchestrator"]
+    assert orchestrator["profiles"] == ["orchestrator"]  # started only when asked for: it writes the data root
+    assert "COMPOSE_PROFILES=\n" in (ROOT / ".env.example").read_text(encoding="utf-8")  # off by default
     env = orchestrator["environment"]
     assert env["PREFECT_API_URL"] is None and env["PREFECT_API_KEY"] is None  # from .env when set there, else unset
     assert (env["POLARS_MAX_THREADS"], env["OMP_NUM_THREADS"]) == ("2", "2")
