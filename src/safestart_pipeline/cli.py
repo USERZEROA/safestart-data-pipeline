@@ -1,4 +1,10 @@
-"""Command line: `ssp inventory|crawl|status|recheck|fetch|verify|lake`."""
+"""Command line: `ssp inventory|crawl|status|recheck|fetch|verify|lake|pipeline|warehouse|ml`.
+
+`ssp pipeline` runs the batch flow once (and the model flow after it with --model); `ssp warehouse` and `ssp ml` pass
+their arguments to `python -m safestart_pipeline.warehouse` and `python -m safestart_pipeline.ml`. These commands
+import Prefect, DuckDB, Polars or scikit-learn only when they run: the crawler's own environment has only httpx, lxml
+and protego.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +16,7 @@ from contextlib import ExitStack
 from datetime import timedelta
 from pathlib import Path
 
-from .config import data_root
+from .config import data_root, warehouse_path
 from .crawl.crawler import Crawler, make_client, utc_now
 from .crawl.locks import SiteLock
 from .crawl.sites import SITES
@@ -40,13 +46,15 @@ def try_lock(stack: ExitStack, root: Path, site: str) -> bool:
 def summary(report: dict, path: Path) -> dict:
     if "site" in report:
         live = report.get("live_sitemap")
+        live_keys = ("urls_today", "added", "dropped", "changed_after_fetch")
         return {
-            "site": report["site"], "verdict": report["verdict"], "states": report["states"], "waiting": report["waiting"],
+            "site": report["site"], "verdict": report["verdict"], "states": report["states"],
+            "waiting": report["waiting"],
             "sitemap": {"urls": report["sitemap"]["urls"], "states": report["sitemap"]["states"]},
             "skipped": {reason: item["count"] for reason, item in report["skipped"].items()},
             "failed": {state: item["count"] for state, item in report["failed"].items()},
             "objects": {key: value for key, value in report["objects"].items() if not key.endswith("examples")},
-            **({"live_sitemap": {key: live[key] for key in ("urls_today", "added", "dropped", "changed_after_fetch")}} if live else {}),
+            **({"live_sitemap": {key: live[key] for key in live_keys}} if live else {}),
             **({"live_check": report["live_check"]} if "live_check" in report else {}),
             "report": str(path),
         }
@@ -56,7 +64,8 @@ def summary(report: dict, path: Path) -> dict:
             "ecfr_latest_amended_on", "source_newer")
     return {
         "verdict": report["verdict"], "files": len(report["files"]), "problems": report["problems"],
-        **({"msha_listing_today": {key: (len(value) if isinstance(value, list) else value) for key, value in listing.items()}} if listing else {}),
+        **({"msha_listing_today": {key: (len(value) if isinstance(value, list) else value)
+                                   for key, value in listing.items()}} if listing else {}),
         **({"ecfr_today": [{key: title.get(key) for key in keys} for title in titles]} if titles else {}),
         **({"live_check": report["live_check"]} if "live_check" in report else {}),
         "report": str(path),
@@ -88,6 +97,17 @@ def verify(root: Path, target: str, *, rehash: bool, live: bool) -> dict:
     return summary(report, path)
 
 
+def warehouse(argv: list[str]) -> int:
+    """`python -m safestart_pipeline.warehouse` with these arguments; build and export hold the warehouse lock."""
+    from .flows.locks import warehouse_lock
+    from .warehouse.__main__ import main as warehouse_main
+
+    if argv and argv[0] in ("build", "export"):
+        with warehouse_lock(warehouse_path()):
+            return warehouse_main(argv)
+    return warehouse_main(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ssp", description="SafeStart data pipeline")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -113,8 +133,27 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--live", action="store_true", help="also compare with the source as it is today")
     lake = commands.add_parser("lake", help="bring the typed Parquet lake up to date with the current downloads")
     lake.add_argument("--only", nargs="+", metavar="DATASET", help="build only these MSHA datasets")
-    args = parser.parse_args(argv)
+    pipeline = commands.add_parser("pipeline", help="run the batch flow once: downloads, lake, warehouse, exports")
+    pipeline.add_argument("--no-download", action="store_true", help="rebuild from the downloads already held")
+    pipeline.add_argument("--model", action="store_true", help="then train the model and write the lake analysis")
+    # Their own modules parse the rest, so `ssp warehouse --help` shows the warehouse module's help.
+    commands.add_parser("warehouse", add_help=False, help="build | query [name] | export: the DuckDB warehouse")
+    commands.add_parser("ml", add_help=False, help="train | analyze: the accident-risk model and the lake analysis")
+    args, rest = parser.parse_known_args(argv)
+    if args.command == "warehouse":
+        return warehouse(rest)
+    if args.command == "ml":
+        from .ml.__main__ import main as ml_main
+
+        return ml_main(rest)
+    if rest:
+        parser.error(f"unrecognized arguments: {' '.join(rest)}")
     root = data_root()
+    if args.command == "pipeline":
+        setup_logging(root / "logs" / "pipeline.log")
+        from .flows.__main__ import run_once  # imported after the logging setup, which Prefect then keeps
+
+        return run_once(["batch", "model"] if args.model else ["batch"], download=not args.no_download)
     if args.command == "lake":
         from .lake.msha_ogd import build_lake  # the analysis extra; the crawler's own environment does not need it
 
@@ -149,7 +188,8 @@ def main(argv: list[str] | None = None) -> int:
                 until = utc_now() + timedelta(hours=args.hours) if args.hours else None
                 result = crawler.crawl(max_requests=args.max_requests, until=until)
             elif args.command == "fetch":
-                result = crawler.fetch_now(args.urls, max_bytes=int(args.max_mb * 1024 * 1024), max_seconds=args.max_seconds)
+                result = crawler.fetch_now(args.urls, max_bytes=int(args.max_mb * 1024 * 1024),
+                                           max_seconds=args.max_seconds)
             else:
                 result = {"queued": crawler.store.recheck()}
         finally:

@@ -1,7 +1,7 @@
 """Prefect flow: list each bulk source and download its files, one task run per file, with retries and run logs.
 
-Run once with `uv run python -m safestart_pipeline.flows.acquire`; the weekly schedule (MSHA replaces its files every
-Friday) comes with the deployment step.
+It is the first step of the daily batch flow (pipeline.py); `uv run python -m safestart_pipeline.flows.acquire` runs it
+on its own.
 """
 
 from __future__ import annotations

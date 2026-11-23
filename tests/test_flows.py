@@ -1,8 +1,26 @@
+"""The batch and model flows with every step replaced by a fake (under a temporary Prefect API), the warehouse lock,
+the schedules, and `python -m safestart_pipeline.flows serve|run`."""
+
+import asyncio
+import json
+import logging
+from datetime import UTC, datetime, timedelta, timezone
+from functools import partial
+
 import pytest
 from prefect import flow
+from prefect.server.schemas.schedules import CronSchedule
 from prefect.testing.utilities import prefect_test_harness
 
+from safestart_pipeline.flows import __main__ as flows_main
+from safestart_pipeline.flows import model as model_flow
 from safestart_pipeline.flows import pipeline
+from safestart_pipeline.flows.locks import warehouse_lock
+from safestart_pipeline.flows.schedule import MAX_SLEEP_SECONDS, SUNDAY, Schedule, run_on_schedule
+from safestart_pipeline.lake.msha_ogd import LakeBuildError
+
+SATURDAY_NOON = datetime(2026, 11, 21, 12, 0, tzinfo=UTC)
+DAILY, WEEKLY = Schedule(hour=14), Schedule(hour=15, weekday=SUNDAY)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -12,53 +30,315 @@ def prefect_api():
         yield
 
 
+@pytest.fixture(autouse=True)
+def package_log_level():
+    """`main` lets the pipeline's INFO lines through; the other tests keep the level they had."""
+    logger = logging.getLogger("safestart_pipeline")
+    level = logger.level
+    yield
+    logger.setLevel(level)
+
+
 @pytest.fixture
-def lake_calls(monkeypatch, tmp_path):
-    calls = []
-
-    def fake_build_lake(root, only=None):
-        calls.append((root, only))
-        return {"mines": {"rows": 3, "built": True, "versions_built": 1}, "accidents": {"rows": 2, "versions_built": 0}}
-
-    monkeypatch.setattr("safestart_pipeline.lake.msha_ogd.build_lake", fake_build_lake)
+def root(monkeypatch, tmp_path):
+    """A temporary data root and warehouse, and retries that start at once instead of minutes later."""
     monkeypatch.setenv("SAFESTART_DATA_ROOT", str(tmp_path))
-    return calls
+    monkeypatch.setenv("SAFESTART_WAREHOUSE_PATH", str(tmp_path / "warehouse" / "safestart.duckdb"))
+    for module, name in ((pipeline, "build_lake_task"), (pipeline, "build_warehouse_task"), (pipeline, "export_task"),
+                         (model_flow, "train_task"), (model_flow, "analyze_task")):
+        monkeypatch.setattr(module, name, getattr(module, name).with_options(retry_delay_seconds=0))
+    return tmp_path
 
 
-def test_batch_without_downloads_rebuilds_the_lake_from_the_data_root(lake_calls, tmp_path):
-    summary = pipeline.batch(download=False)
-    assert lake_calls == [(tmp_path, None)]
-    assert summary == {"lake": {"mines": {"rows": 3, "built": True, "versions_built": 1},
-                                "accidents": {"rows": 2, "versions_built": 0}}}
+class Steps:
+    """Records each call of a fake step; a step named in `failures` raises its exception."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+        self.failures: dict[str, BaseException] = {}
+
+    def __call__(self, name: str, *args: object) -> None:
+        self.calls.append((name, *args))
+        if name in self.failures:
+            raise self.failures[name]
+
+    @property
+    def names(self) -> list[str]:
+        return [call[0] for call in self.calls]
 
 
-def test_a_failed_download_still_rebuilds_the_lake_then_fails_the_run(lake_calls, monkeypatch):
-    @flow(name="acquire-bulk-files")
-    def failing_acquire():
-        raise RuntimeError("2 file(s) failed after retries")
-
-    monkeypatch.setattr(pipeline, "acquire_bulk", failing_acquire)
-    with pytest.raises(RuntimeError, match="acquire-bulk-files"):
-        pipeline.batch(download=True)
-    assert len(lake_calls) == 1
+def lock_held(target) -> bool:
+    try:
+        with warehouse_lock(target):
+            return False
+    except RuntimeError:
+        return True
 
 
-def test_downloads_come_before_the_lake(lake_calls, monkeypatch):
-    order = []
+@pytest.fixture
+def batch_steps(monkeypatch, root):
+    steps = Steps()
 
     @flow(name="acquire-bulk-files")
     def acquire():
-        order.append("acquire")
+        steps("acquire")
         return {"msha-ogd": 40}
 
+    def build_lake(data_root):
+        steps("lake", data_root)
+        return {"mines": {"rows": 3, "versions_built": 1}, "accidents": {"rows": 2, "versions_built": 0}}
+
+    def build(data_root, target):
+        steps("warehouse", data_root, target, lock_held(target))
+        return {"warehouse": str(target), "seconds": 1.0, "rows": {"mine": 3}}
+
+    def export(warehouse, out):
+        steps("exports", warehouse, out, lock_held(warehouse))
+        return {"files": {"mine_profiles.parquet": {"rows": 3}, "cited_sections.parquet": {"rows": 5}}}
+
     monkeypatch.setattr(pipeline, "acquire_bulk", acquire)
-    original = pipeline.build_lake_task.fn
+    monkeypatch.setattr("safestart_pipeline.lake.msha_ogd.build_lake", build_lake)
+    monkeypatch.setattr("safestart_pipeline.warehouse.build.build", build)
+    monkeypatch.setattr("safestart_pipeline.warehouse.exports.export", export)
+    return steps
 
-    def lake_after(only=None):
-        order.append("lake")
-        return original(only)
 
-    monkeypatch.setattr(pipeline.build_lake_task, "fn", lake_after)
-    summary = pipeline.batch(download=True)
-    assert order == ["acquire", "lake"]
-    assert summary["acquire"] == {"msha-ogd": 40}
+# The batch flow -------------------------------------------------------------------------------------------------------
+
+
+def test_the_batch_downloads_then_builds_the_lake_the_warehouse_and_the_exports(batch_steps, root):
+    summary = pipeline.batch()
+    warehouse = root / "warehouse" / "safestart.duckdb"
+    assert batch_steps.calls == [("acquire",), ("lake", root), ("warehouse", root, warehouse, True),
+                                 ("exports", warehouse, root / "exports" / "safestart", True)]
+    assert list(summary) == ["acquire", "lake", "warehouse", "exports"]
+    assert summary["acquire"] == {"msha-ogd": 40} and summary["warehouse"]["rows"] == {"mine": 3}
+
+
+def test_without_downloads_the_batch_starts_at_the_lake(batch_steps):
+    pipeline.batch(download=False)
+    assert batch_steps.names == ["lake", "warehouse", "exports"]
+
+
+def test_a_failed_download_still_brings_the_rest_up_to_date_then_fails_the_run(batch_steps):
+    batch_steps.failures["acquire"] = RuntimeError("2 file(s) failed after retries")
+    with pytest.raises(RuntimeError, match="acquire-bulk-files"):
+        pipeline.batch()
+    assert batch_steps.names == ["acquire", "lake", "warehouse", "exports"]
+
+
+def test_a_lake_build_error_still_builds_the_warehouse_then_fails_the_run(batch_steps):
+    batch_steps.failures["lake"] = LakeBuildError("current version not built for ['mines']")
+    with pytest.raises(RuntimeError, match=r"build-lake: current version not built for \['mines'\]"):
+        pipeline.batch(download=False)
+    assert batch_steps.names == ["lake", "warehouse", "exports"]  # not retried: the same version would fail again
+
+
+def test_any_other_lake_failure_is_retried_then_stops_the_run(batch_steps):
+    batch_steps.failures["lake"] = OSError("disk full")
+    with pytest.raises(OSError, match="disk full"):
+        pipeline.batch(download=False)
+    assert batch_steps.names == ["lake", "lake"]
+
+
+def test_a_failed_warehouse_build_is_retried_then_skips_the_exports_and_fails_the_run(batch_steps):
+    batch_steps.failures["warehouse"] = MemoryError("out of memory")
+    with pytest.raises(RuntimeError, match="build-warehouse: .*out of memory"):
+        pipeline.batch(download=False)
+    assert batch_steps.names == ["lake", "warehouse", "warehouse"]
+
+
+def test_a_run_that_finds_the_warehouse_locked_leaves_the_warehouse_and_the_exports_alone(batch_steps, root):
+    with warehouse_lock(root / "warehouse" / "safestart.duckdb"):
+        with pytest.raises(RuntimeError, match="build-warehouse: .*another run is building or exporting"):
+            pipeline.batch(download=False)
+    assert batch_steps.names == ["lake"]
+    assert not lock_held(root / "warehouse" / "safestart.duckdb")  # the lock goes with the run that held it
+
+
+# The model flow -------------------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def model_steps(monkeypatch, root):
+    steps = Steps()
+
+    def run_training(lake, out):
+        steps("train", lake, out)
+        return {"out": str(out), "selected": "logistic_regression", "test": {"logistic_regression": {"pr_auc": 0.2}}}
+
+    def write_tables(lake, out):
+        steps("analyze", lake, out)
+        return {"ss_share_by_year": 27}
+
+    monkeypatch.setattr("safestart_pipeline.ml.__main__.run_training", run_training)
+    monkeypatch.setattr("safestart_pipeline.ml.analysis.write_tables", write_tables)
+    return steps
+
+
+def test_the_model_flow_trains_then_writes_the_analysis_from_the_lake(model_steps, root):
+    summary = model_flow.model()
+    lake = root / "lake" / "msha_ogd"
+    assert model_steps.calls == [("train", lake, root / "models" / "accident_risk"),
+                                 ("analyze", lake, root / "analysis")]
+    assert summary["train-accident-risk"]["selected"] == "logistic_regression"
+    assert summary["analyze-lake"] == {"ss_share_by_year": 27}
+
+
+def test_a_failed_training_still_writes_the_analysis_then_fails_the_run(model_steps):
+    model_steps.failures["train"] = ValueError("no labeled quarters")
+    with pytest.raises(RuntimeError, match="train-accident-risk: .*no labeled quarters"):
+        model_flow.model()
+    assert model_steps.names == ["train", "train", "analyze"]
+
+
+# Schedules ------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("schedule", "moment", "expected"), [
+    (DAILY, datetime(2026, 11, 23, 13, 59, tzinfo=UTC), datetime(2026, 11, 23, 14, 0, tzinfo=UTC)),
+    (DAILY, datetime(2026, 11, 23, 14, 0, tzinfo=UTC), datetime(2026, 11, 24, 14, 0, tzinfo=UTC)),
+    (DAILY, datetime(2026, 11, 23, 9, 30, tzinfo=timezone(timedelta(hours=-5))),
+     datetime(2026, 11, 24, 14, 0, tzinfo=UTC)),
+    (WEEKLY, SATURDAY_NOON, datetime(2026, 11, 22, 15, 0, tzinfo=UTC)),
+    (WEEKLY, datetime(2026, 11, 22, 15, 0, tzinfo=UTC), datetime(2026, 11, 29, 15, 0, tzinfo=UTC)),
+    (WEEKLY, datetime(2026, 11, 23, 10, 0, tzinfo=UTC), datetime(2026, 11, 29, 15, 0, tzinfo=UTC)),
+])
+def test_the_next_run_is_the_first_scheduled_time_after_the_moment(schedule, moment, expected):
+    assert schedule.next_after(moment) == expected
+
+
+def test_prefect_schedules_the_deployments_at_the_times_the_local_scheduler_keeps():
+    for job in flows_main.JOBS.values():
+        dates = asyncio.run(CronSchedule(cron=job.schedule.cron, timezone="UTC").get_dates(n=12, start=SATURDAY_NOON))
+        for hour in range(24 * 9):
+            moment = SATURDAY_NOON + timedelta(hours=hour)
+            assert job.schedule.next_after(moment) == min(date for date in dates if date > moment)
+
+
+class Clock:
+    def __init__(self, start: datetime):
+        self.time = start
+        self.sleeps: list[float] = []
+
+    def now(self) -> datetime:
+        return self.time
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.time += timedelta(seconds=seconds)
+
+
+class Stop(Exception):
+    pass
+
+
+def scheduled_runs(minutes: dict[str, int], count: int) -> tuple[list[tuple[str, datetime]], Clock]:
+    """The local scheduler's first `count` runs from Saturday noon, each flow's run taking its minutes."""
+    clock, runs = Clock(SATURDAY_NOON), []
+
+    def run(name: str) -> None:
+        runs.append((name, clock.now()))
+        clock.time += timedelta(minutes=minutes[name])
+        if len(runs) == count:
+            raise Stop
+
+    with pytest.raises(Stop):
+        run_on_schedule({name: job.schedule for name, job in flows_main.JOBS.items()}, run, now=clock.now,
+                        sleep=clock.sleep)
+    return runs, clock
+
+
+def test_the_local_scheduler_runs_each_flow_at_its_time_and_one_that_came_due_meanwhile_next():
+    runs, clock = scheduled_runs({"batch": 70, "model": 30}, 4)
+    assert runs == [("batch", datetime(2026, 11, 21, 14, 0, tzinfo=UTC)),
+                    ("batch", datetime(2026, 11, 22, 14, 0, tzinfo=UTC)),
+                    ("model", datetime(2026, 11, 22, 15, 10, tzinfo=UTC)),  # due at 15:00, while the batch ran
+                    ("batch", datetime(2026, 11, 23, 14, 0, tzinfo=UTC))]
+    assert max(clock.sleeps) <= MAX_SLEEP_SECONDS
+
+
+def test_a_run_that_outlasts_its_flows_next_time_skips_that_time():
+    runs, _ = scheduled_runs({"batch": 25 * 60, "model": 30}, 3)
+    assert runs == [("batch", datetime(2026, 11, 21, 14, 0, tzinfo=UTC)),
+                    ("model", datetime(2026, 11, 22, 15, 0, tzinfo=UTC)),
+                    ("batch", datetime(2026, 11, 23, 14, 0, tzinfo=UTC))]
+
+
+# `python -m safestart_pipeline.flows` ---------------------------------------------------------------------------------
+
+
+def unexpected(*args, **kwargs):
+    raise AssertionError(f"not expected: {args} {kwargs}")
+
+
+def test_serve_registers_both_flows_with_the_prefect_api_when_one_is_set(monkeypatch):
+    served = []
+    monkeypatch.setenv("PREFECT_API_URL", "http://127.0.0.1:4200/api")
+    monkeypatch.setattr(flows_main, "serve", lambda *deployments, **options: served.append((deployments, options)))
+    monkeypatch.setattr(flows_main, "run_on_schedule", unexpected)
+    assert flows_main.main(["serve"]) == 0
+    (deployments, options), = served
+    assert options == {"limit": 1}  # one flow run at a time, as the local scheduler runs them
+    assert [(deployment.flow_name, deployment.name, deployment.entrypoint,
+             [(item.schedule.cron, item.schedule.timezone) for item in deployment.schedules])
+            for deployment in deployments] == [
+        ("safestart-batch", "daily", "safestart_pipeline.flows.pipeline.batch", [("0 14 * * *", "UTC")]),
+        ("safestart-model", "weekly", "safestart_pipeline.flows.model.model", [("0 15 * * 0", "UTC")]),
+    ]
+
+
+def test_serve_keeps_the_schedule_in_this_process_without_a_prefect_api(monkeypatch):
+    clock, runs = Clock(datetime(2026, 11, 23, 13, 59, 30, tzinfo=UTC)), []
+
+    def run_flow(name):
+        runs.append((name, clock.now()))
+        raise KeyboardInterrupt  # the container is stopped
+
+    monkeypatch.delenv("PREFECT_API_URL", raising=False)
+    monkeypatch.setattr(flows_main, "serve", unexpected)
+    monkeypatch.setattr(flows_main, "run_on_schedule", partial(run_on_schedule, now=clock.now, sleep=clock.sleep))
+    monkeypatch.setattr(flows_main, "run_flow", run_flow)
+    assert flows_main.main(["serve"]) == 0
+    assert runs == [("batch", datetime(2026, 11, 23, 14, 0, tzinfo=UTC))] and clock.sleeps == [30.0]
+
+
+@pytest.fixture
+def jobs(monkeypatch):
+    """Stand-ins for the two flows: the batch records its download choice, the model fails."""
+    downloads = []
+
+    @flow(name="safestart-batch")
+    def batch(download: bool = True):
+        downloads.append(download)
+        return {"lake": {"mines": {"rows": 3}}}
+
+    @flow(name="safestart-model")
+    def model():
+        raise RuntimeError("train-accident-risk: no labeled quarters")
+
+    monkeypatch.setattr(flows_main, "JOBS", {"batch": flows_main.Job(batch, "daily", DAILY),
+                                             "model": flows_main.Job(model, "weekly", WEEKLY)})
+    return downloads
+
+
+def test_run_runs_the_batch_now_and_prints_its_outcome(jobs, capsys):
+    assert flows_main.main(["run", "--no-download"]) == 0
+    assert jobs == [False]
+    assert json.loads(capsys.readouterr().out) == {
+        "batch": {"state": "completed", "result": {"lake": {"mines": {"rows": 3}}}}}
+
+
+def test_a_failed_flow_is_reported_and_the_next_one_still_runs(jobs, capsys):
+    assert flows_main.run_once(["model", "batch"]) == 1
+    assert jobs == [True]
+    outcomes = json.loads(capsys.readouterr().out)
+    assert outcomes["model"]["state"] == "failed"
+    assert "RuntimeError: train-accident-risk: no labeled quarters" in outcomes["model"]["error"]
+    assert outcomes["batch"]["state"] == "completed"
+
+
+def test_no_download_is_refused_for_the_model_flow(jobs):
+    with pytest.raises(SystemExit):
+        flows_main.main(["run", "model", "--no-download"])
+    assert jobs == []
