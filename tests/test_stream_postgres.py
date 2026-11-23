@@ -32,6 +32,17 @@ def conn():
         connection.rollback()
 
 
+def test_the_live_page_reads_one_modes_newest_events_from_an_index(conn):
+    """The fixture applied the schema twice: every statement is idempotent, this index included."""
+    indexes = dict(conn.execute("SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'stream'"
+                                " AND tablename = 'events'").fetchall())
+    assert indexes["events_mode_received"].endswith("USING btree (mode, received_at DESC)")
+    conn.execute("SET LOCAL enable_seqscan = off")  # an empty table: make the planner show the index it would use
+    plan = conn.execute("EXPLAIN SELECT event_id FROM stream.events WHERE mode = 'live' ORDER BY received_at DESC"
+                        " LIMIT 25").fetchall()
+    assert "events_mode_received" in " ".join(row[0] for row in plan)
+
+
 def violation(key, day, district="C04", sig_sub=True, mode="replay"):
     return Event.new(kind="violation", key=key, mode=mode, occurred_at=day, title=f"Violation {key}",
                      details={"cfr_section": "75.400", "sig_sub": sig_sub}, mine_id=f"mine-{district}",

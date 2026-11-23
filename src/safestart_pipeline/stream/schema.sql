@@ -24,9 +24,12 @@ CREATE TABLE IF NOT EXISTS stream.events (
 CREATE INDEX IF NOT EXISTS events_kind_time ON stream.events (kind, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS events_mine_time ON stream.events (mine_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS events_received ON stream.events (received_at DESC);
+-- The dashboard's Live page shown for one mode (replay or live): its newest events and its last minutes of arrivals.
+CREATE INDEX IF NOT EXISTS events_mode_received ON stream.events (mode, received_at DESC);
 
 -- Events per source day, kind and district, kept by the analytics consumer ('' when an event has no district).
--- "serious" counts significant-and-substantial violations and fatal or lost-time accidents.
+-- "serious" counts the events the contract marks serious: violations with sig_sub true and accidents with serious
+-- true, which the producers set from the shared rules in definitions.py.
 CREATE TABLE IF NOT EXISTS stream.daily_counts (
     day date NOT NULL,
     kind text NOT NULL,
