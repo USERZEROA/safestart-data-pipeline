@@ -14,6 +14,34 @@ LOCAL_CONFIG = REPO_ROOT / "pipeline.local.toml"
 USER_AGENT = "Mozilla/5.0 (compatible; SafeStartInventory/0.1)"
 
 
+def _local_settings() -> dict:
+    for candidate in (Path.cwd() / LOCAL_CONFIG.name, LOCAL_CONFIG):
+        if candidate.exists():
+            return tomllib.loads(candidate.read_text(encoding="utf-8"))
+    return {}
+
+
+def setting(name: str, default: str) -> str:
+    """A deployment setting: the environment variable SAFESTART_<NAME> wins, then `<name>` in pipeline.local.toml, then
+    the default. Secrets (passwords, API keys) come only from the environment, never from files in the repository."""
+    return os.environ.get(f"SAFESTART_{name.upper()}") or str(_local_settings().get(name.lower(), default))
+
+
+def postgres_url() -> str:
+    """The streaming store. The default is the local Compose database (host port 15432)."""
+    return setting("postgres_url", "postgresql://safestart:safestart@localhost:15432/safestart")
+
+
+def kafka_bootstrap() -> str:
+    """Kafka brokers. The default is the local Compose broker (host port 19092)."""
+    return setting("kafka_bootstrap", "localhost:19092")
+
+
+def warehouse_path() -> Path:
+    """The DuckDB warehouse built from the lake (rebuilt into a new file and swapped in atomically)."""
+    return Path(setting("warehouse_path", str(data_root() / "warehouse" / "safestart.duckdb")))
+
+
 def data_root() -> Path:
     """Where raw files, state, the lake and the warehouse live.
 

@@ -21,12 +21,23 @@ analysis = [
     "duckdb>=1.1",
     "polars>=1.20",
 ]
+# Kafka and PostgreSQL clients for the streaming layer (producers, consumers, watchers).
+stream = [
+    "confluent-kafka>=2.16",
+    "psycopg[binary]>=3.3",
+]
+dashboard = [
+    "streamlit>=1.67",
+    "altair>=5.5",
+    "pandas>=2.3",
+]
+ml = ["scikit-learn>=1.5"]
 
 [project.scripts]
 ssp = "safestart_pipeline.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.3"]
+dev = ["pytest>=8.3", "ruff>=0.8"]
 
 [build-system]
 requires = ["hatchling>=1.26"]
