@@ -37,6 +37,18 @@ CREATE TABLE IF NOT EXISTS stream.daily_counts (
     PRIMARY KEY (day, kind, district)
 );
 
+-- Every event the analytics consumer has counted, written in the transaction that adds it to daily_counts, so an
+-- event that arrives again (a replay, or a batch redelivered after a restart) is never counted twice. daily_counts is
+-- always this table grouped by day, kind and district.
+CREATE TABLE IF NOT EXISTS stream.counted_events (
+    event_id text PRIMARY KEY,
+    day date NOT NULL,
+    kind text NOT NULL,
+    district text NOT NULL,
+    serious boolean NOT NULL,
+    counted_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- One-step-ahead forecast of each complete day's count, with the residual and an anomaly flag.
 CREATE TABLE IF NOT EXISTS stream.forecasts (
     day date NOT NULL,
