@@ -119,6 +119,10 @@ The model with the higher validation PR AUC is refitted with the same settings o
 
 ## Results on the real data
 
+The results, the calibration and the importances below are this run's, as its own files record them:
+[`docs/ml/metrics.json`](ml/metrics.json) and [`docs/ml/permutation_importance.csv`](ml/permutation_importance.csv).
+The published run, below, says when and from what they were made and how to reproduce them.
+
 Test quarters 2023 and 2024 (base rate 4.22 percent; the riskiest 5 percent is 5,083 mine-quarters):
 
 | Model | ROC AUC | PR AUC | Precision, top 5% | Recall, top 5% | Brier | Mean predicted |
@@ -144,7 +148,7 @@ quarters against 0.0422 observed (17 percent too high, because it averaged over 
 order: without it the test PR AUC was 0.4789 against 0.4784.
 
 Permutation importance, the drop in test PR AUC when one feature is shuffled (five shuffles;
-`permutation_importance.csv` has every feature, both models and the ROC AUC drop):
+[`permutation_importance.csv`](ml/permutation_importance.csv) has every feature, both models and the ROC AUC drop):
 
 | Gradient boosting | PR AUC drop | Logistic regression | PR AUC drop |
 |---|---|---|---|
@@ -256,6 +260,36 @@ about 0.01 with the base rate, and the lift stayed at ten times the base rate. T
 | `metrics.json` | the split, both models' validation and test metrics with calibration deciles, the selection, the run record (lake files, panel rows, seconds, peak memory) |
 | `permutation_importance.csv` | `model, feature, pr_auc_drop, pr_auc_drop_std, roc_auc_drop` |
 | `risk_scores.parquet` | the open quarter: `mine_id, mine_name, status, period, risk_score, risk_rank`, every feature behind the score and `newest_report_missing` (no report for the newest quarter yet, so `hours_worked_1q` is 0) |
+
+## The published run (`docs/ml/`)
+
+[`docs/ml/metrics.json`](ml/metrics.json) and [`docs/ml/permutation_importance.csv`](ml/permutation_importance.csv) are
+this run's `metrics.json` and `permutation_importance.csv`, copied with no value changed, so that its figures can be
+checked without the data root; the model and the scores stay there. Neither file holds a local path: the run record
+names the lake's files without their folder.
+
+- **When.** `created_at` is 2026-11-23T20:27:15Z, the run in the first row of the run-time table above (`run`:
+  `cpu_count` 24, `panel_seconds` 5.2, `train_seconds` 153.1, `peak_memory_mb` 2166.2).
+- **Which build.** `run.lake` names the Parquet file of each dataset's current version in the lake version of
+  2026-11-23: MSHA's files of that day (Last-Modified 12:50 GMT), built into the lake the same day. A lake file is
+  named by the first 16 hex digits of the SHA-256 of the MSHA zip it was built from, so the names identify the
+  downloads. The code is that of commit `f06d15e` ("Count each repeated MSHA key once in the model and analysis, and
+  retrain"; What changed since the previous run, above), committed with the run's results 25 minutes after it; the
+  packages are those `uv.lock` pins (scikit-learn 1.9.1, Polars 2.1.0, NumPy 2.5.5).
+- **How to reproduce.** `train` builds the panel (`features.py`) and fits, tests, refits and writes (`train.py`), both
+  in `src/safestart_pipeline/ml/`; `ssp ml` hands its arguments to `python -m safestart_pipeline.ml`. With the
+  orchestrator's two threads, and `--out` so that the data root's own files stay as they are:
+
+  ```bash
+  uv sync --all-extras
+  POLARS_MAX_THREADS=2 OMP_NUM_THREADS=2 uv run ssp ml train --out <folder>
+  ```
+
+  It reads each dataset's current version, so it gives these figures while the lake's current files are the five
+  that `run.lake` names, and a later version's own figures after that. Without a lake,
+  `uv run ssp pipeline --model` downloads MSHA's current files, builds the lake and trains (README, Quick start). A
+  rerun of this code on these files (2026-11-24 00:53 UTC, workstation, two threads) wrote both files again with the
+  same values, apart from `created_at`, the timings and the peak memory.
 
 ## The lake in three tables (`analysis.py`)
 
