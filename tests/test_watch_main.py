@@ -21,6 +21,7 @@ from safestart_pipeline.watch.publish import (
     publish_new,
 )
 from safestart_pipeline.watch.state import WatchState
+from test_watch_feed import FeedFolder, entry
 from test_watch_versions import COAL_MINE, MINES, NEW, OLD, add_version, violation
 
 NOW = datetime(2026, 11, 23, 18, 0, tzinfo=UTC)
@@ -140,13 +141,15 @@ def test_checks_run_on_their_schedules_and_one_failure_does_not_stop_the_others(
         return Check(name, "unchanged", checked_at=NOW + timedelta(minutes=5))
 
     names = list(watch.SCHEDULE)
+    assert names == ["versions", "sitemaps-msha", "sitemaps-osha", "federal-register", "feed-official"]
     assert watch.due(state, names, NOW) == names  # never checked: all due
     checks = watch.run_checks(names, state, run, now=lambda: NOW, record=recorded.append)
-    assert ran == names and [check.status for check in checks] == ["unchanged", "error", "unchanged", "unchanged"]
+    assert ran == names and [check.status for check in checks] == ["unchanged", "error"] + ["unchanged"] * 3
     assert "RuntimeError: sitemap host down" in checks[1].note
     assert all(check.checked_at == NOW for check in checks) and recorded == checks  # stamped with the start
-    assert watch.due(state, names, NOW + timedelta(hours=1)) == ["federal-register"]
-    assert watch.due(state, names, NOW + timedelta(hours=6)) == ["versions", "sitemaps-msha", "federal-register"]
+    assert watch.due(state, names, NOW + timedelta(hours=1)) == ["federal-register", "feed-official"]
+    assert watch.due(state, names, NOW + timedelta(hours=6)) == ["versions", "sitemaps-msha", "federal-register",
+                                                                 "feed-official"]
     assert watch.seconds_to_next(state, names, NOW + timedelta(minutes=30)) == 1800.0
 
 
@@ -225,3 +228,27 @@ def test_once_runs_the_due_checks_and_reports_a_missing_kafka_publisher(tmp_path
 
     monkeypatch.setattr(watch, "kafka_publisher", missing)
     assert watch.main(["once"]) == 2
+
+
+def test_the_feed_check_runs_on_its_schedule_and_reads_the_read_only_data_root(tmp_path, monkeypatch):
+    """`--only feed-official` reads the official files' feed and announces its entries; the data root is only read."""
+    folder = FeedFolder(tmp_path / "data")
+    folder.publish([entry("/hazcom", "new", "2026-11-24T17:02:11Z", "a" * 64)])
+    monkeypatch.setenv("SAFESTART_DATA_ROOT", str(folder.root))
+    monkeypatch.setenv("SAFESTART_WATCH_STATE", str(tmp_path / "watch-state" / "watch.sqlite"))
+    monkeypatch.setenv("SAFESTART_WATCH_LOG", "-")
+
+    def unreachable(url, **kwargs):
+        raise psycopg.OperationalError("connection refused")
+
+    monkeypatch.setattr(psycopg, "connect", unreachable)
+    publisher = ListPublisher()
+    monkeypatch.setattr(watch, "kafka_publisher", lambda: publisher)
+    before = sorted(path.relative_to(folder.root) for path in folder.root.rglob("*"))
+
+    assert watch.main(["once", "--only", "feed-official"]) == 0
+    assert [event.event_id for event in publisher.events] == [
+        f"page_change:official|https://www.osha.gov/hazcom|new|{'a' * 64}|2026-11-24T17:02:11Z"]
+    assert watch.main(["once", "--only", "feed-official", "--force"]) == 0 and len(publisher.events) == 1
+    assert sorted(path.relative_to(folder.root) for path in folder.root.rglob("*")) == before
+    assert watch.SCHEDULE["feed-official"] == timedelta(hours=1)

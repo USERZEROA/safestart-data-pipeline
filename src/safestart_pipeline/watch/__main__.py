@@ -1,10 +1,11 @@
 """`python -m safestart_pipeline.watch once|loop`: the live watchers on their schedules (schedule.py).
 
 Dataset versions every 6 hours (MSHA publishes weekly, and the lake takes each new version when the acquire flow runs),
-MSHA's sitemaps every 6 hours, OSHA's once a day (it asks for 10 seconds between requests), and the Federal Register
-every hour. A check skipped because its site's crawl was running is due again sooner, as the check says (`retry_in`,
-an hour for the sitemaps), so it is not put off a whole interval at a time while the crawl or the daily run of the
-official files writes. `once` runs the checks that are due (all of them the first time) and exits; `loop` keeps running
+MSHA's sitemaps every 6 hours, OSHA's once a day (it asks for 10 seconds between requests), the Federal Register every
+hour, and the official files' feed every hour (feed.py: each new signed manifest's findings as page changes). A check
+skipped because its site's crawl was running is due again sooner, as the check says (`retry_in`, an hour for the
+sitemaps), so it is not put off a whole interval at a time while the crawl or the daily run of the official files
+writes. `once` runs the checks that are due (all of them the first time) and exits; `loop` keeps running
 them as they come due. `--only` picks checks and `--force` runs them now, though OSHA's sitemaps are still read at most
 once a day.
 Events go to Kafka; every check is logged, and stored in stream.source_checks when PostgreSQL is reachable.
@@ -33,6 +34,7 @@ from ..crawl.crawler import make_client
 from ..crawl.sites import SITES
 from .checks import Check, record_check
 from .federal_register import check_federal_register
+from .feed import check_feed
 from .publish import Publisher, kafka_publisher
 from .schedule import SCHEDULE
 from .sitemaps import check_sitemaps
@@ -66,6 +68,8 @@ def run_check(name: str, *, root: Path, state: WatchState, publisher: Publisher,
         return check_versions(root, state, publisher)
     if name == "federal-register":
         return check_federal_register(state, publisher, client)
+    if name == "feed-official":
+        return check_feed(root, state, publisher)
     return check_sitemaps(SITES[name.removeprefix("sitemaps-")], root, state, publisher, client)
 
 
