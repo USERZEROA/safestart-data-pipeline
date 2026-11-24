@@ -156,7 +156,7 @@ def verify_crawl(site: Site, data_root: Path, *, rehash: bool = False, live: Pol
         report["skipped"] = skipped
         report["failed"] = {state: {"count": states.get(state, 0), "examples": [dict(row) for row in db.execute(
             "select url, http_status, attempts, error from urls where state = ? order by url limit ?",
-            (state, EXAMPLES))]} for state in ("not_found", "error")}
+            (state, EXAMPLES))]} for state in ("not_found", "error", "rejected")}
         targets = Counter()
         for row in db.execute("select url, location from urls where state = 'redirect'"):
             target = site.in_scope(normalize(row["location"] or "", row["url"])) if row["location"] else None
