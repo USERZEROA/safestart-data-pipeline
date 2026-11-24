@@ -174,14 +174,14 @@ The data root defaults to `./data`; `SAFESTART_DATA_ROOT` or `data_root` in `pip
 
 ## Sources and ingestion
 
-| Source | How it is acquired | Inventory |
-|---|---|---|
-| MSHA website | crawl | sitemaps, then links |
-| MSHA legacy host | crawl | the links the MSHA crawl recorded to it (the host has no home page, sitemap or directory listings) |
-| OSHA website | crawl | sitemaps, then links |
-| eCFR titles 29 and 30 | bulk download of the govinfo XML (eCFR's own full-text API is closed to robots) | fixed list |
-| MSHA open enforcement datasets | bulk download, every version kept | the open-data page's links |
-| Federal Register | its public API, MSHA and OSHA documents (live watcher) | newest first |
+| Source | How it is acquired, and its inventory |
+|---|---|
+| MSHA website | crawl; sitemaps, then links |
+| MSHA legacy host | crawl; the links the MSHA crawl recorded to it (the host has no home page, sitemap or directory listings) |
+| OSHA website | crawl; sitemaps, then links |
+| eCFR titles 29 and 30 | bulk download of the govinfo XML (eCFR's own full-text API is closed to robots); fixed list |
+| MSHA open enforcement datasets | bulk download, every version kept; the open-data page's links |
+| Federal Register | its public API, MSHA and OSHA documents (live watcher); newest first |
 
 The crawls of `www.osha.gov`, `www.msha.gov` and MSHA's legacy host `arlweb.msha.gov` recorded 56,104, 32,507 and
 13,859 URLs and downloaded 41,157, 32,205 and 12,394 of them: 85,756 URLs that lead to 84,481 distinct files (43.1 GB,
@@ -255,10 +255,10 @@ records what it found in `build_check` (repeated keys, rows without a key, dangl
 no longer in Title 30) rather than hiding it.
 
 The diagrams show the eight tables with their keys and the columns this README relies on, in three parts so each stays
-legible: a mine's enforcement record and the regulations it cites, a mine's accidents and hours, and the two tables
-that link to no other, `document` (the crawled corpus) and `dataset_version` (the lake versions the warehouse was built
-from). The build checks every reference it does not declare; every column, the marts and the build's checks are in
-[docs/ERD.md](docs/ERD.md).
+legible: a mine's enforcement record and the regulations it cites, the accidents and quarterly hours a mine reports, and
+the two tables that link to no other, `document` (the crawled corpus) and `dataset_version` (the lake versions the
+warehouse was built from). The build checks every reference it does not declare; every column, the marts and the build's
+checks are in [docs/ERD.md](docs/ERD.md).
 
 ```mermaid
 erDiagram
@@ -295,8 +295,8 @@ erDiagram
 ```mermaid
 erDiagram
     direction RL
-    mine ||--o{ accident : "reports"
-    mine ||--o{ production_quarter : "reports hours in"
+    mine ||--o{ accident : ""
+    mine ||--o{ production_quarter : ""
     mine {
         VARCHAR mine_id PK
     }
