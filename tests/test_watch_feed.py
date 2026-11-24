@@ -266,6 +266,15 @@ def test_a_new_page_the_sitemap_check_announced_first_is_not_announced_again(fol
     assert "2 new; 1 announced, 1 new page the sitemap check announced already" in check.note
 
 
+def test_a_new_page_the_feed_announced_first_is_not_added_again_by_the_sitemap_check(folder, state):
+    folder.publish([entry("/hazcom", "new", "2026-11-24T17:02:11Z", A)])
+    check_feed(folder.root, state, ListPublisher())
+    added = sitemaps.Change(f"{OSHA}/hazcom", "added", None, f"{OSHA}/sitemap.xml")
+    other = sitemaps.Change(f"{OSHA}/other", "added", None, f"{OSHA}/sitemap.xml")
+    dropped = sitemaps.Change(f"{OSHA}/hazcom", "dropped", None, None)  # a different fact: still announced
+    assert sitemaps.announced([added, other, dropped], state) == [other, dropped]
+
+
 def test_a_finding_that_is_not_one_stops_the_check_there(folder, state):
     folder.publish([entry("/fine", "changed", "2026-11-24T18:00:00Z", B, previous=A)])
     folder.publish([entry("/odd", "rejected", "2026-11-25T18:00:00Z", B)])

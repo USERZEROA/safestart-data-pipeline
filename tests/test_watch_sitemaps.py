@@ -15,9 +15,10 @@ from safestart_pipeline.config import USER_AGENT
 from safestart_pipeline.crawl.locks import SiteLock
 from safestart_pipeline.crawl.sites import Site
 from safestart_pipeline.crawl.store import Store
+from safestart_pipeline.stream.events import Event
 from safestart_pipeline.watch import sitemaps
 from safestart_pipeline.watch.checks import Check
-from safestart_pipeline.watch.publish import ListPublisher
+from safestart_pipeline.watch.publish import ListPublisher, publish_new
 from safestart_pipeline.watch.sitemaps import check_sitemaps, modified_after
 from safestart_pipeline.watch.state import WatchState
 
@@ -275,6 +276,20 @@ def test_a_page_the_inventory_recorded_after_the_last_read_is_added_all_the_same
     assert bench.check(publisher, now=NOW + timedelta(days=1)).found == 1
     assert publisher.events[-1].event_id == f"page_change:{HOST}/fresh|added|"
     assert not any(event.event_id.startswith(f"page_change:{HOST}/linked|") for event in publisher.events)
+
+
+def test_a_page_the_official_feeds_check_announced_as_new_is_not_added_again(bench):
+    """The daily run downloaded /new after reading the sitemap, and the feed's check announced it: one page, one
+    event. A later edit of it is still announced."""
+    announced_new = Event.new(kind="page_change", key=f"official|{HOST}/new|new|{'a' * 64}|2026-11-23T17:00:00Z",
+                              mode="live", occurred_at="2026-11-23T17:00:00Z", title=f"New EXAMPLE page: {HOST}/new")
+    publish_new([announced_new], ListPublisher(), bench.state)
+    publisher = ListPublisher()
+    result = bench.check(publisher)
+    assert sorted(by_id(publisher)) == [f"page_change:{HOST}/b|changed|2026-11-20T09:00:00-05:00",
+                                        f"page_change:{HOST}/c|dropped|2026-10-01T00:00:00Z"]
+    assert result.note == ("5 URLs listed; 0 added, 1 changed, 1 dropped; 1 added page left out, announced as new by"
+                           " the official feed's check already")
 
 
 def touch(path: Path, moment: datetime) -> None:

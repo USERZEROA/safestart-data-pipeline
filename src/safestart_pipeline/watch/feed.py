@@ -19,8 +19,9 @@ changes back and forth is announced at each change.
 
 What is not a page change is counted in the note, not announced: the URLs a run confirmed unchanged (checked), the
 bodies it refused as editions (rejected), the eCFR and Federal Register hints, and changes of files the feed does not
-describe (otherTypes). A new page the sitemap check announced first ("added": listed today, new to the crawl's
-inventory) is left out when the daily run then downloads it ("new"). A page dropped from a sitemap and a page that
+describe (otherTypes). A new page is announced once: the sitemap check may announce it first ("added": listed today,
+new to the crawl's inventory), and the daily run then downloads it ("new"); whichever of the two checks comes second
+leaves it out (sitemaps.announced does the same the other way round). A page dropped from a sitemap and a page that
 answers 404 or 410 (gone) stay two events: different facts, and a dropped page often still answers.
 """
 

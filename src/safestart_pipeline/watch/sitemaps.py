@@ -8,7 +8,8 @@ sitemaps no longer list it. The inventory is only read, so a page the crawl neve
 watcher has announced such a page as added, a later lastmod of it is a change. Dropped pages are judged only when every
 sitemap could be read, since an unread sitemap would seem to drop all of its pages. Each finding becomes a page_change
 event keyed by the URL, the change and the lastmod, so a change is reported once while a later edit of the same page is
-reported again.
+reported again. A page the official feed's check (feed.py) announced as new, after the daily run downloaded it, is not
+announced as added again: one new page, one event, whichever check sees it first.
 
 A host that refuses a sitemap (crawl/sitemaps.py: HTTP 401, 403, 429 or 451, or an HTML page in the sitemap's place)
 is recorded, never worked around: MSHA's site serves the cloud VM such a page, and a workstation the sitemap. The check
@@ -49,6 +50,7 @@ from ..crawl.urls import normalize
 from ..stream.events import Event, as_utc
 from ..verify import read_only
 from .checks import Check
+from .feed import KEY_PREFIX as FEED_KEY_PREFIX
 from .polite import Answer, PoliteClient
 from .publish import Publisher, publish_new
 from .state import WatchState
@@ -218,14 +220,17 @@ def page_event(site: Site, change: Change, checked_at: datetime) -> Event:
 
 
 def announced(changes: Iterable[Change], state: WatchState) -> list[Change]:
-    """The changes as the feed reports them: a page the crawl never recorded that the watcher announced as added under
-    another lastmod before has changed since."""
+    """The changes as the stream reports them: a page the crawl never recorded that the watcher announced as added
+    under another lastmod before has changed since, and a page the official feed's check announced as new is left out
+    (it was announced once already)."""
     reported = []
     for change in changes:
-        # The ids of the page as added all start like the id of an added page without a lastmod.
-        if (change.change == "added" and not state.emitted([f"page_change:{page_key(change)}"])
-                and state.any_emitted_starting(f"page_change:{page_key(replace(change, lastmod=None))}")):
-            change = replace(change, change="changed")
+        if change.change == "added" and not state.emitted([f"page_change:{page_key(change)}"]):
+            # The ids of the page as added all start like the id of an added page without a lastmod.
+            if state.any_emitted_starting(f"page_change:{page_key(replace(change, lastmod=None))}"):
+                change = replace(change, change="changed")
+            elif state.any_emitted_starting(f"page_change:{FEED_KEY_PREFIX}{change.url}|new|"):
+                continue
         reported.append(change)
     return reported
 
@@ -275,11 +280,15 @@ def check_sitemaps(site: Site, data_root: Path, state: WatchState, publisher: Pu
         polite = SitemapClient(client, min_delay=site.min_delay, sleep=sleep, clock=clock)
         listed, refused, problems = read_sitemaps(site, polite)
     judged = not (refused or problems)  # dropped pages need every sitemap
-    changes = announced(compare(inventory, listed, judge_dropped=judged, since=last_read), state)
+    compared = compare(inventory, listed, judge_dropped=judged, since=last_read)
+    changes = announced(compared, state)
     found = publish_new((page_event(site, change, started) for change in changes), publisher, state)
     counts = Counter(change.change for change in changes)
     note = f"{len(listed):,} URLs listed; " + ", ".join(f"{counts[name]:,} {name}" for name in CHANGES
                                                        if judged or name != "dropped")
+    if already := len(compared) - len(changes):
+        note += (f"; {already:,} added {'page' if already == 1 else 'pages'} left out, announced as new by the official"
+                 " feed's check already")
     if not judged:
         unread = len(problems) + len(refused)
         note += (f", dropped pages not judged; {unread} sitemap{'' if unread == 1 else 's'} not read: "
