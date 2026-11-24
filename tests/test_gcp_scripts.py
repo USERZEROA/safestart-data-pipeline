@@ -1,6 +1,7 @@
 """The Google Cloud scripts, run against a stand-in gcloud that records its arguments: the server gets the machine,
-disk, address, identity and firewall the deployment promises, the upload copies the parts of the data root the server
-needs without deleting, and neither side copies a database's journal or work in progress."""
+disk, address, identity and firewall the deployment promises; the upload copies the parts of the data root the server
+needs without deleting, from the data root it is given, never a guessed one, and fails when it finds nothing to copy;
+and neither side copies a database's journal or work in progress."""
 
 from __future__ import annotations
 
@@ -58,6 +59,7 @@ def gcloud(tmp_path):
     log = tmp_path / "gcloud.log"
     env = {**os.environ, "PATH": f"{folder}{os.pathsep}{os.environ['PATH']}", "GCLOUD_LOG": str(log),
            "MSYS_NO_PATHCONV": "1"}
+    env.pop("SAFESTART_DATA_ROOT", None)  # a script sees only the data root a test gives it
 
     def calls() -> list[list[str]]:
         return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
@@ -71,6 +73,21 @@ def run(command: list[str], env: dict[str, str] | None = None) -> subprocess.Com
 
 def run_script(name: str, *args: str, env: dict[str, str]) -> subprocess.CompletedProcess:
     return run([find_bash(), (GCP / name).as_posix(), *args], env)
+
+
+def windows_upload(*args: str) -> list[str]:
+    """The command that runs upload-to-gcs.ps1 with PowerShell 7 where installed, else Windows PowerShell."""
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    if not shell:
+        pytest.skip("PowerShell is not installed")
+    return [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+            str(GCP / "upload-to-gcs.ps1"), *args]
+
+
+def unwrapped(text: str) -> str:
+    """Text without whitespace, colors or the '|' gutter of PowerShell 7's error view, so that a sentence can be found
+    in an error PowerShell wrapped to the console's width, which it does even in the middle of a word."""
+    return re.sub(r"\x1b\[[0-9;]*m|[\s|]", "", text)
 
 
 def call(calls: list[list[str]], *words: str) -> list[str]:
@@ -126,8 +143,9 @@ def test_a_rerun_updates_the_existing_server_instead_of_creating_one(gcloud):
 
 @pytest.fixture
 def data_root(tmp_path):
-    """A data root with the bulk downloads, the crawls' archive, the state and the lake, but no warehouse or exports."""
-    root = tmp_path / "SafeStartData"
+    """A data root with the bulk downloads, the crawls' archive, the state and the lake, but no warehouse or exports,
+    in a folder whose name has a space."""
+    root = tmp_path / "data root"
     for folder in ("raw/bulk/objects", "raw/osha/objects", "state", "lake/msha_ogd"):
         (root / folder).mkdir(parents=True)
     return root
@@ -157,17 +175,63 @@ def test_upload_copies_the_whole_raw_archive_only_on_request(gcloud, data_root):
 
 def test_upload_refuses_a_bad_bucket_name(gcloud, data_root):
     env, calls = gcloud
-    result = run_script("upload-to-gcs.sh", "Not A Bucket", env=env)
-    assert result.returncode == 2 and calls() == []
+    result = run_script("upload-to-gcs.sh", "Not A Bucket", "--data-root", data_root.as_posix(), env=env)
+    assert result.returncode == 2 and result.stderr.startswith("usage: ") and calls() == []
+
+
+@pytest.mark.parametrize(("args", "setting"), [
+    ((), None), ((), ""), (("--data-root",), None), (("--data-root", ""), None)])
+def test_upload_without_a_data_root_prints_its_usage(gcloud, args, setting):
+    """No machine's folder is assumed: the data root is --data-root, else SAFESTART_DATA_ROOT."""
+    env, calls = gcloud
+    if setting is not None:
+        env = {**env, "SAFESTART_DATA_ROOT": setting}
+    result = run_script("upload-to-gcs.sh", "safestart-data", *args, env=env)
+    assert result.returncode == 2 and result.stderr.startswith("usage: ") and "SAFESTART_DATA_ROOT" in result.stderr
+    assert calls() == [] and result.stdout == ""
+
+
+def test_upload_takes_the_data_root_from_the_environment_unless_one_is_named(gcloud, data_root, tmp_path):
+    env, calls = gcloud
+    env = {**env, "SAFESTART_DATA_ROOT": data_root.as_posix()}
+    other = tmp_path / "other"
+    (other / "lake").mkdir(parents=True)
+    for args, source in (((), data_root), (("--data-root", other.as_posix()), other)):
+        result = run_script("upload-to-gcs.sh", "safestart-data", *args, "--only", "lake", env=env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert calls()[-1] == ["storage", "rsync", "--recursive", EXCLUDE, f"{source.as_posix()}/lake",
+                               "gs://safestart-data/lake"]
+    assert len(calls()) == 2
+
+
+def test_upload_refuses_a_data_root_that_is_not_a_folder(gcloud, tmp_path):
+    env, calls = gcloud
+    missing = (tmp_path / "elsewhere").as_posix()
+    for args, setting in ((("--data-root", missing), {}), ((), {"SAFESTART_DATA_ROOT": missing})):
+        result = run_script("upload-to-gcs.sh", "safestart-data", *args, env={**env, **setting})
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert result.stderr == f"The data root {missing} is not a folder.\n" and result.stdout == ""
+    assert calls() == []
+
+
+def test_upload_fails_when_the_data_root_holds_none_of_the_folders(gcloud, data_root, tmp_path):
+    """The wrong folder, or a data root laid out elsewhere, ends in an error instead of an upload of nothing."""
+    env, calls = gcloud
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    result = run_script("upload-to-gcs.sh", "safestart-data", "--data-root", empty.as_posix(), env=env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout.splitlines() == [f"Skipped {folder}/: not in {empty.as_posix()}." for folder in SERVER_FOLDERS]
+    assert result.stderr == f"Nothing to copy: {empty.as_posix()} holds none of these folders.\n"
+    result = run_script("upload-to-gcs.sh", "safestart-data", "--data-root", data_root.as_posix(), "--only",
+                        "warehouse exports", "--dry-run", env=env)
+    assert result.returncode == 1 and "Nothing to copy: " in result.stderr, result.stdout + result.stderr
+    assert calls() == []
 
 
 def test_the_windows_upload_passes_the_same_arguments_through_gcloud(gcloud, data_root):
-    shell = shutil.which("pwsh") or shutil.which("powershell")
-    if not shell:
-        pytest.skip("PowerShell is not installed")
     env, calls = gcloud
-    command = [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-               str(GCP / "upload-to-gcs.ps1"), "-Bucket", "gs://safestart-data", "-DataRoot", str(data_root)]
+    command = windows_upload("-Bucket", "gs://safestart-data", "-DataRoot", str(data_root))
     result = run([*command, "-DryRun"], env)
     assert result.returncode == 0, result.stdout + result.stderr
     made = calls()
@@ -179,6 +243,26 @@ def test_the_windows_upload_passes_the_same_arguments_through_gcloud(gcloud, dat
     assert result.returncode == 0, result.stdout + result.stderr
     assert calls()[3:] == [["storage", "rsync", "--recursive", EXCLUDE, str(data_root / "lake"),
                             "gs://safestart-data/lake"]]
+
+
+def test_the_windows_upload_needs_a_data_root_that_holds_a_folder_to_copy(gcloud, data_root, tmp_path):
+    env, calls = gcloud
+    command = windows_upload("-Bucket", "safestart-data")
+    missing = tmp_path / "elsewhere"
+    for args, problem in (
+            ([], "Without -DataRoot, the environment variable SAFESTART_DATA_ROOT names the data root."),
+            (["-DataRoot", str(missing)], f"The data root {missing} is not a folder."),
+            (["-DataRoot", str(data_root), "-Only", "warehouse,exports"],
+             f"Nothing to copy: {data_root} holds none of these folders.")):
+        result = run([*command, *args], env)
+        output = result.stdout + result.stderr
+        assert result.returncode == 1 and unwrapped(problem) in unwrapped(output), output
+    assert "Skipped warehouse/" in result.stdout and "Skipped exports/" in result.stdout  # the last run looked first
+    assert calls() == []
+    result = run([*command, "-Only", "lake"], {**env, "SAFESTART_DATA_ROOT": str(data_root)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls() == [["storage", "rsync", "--recursive", EXCLUDE, str(data_root / "lake"),
+                        "gs://safestart-data/lake"]]
 
 
 @pytest.mark.parametrize(("path", "copied"), [

@@ -60,7 +60,7 @@ immutable (`verify.read_only`).
 Install Docker Desktop (Windows, macOS) or Docker Engine with the Compose plugin (Linux), then, from the repository:
 
 ```bash
-python scripts/start.py --data-root F:/SafeStartData
+python scripts/start.py --data-root <folder with the data root>
 ```
 
 `--data-root` names the folder that holds the data root (`raw/`, `state/`, `lake/`, `warehouse/`, `exports/`); without
@@ -218,20 +218,24 @@ workstation that holds the data. `<project>`, `<bucket>`, `<billing account>` an
    dry run first:
 
    ```powershell
-   deploy/gcp/upload-to-gcs.ps1 -Bucket <bucket> -DryRun
-   deploy/gcp/upload-to-gcs.ps1 -Bucket <bucket>
-   deploy/gcp/upload-to-gcs.ps1 -Bucket <bucket> -Only raw   # optional: the whole raw archive, crawls included
+   deploy/gcp/upload-to-gcs.ps1 -Bucket <bucket> -DataRoot <folder with the data root> -DryRun
+   deploy/gcp/upload-to-gcs.ps1 -Bucket <bucket> -DataRoot <folder with the data root>
+   deploy/gcp/upload-to-gcs.ps1 -Bucket <bucket> -DataRoot <folder with the data root> -Only raw   # optional
    ```
 
-   By default the script copies `raw/bulk/`, `state/`, `lake/`, `warehouse/` and `exports/`, each with
-   `gcloud storage rsync`; `-Only` picks folders, and `raw` names the whole raw archive, an archive the server never
-   reads. A rerun skips what already arrived and resumes an interrupted large file; nothing in the bucket is ever
-   deleted. Left out: partial downloads of a running crawl, the work files a lake build in progress or killed leaves
-   (`*.partial`, `*.tmp`, and the zip member it transcodes to `.<16 hex digits>.txt`, up to 1.5 GB), and the journal
-   files of a database in use (SQLite's `-wal`, `-shm` and `-journal`; the warehouse's `.wal`, a build in progress and
-   its staging folder), which must never meet another copy of their database. Where PowerShell refuses to run scripts,
-   call it as `powershell -ExecutionPolicy Bypass -File deploy/gcp/upload-to-gcs.ps1 -Bucket <bucket>`.
-   `deploy/gcp/upload-to-gcs.sh` does the same from Linux, macOS or Git Bash.
+   `-DataRoot` names the folder that holds the data root; without it the script takes the environment variable
+   `SAFESTART_DATA_ROOT`, and with neither it prints its usage and stops. It also stops with an error when that folder
+   does not exist or holds none of the folders asked for, so a run that finds nothing to copy never ends as if it had
+   worked. By default the script copies `raw/bulk/`, `state/`, `lake/`, `warehouse/` and `exports/`, each with
+   `gcloud storage rsync`; `-Only` picks folders, and `raw` names the whole raw archive, crawls included, which the
+   server never reads. A rerun skips what already arrived and resumes an interrupted large file; nothing in the bucket
+   is ever deleted. Left out: partial downloads of a running crawl, the work files a lake build in progress or killed
+   leaves (`*.partial`, `*.tmp`, and the zip member it transcodes to `.<16 hex digits>.txt`, up to 1.5 GB), and the
+   journal files of a database in use (SQLite's `-wal`, `-shm` and `-journal`; the warehouse's `.wal`, a build in
+   progress and its staging folder), which must never meet another copy of their database. Where PowerShell refuses to
+   run scripts, call it as `powershell -ExecutionPolicy Bypass -File deploy/gcp/upload-to-gcs.ps1 -Bucket <bucket>
+   -DataRoot <folder with the data root>`; from Linux, macOS or Git Bash,
+   `deploy/gcp/upload-to-gcs.sh <bucket> --data-root <folder with the data root>` does the same.
 
 5. Server:
 

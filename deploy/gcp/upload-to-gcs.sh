@@ -5,19 +5,21 @@
 # interrupted large file. It never deletes anything in the bucket. --dry-run lists what would be copied without copying
 # it. (On Windows, upload-to-gcs.ps1 does the same.)
 #
-#   deploy/gcp/upload-to-gcs.sh <bucket> [--data-root DIR] [--only "lake warehouse"] [--dry-run]
+#   deploy/gcp/upload-to-gcs.sh <bucket> --data-root DIR [--only "lake warehouse"] [--dry-run]
 #
-# The data root defaults to $SAFESTART_DATA_ROOT, else F:/SafeStartData. A folder the data root lacks is skipped.
+# The data root is --data-root DIR, else $SAFESTART_DATA_ROOT; the script stops when neither is set or the folder
+# does not exist. A folder the data root lacks is skipped, and a run that copies no folder fails.
 # Upload state/ while no crawl, download or lake build is writing to it, so that each database is copied whole.
 set -Eeuo pipefail
 
 usage() {
-  echo "usage: $0 <bucket> [--data-root DIR] [--only \"raw/bulk state lake warehouse exports raw\"] [--dry-run]" >&2
+  echo "usage: $0 <bucket> --data-root DIR [--only \"raw/bulk state lake warehouse exports raw\"] [--dry-run]" >&2
+  echo "Without --data-root, the environment variable SAFESTART_DATA_ROOT names the data root." >&2
   exit 2
 }
 
 bucket=
-data_root=${SAFESTART_DATA_ROOT:-F:/SafeStartData}
+data_root=${SAFESTART_DATA_ROOT:-}
 folders="raw/bulk state lake warehouse exports"
 dry_run=
 while (($#)); do
@@ -30,6 +32,11 @@ while (($#)); do
   esac
 done
 [[ $bucket =~ ^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$ ]] || usage
+[[ -n $data_root ]] || usage
+if [[ ! -d $data_root ]]; then
+  echo "The data root $data_root is not a folder." >&2
+  exit 2
+fi
 if ! command -v gcloud >/dev/null; then
   echo "Install the Google Cloud CLI and sign in with 'gcloud auth login' first." >&2
   exit 1
@@ -41,6 +48,7 @@ fi
 # progress and its staging folder), which must never meet another copy of their database. The patterns avoid
 # backslashes and '|' so they pass unchanged through any shell.
 exclude='.*objects.tmp.*,.*[.]partial$,.*[.]sqlite-[a-z]+$,.*[.]duckdb[.-].*,.*[.]tmp$,.*[.][0-9a-f]{16}[.]txt$'
+copied=
 for folder in $folders; do
   case $folder in
     raw/bulk | state | lake | warehouse | exports | raw) ;;
@@ -53,4 +61,10 @@ for folder in $folders; do
   echo "Copying $data_root/$folder/ to gs://$bucket/$folder/ ${dry_run:+(dry run)}"
   # shellcheck disable=SC2086  # $dry_run is empty or one flag
   gcloud storage rsync --recursive $dry_run --exclude="$exclude" "$data_root/$folder" "gs://$bucket/$folder"
+  copied=yes
 done
+# A run that copied no folder fails: its data root is most likely the wrong folder.
+if [[ -z $copied ]]; then
+  echo "Nothing to copy: $data_root holds none of these folders." >&2
+  exit 1
+fi
