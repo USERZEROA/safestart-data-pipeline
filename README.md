@@ -52,7 +52,11 @@ by Prefect, packaged with Docker Compose, tested in GitHub Actions and deployed 
 | Model | Serious-accident risk per mine and quarter: test ROC AUC 0.909; its riskiest 5% are ten times the base rate |
 | Delivery | Streamlit dashboard (5 pages), SafeStart exports, Prefect flows on a schedule, Google Cloud VM behind HTTPS |
 | Live | **<https://35.254.13.119>**: the dashboard served from the Google Cloud VM, fed by the live stream; Prefect Cloud runs its batch |
-| Quality | 403 tests; CI runs lint and the tests against PostgreSQL, then the whole stack on a synthetic sample data root |
+| Quality | 424 tests; CI runs lint and the tests against PostgreSQL, then the whole stack on a synthetic sample data root |
+
+**Evidence.** [docs/evidence/](docs/evidence/) copies the counts behind the figures above out of the records they come
+from, without local paths or ids: a real Prefect Cloud batch run, the newest completeness reports of the crawls and
+the bulk downloads, a count of the raw archive and the 20 lake manifests.
 
 **Documentation.** This README is the project documentation: the summary above, then the architecture, the key
 components and their implementation; the PDF above is the same document, printed. The files in [docs/](docs/) are
@@ -181,7 +185,8 @@ of them; the raw archive holds their 84,539 distinct files (10.9, 5.9 and 26.5 G
   are paced and checked like any request.
 - One request at a time per host, a product-token User-Agent, conditional requests on re-checks, and backing off on
   `429`/`503` and on repeated `403` responses. A refusal is never worked around.
-- Every URL the crawler learns of, from a sitemap, a page link or a redirect, ends in a recorded state: fetched (with
+- Every URL the crawler learns of, from a sitemap, a page link, a redirect or the project's own seed lists, ends
+  in a recorded state: fetched (with
   its SHA-256), unchanged, redirect, not found, error after retries, or skipped with a reason (robots, page asset, query
   string, size limit, alias of another URL, not needed by the project, or excluded because another source downloads
   it).
@@ -210,7 +215,7 @@ writes its report to `<data root>/reports/`.
 | Crawl and bulk state (SQLite, `state/`) | one row per URL or bulk file and version, with its outcome | resumable runs, provenance, completeness checks |
 | Lake (Parquet, `lake/msha_ogd/`) | every version of the 20 MSHA datasets, typed, one file per source version | columnar, compressed, versioned history for Polars and DuckDB |
 | Warehouse (DuckDB, `warehouse/safestart.duckdb`) | the analytical model: 8 tables and 5 marts | fast SQL scans of millions of rows without a server on a 4 GB host |
-| Stream store (PostgreSQL, schema `stream`) | events, exactly-once counts, forecasts, source checks | concurrent writers (the consumers) and transactional upserts |
+| Stream store (PostgreSQL, schema `stream`) | events, exactly-once counts, forecasts, source checks ([its ERD](docs/ERD.md#stream-store-postgresql)) | concurrent writers (the consumers and the watchers) and transactional upserts |
 
 **Lake.** `ssp lake` turns every downloaded version of each MSHA dataset into typed Parquet under
 `<data root>/lake/msha_ogd/<dataset>/`, one file per source version named after the zip's SHA-256, so a rebuild of an
@@ -335,7 +340,10 @@ The lake build is a Polars pipeline; the analysis and the model read it with Pol
 
 On the test quarters the selected gradient boosting reaches ROC AUC 0.909 and PR AUC 0.478; of the 5% of mine-quarters
 it ranks riskiest, 43% had a serious accident, ten times the 4.2% base rate. [docs/ML.md](docs/ML.md) has the leakage
-guards, the calibration, the feature importances and the limits.
+guards, the calibration, the feature importances and the limits. These figures are the training run's own output,
+published as [docs/ml/metrics.json](docs/ml/metrics.json) and
+[docs/ml/permutation_importance.csv](docs/ml/permutation_importance.csv): `ssp ml train` wrote them on 2026-11-23
+from that day's MSHA files, and [docs/ML.md](docs/ML.md#the-published-run-docsml) says how to reproduce them.
 
 ## Streaming
 
@@ -413,7 +421,7 @@ batch and the weekly model as Prefect Cloud deployments.
 
 ## Testing and CI
 
-`uv run pytest` runs 403 tests: each package against small fixtures (synthetic lake versions, crawl stores, eCFR XML,
+`uv run pytest` runs 424 tests: each package against small fixtures (synthetic lake versions, crawl stores, eCFR XML,
 HTTP mocks of the sources), the PostgreSQL consumers against a real database when `TEST_DATABASE_URL` is set, the flows
 under a temporary Prefect API, the dashboard pages through Streamlit's AppTest on a warehouse the real build made, and
 the deployment files themselves (memory budget, mounts, users, the cloud scripts against a stand-in gcloud).
@@ -499,6 +507,11 @@ SafeStart is a separate application and stays unchanged: the pipeline hands it t
 - The model ranks mines by recorded history; it knows nothing a dataset does not record (conditions, staffing) and is a
   screening aid, not a prediction of any one accident.
 - OSHA's sitemap gives no modification dates, so the OSHA watcher finds added and dropped pages only.
+- From the cloud VM, MSHA's site answers the request for its sitemap (`https://www.msha.gov/sitemap.xml`) with an
+  HTML page instead of the sitemap, while a workstation gets the XML, so the hosted watcher records
+  `sitemaps-msha` as refused and finds no MSHA page changes there; a refusal is never worked around.
+- govinfo's eCFR bulk files can trail eCFR: on 2026-11-23 title 29 was amended to 2026-11-09 while eCFR showed
+  2026-11-10, so `ssp verify bulk --live` reports it as not complete until govinfo publishes a newer file.
 - 238 OSHA URLs answered 403 (90 of them pages the project needs) and are recorded as such; a refusal is never
   worked around.
 - MSHA writes some quotes inside text doubled (`4"" x 3""`); the lake keeps text as MSHA wrote it, so 14,278 accident
@@ -510,7 +523,8 @@ SafeStart is a separate application and stays unchanged: the pipeline hands it t
 src/safestart_pipeline/   crawl, acquire, lake, warehouse, stream, watch, ml, dashboard, flows,
                           definitions, sample, cli
 tests/                    pytest suite (fixtures only; never the real data root)
-docs/                     ARCHITECTURE, ERD, QUERIES, ML, SAFESTART_EXPORTS, DEPLOYMENT
+docs/                     ARCHITECTURE, ERD, QUERIES, ML, SAFESTART_EXPORTS, DEPLOYMENT; ml/ (the published
+                          model metrics), evidence/ (the records behind the summary figures)
 deploy/                   Caddyfile and the Google Cloud scripts
 scripts/                  start.py (Compose launcher), smoke_test.py, crawl start/stop for Windows
 ```
