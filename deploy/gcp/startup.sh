@@ -2,9 +2,10 @@
 # Startup script of the pipeline's Compute Engine VM (create-vm.sh installs it); it runs as root at every boot.
 # It adds a 2 GB swap file, installs Docker from Docker's own repository (Ubuntu's package can be too old for the
 # Compose file), brings the checkout up to date, copies from the data bucket what the services need and the server
-# lacks (raw/bulk/, state/, lake/, warehouse/, exports/; not the crawls' raw archive), and starts the stack behind the
-# HTTPS gateway for the VM's address or its domain. Every message starts with "safestart:", so the serial console shows
-# the progress: gcloud compute instances get-serial-port-output <name> | grep safestart:
+# lacks (raw/bulk/, state/, lake/, warehouse/, exports/; not the crawls' raw archive), puts a crawl inventory uploaded
+# to the bucket's state-replace/ in place once (replace-state.sh), and starts the stack behind the HTTPS gateway for the
+# VM's address or its domain. Every message starts with "safestart:", so the serial console shows the progress:
+# gcloud compute instances get-serial-port-output <name> | grep safestart:
 set -Eeuo pipefail
 exec > >(tee -a /var/log/safestart-startup.log) 2>&1
 trap 'echo "safestart: startup failed at line $LINENO"' ERR
@@ -78,6 +79,11 @@ if [[ -n $bucket ]]; then
       echo "safestart: gs://$bucket/$part/ is empty, skipped"
     fi
   done
+  # A crawl inventory uploaded to gs://$bucket/state-replace/ replaces the server's copy, once per upload. One that
+  # cannot be placed now (the bucket not answering) leaves the server's copy as it was and the stack still starts; the
+  # next boot tries again.
+  bash "$app/deploy/gcp/replace-state.sh" "$bucket" "$data" ||
+    echo "safestart: an uploaded inventory could not be placed; the server's copy stays, the next boot tries again"
 fi
 # The feed the gateway serves read-only (docker-compose.public.yml), made before the gateway's mount would make it as
 # root. Every service runs as the image's user, uid 10001: the orchestrator writes the data root, the others read it.

@@ -1,7 +1,9 @@
 """The Google Cloud scripts, run against a stand-in gcloud that records its arguments: the server gets the machine,
 disk, address, identity and firewall the deployment promises; the upload copies the parts of the data root the server
 needs without deleting, from the data root it is given, never a guessed one, and fails when it finds nothing to copy;
-and neither side copies a database's journal or work in progress, nor the official-files feed the server publishes."""
+neither side copies a database's journal or work in progress, nor the official-files feed the server publishes; and a
+crawl inventory uploaded to the bucket's state-replace/ replaces the server's copy once, with the stack stopped, or is
+refused when it is not a whole database."""
 
 from __future__ import annotations
 
@@ -14,6 +16,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from safestart_pipeline.crawl.store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
 GCP = ROOT / "deploy" / "gcp"
@@ -282,7 +286,7 @@ def test_the_windows_upload_needs_a_data_root_that_holds_a_folder_to_copy(gcloud
     # The official-files feed and its record belong to the server that publishes the feed.
     ("exports/official/latest.json", False), ("exports/official/latest.json.sig", False),
     ("exports/official/manifests/12.json", False), ("exports/official/public-key.txt", False),
-    ("state/official.sqlite", False), ("state/crawl-osha.sqlite", True),
+    ("state/official.sqlite", False), ("state/crawl-osha.sqlite", True), ("state/state-replace.log", True),
 ])
 def test_files_in_use_are_never_copied(path, copied):
     """gcloud matches each pattern (a Python regular expression) against a file's path below the folder it copies,
@@ -305,6 +309,179 @@ def test_the_server_copies_what_it_lacks_of_the_folders_it_needs():
     assert re.search(r"scripts/start[.]py .*--with-orchestrator", script)  # the server runs the batch flows
 
 
+def test_the_boot_places_an_uploaded_inventory_and_never_brings_back_a_purged_original():
+    """The crawls' raw/<site>/ folders are never copied, so an original the daily update purged stays deleted; an
+    uploaded inventory is placed after the copy, and the feed's folder made for the orchestrator's user before the
+    gateway would make it as root."""
+    script = (GCP / "startup.sh").read_text(encoding="utf-8")
+    parts = re.search(r"for part in (.+); do", script)[1].split()
+    assert "raw" not in parts and [part for part in parts if part.startswith("raw/")] == ["raw/bulk"]
+    order = ("for part in ", 'bash "$app/deploy/gcp/replace-state.sh" "$bucket" "$data"',
+             'install -d "$data/exports/official"', 'chown -R 10001:10001 "$data"', "scripts/start.py")
+    steps = [script.index(text) for text in order]
+    assert steps == sorted(steps)
+
+
+REPLACE_STUB = """\
+import json, os, shutil, sys
+
+
+def say(lines):  # line feeds only, as the real tools print on the server (a Windows console would add CRs)
+    sys.stdout.buffer.write("".join(line + "\\n" for line in lines).encode())
+
+
+tool, args = sys.argv[1], sys.argv[2:]
+with open(os.environ["STUB_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps([tool, *args]) + "\\n")
+with open(os.environ["STUB_SPEC"], encoding="utf-8") as file:
+    spec = json.load(file)
+objects = spec.get("objects", {})
+if tool == "docker":
+    if args[0] == "ps":
+        say(spec.get("running", []))
+elif args[:2] == ["storage", "ls"]:
+    if not objects:
+        sys.exit(1)  # gcloud's answer for a prefix that holds nothing
+    say(objects)
+elif args[:3] == ["storage", "objects", "describe"]:
+    say([objects[args[3]]["generation"]])
+elif args[:2] == ["storage", "cp"]:
+    shutil.copyfile(objects[args[2]]["file"], args[3])
+else:
+    sys.exit(2)
+"""
+
+
+@pytest.fixture
+def boot(tmp_path):
+    """A server's data root with a crawl inventory in use (its journal beside it), stand-ins for gcloud (the bucket's
+    state-replace/ listing, each object's generation, the download) and docker (the stack's containers), and a runner
+    of replace-state.sh. Yields the runner, the data root and a reader of the calls made."""
+    folder = tmp_path / "bin"
+    folder.mkdir()
+    stub = folder / "stub.py"
+    stub.write_text(REPLACE_STUB, encoding="utf-8")
+    for tool in ("gcloud", "docker"):
+        (folder / tool).write_text(f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "{stub.as_posix()}" {tool}'
+                                   ' "$@"\n', encoding="utf-8", newline="\n")
+        (folder / tool).chmod(0o755)
+    spec, log = tmp_path / "spec.json", tmp_path / "calls.log"
+    env = {**os.environ, "PATH": f"{folder}{os.pathsep}{os.environ['PATH']}", "STUB_SPEC": str(spec),
+           "STUB_LOG": str(log), "MSYS_NO_PATHCONV": "1", "PYTHON": Path(sys.executable).as_posix()}
+    data = tmp_path / "data root"
+    inventory(data / "state" / "crawl-osha.sqlite", 1)
+    for suffix, text in (("-wal", "the old copy's journal"), ("-shm", "its index")):
+        (data / "state" / f"crawl-osha.sqlite{suffix}").write_text(text, encoding="utf-8")
+
+    def replace(objects: dict[str, dict], running: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
+        spec.write_text(json.dumps({"objects": objects, "running": list(running)}), encoding="utf-8")
+        return run([find_bash(), (GCP / "replace-state.sh").as_posix(), "safestart-data", data.as_posix()], env)
+
+    def calls() -> list[list[str]]:
+        found = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+        log.unlink(missing_ok=True)
+        return found
+
+    yield replace, data, calls
+
+
+def inventory(path: Path, urls: int) -> Path:
+    """A crawl store holding `urls` URLs, closed (no journal beside it)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    store = Store(path)
+    for number in range(urls):
+        store.insert_url(f"https://www.osha.gov/page-{number}", source="sitemap", state="fetched",
+                         now="2026-11-17T00:00:00Z")
+    store.close()
+    return path
+
+
+def test_an_uploaded_inventory_replaces_the_servers_copy_once_per_upload(boot, tmp_path):
+    replace, data, calls = boot
+    upload = inventory(tmp_path / "upload" / "crawl-osha.sqlite", 3)
+    url = "gs://safestart-data/state-replace/crawl-osha.sqlite"
+    objects = {url: {"generation": "1700000000000001", "file": str(upload)},
+               "gs://safestart-data/state-replace/notes.txt": {"generation": "5", "file": str(upload)}}
+    result = replace(objects, running=("c1", "c2"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    state = data / "state"
+    assert (state / "crawl-osha.sqlite").read_bytes() == upload.read_bytes()
+    assert not (state / "crawl-osha.sqlite-wal").exists() and not (state / "crawl-osha.sqlite-shm").exists()
+    assert "state/crawl-osha.sqlite is now the uploaded inventory (3 URLs)" in result.stdout
+    assert "notes.txt is not a crawl inventory, left alone" in result.stdout
+    made = calls()
+    # Downloaded and checked first; the stack is stopped only for the move.
+    assert [call[:3] for call in made] == [["gcloud", "storage", "ls"], ["gcloud", "storage", "objects"],
+                                           ["gcloud", "storage", "cp"], ["docker", "ps", "--quiet"],
+                                           ["docker", "stop", "c1"]]
+    assert made[-1] == ["docker", "stop", "c1", "c2"]
+    [line] = (state / "state-replace.log").read_text(encoding="utf-8").splitlines()
+    assert line.startswith("crawl-osha.sqlite 1700000000000001 applied 20")
+
+    # The next boot leaves the server's inventory alone; only a newer upload replaces it.
+    inventory(state / "crawl-osha.sqlite-later", 0)
+    (state / "crawl-osha.sqlite-later").replace(state / "crawl-osha.sqlite")  # the daily runs went on writing it
+    written = (state / "crawl-osha.sqlite").read_bytes()
+    assert replace(objects, running=("c1",)).returncode == 0
+    assert (state / "crawl-osha.sqlite").read_bytes() == written
+    assert [call[:3] for call in calls()] == [["gcloud", "storage", "ls"], ["gcloud", "storage", "objects"]]
+    objects[url]["generation"] = "1700000000000002"
+    assert replace(objects).returncode == 0
+    assert (state / "crawl-osha.sqlite").read_bytes() == upload.read_bytes()
+    assert ["docker", "stop"] not in [call[:2] for call in calls()]  # nothing was running
+    assert len((state / "state-replace.log").read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_an_upload_that_is_not_a_whole_inventory_is_refused_and_the_servers_copy_stays(boot, tmp_path):
+    replace, data, calls = boot
+    broken = tmp_path / "broken.sqlite"
+    broken.write_bytes(b"SQLite format 3\0" + b"\0" * 100)  # cut off after its header
+    url = "gs://safestart-data/state-replace/crawl-osha.sqlite"
+    before = (data / "state" / "crawl-osha.sqlite").read_bytes()
+    result = replace({url: {"generation": "9", "file": str(broken)}}, running=("c1",))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "failed its check; the server's state/crawl-osha.sqlite stays" in result.stdout
+    assert (data / "state" / "crawl-osha.sqlite").read_bytes() == before
+    assert (data / "state" / "crawl-osha.sqlite-wal").exists()  # nothing of the copy in use was touched
+    assert ["docker", "stop"] not in [call[:2] for call in calls()]
+    assert (data / "state" / "state-replace.log").read_text(encoding="utf-8").startswith("crawl-osha.sqlite 9 refused")
+    assert not list((data / "state").glob(".*.incoming"))
+    assert replace({url: {"generation": "9", "file": str(broken)}}).returncode == 0
+    assert ["gcloud", "storage", "cp"] not in [call[:3] for call in calls()]  # never downloaded again
+
+
+def test_a_bucket_without_uploads_changes_nothing(boot):
+    replace, data, calls = boot
+    result = replace({})
+    assert result.returncode == 0 and result.stdout == "", result.stdout + result.stderr
+    assert [call[:3] for call in calls()] == [["gcloud", "storage", "ls"]]
+    assert (data / "state" / "state-replace.log").read_text(encoding="utf-8") == ""
+
+
+def test_the_replace_script_parses():
+    result = run([find_bash(), "-n", (GCP / "replace-state.sh").as_posix()])
+    assert result.returncode == 0, result.stderr
+
+
 def test_the_startup_script_parses():
     result = run([find_bash(), "-n", (GCP / "startup.sh").as_posix()])
     assert result.returncode == 0, result.stderr
+
+
+def test_an_upload_without_a_generation_or_a_download_that_fails_leaves_the_servers_copy(boot, tmp_path):
+    """Without a generation the upload could not be recorded as placed, and would be placed again at every boot; a
+    download that fails stops the script before it touches the server's copy, and startup.sh starts the stack anyway."""
+    replace, data, calls = boot
+    url = "gs://safestart-data/state-replace/crawl-osha.sqlite"
+    before = (data / "state" / "crawl-osha.sqlite").read_bytes()
+    upload = inventory(tmp_path / "upload" / "crawl-osha.sqlite", 3)
+    result = replace({url: {"generation": "", "file": str(upload)}}, running=("c1",))
+    assert result.returncode == 0 and "has no generation to record, left alone" in result.stdout
+    assert ["gcloud", "storage", "cp"] not in [call[:3] for call in calls()]
+    failed = replace({url: {"generation": "7", "file": str(tmp_path / "missing.sqlite")}}, running=("c1",))
+    assert failed.returncode != 0
+    assert (data / "state" / "crawl-osha.sqlite").read_bytes() == before
+    assert ["docker", "stop"] not in [call[:2] for call in calls()]
+    assert (data / "state" / "state-replace.log").read_text(encoding="utf-8") == ""  # tried again at the next boot
+    script = (GCP / "startup.sh").read_text(encoding="utf-8")
+    assert re.search(r'replace-state[.]sh" "\$bucket" "\$data" \|\|\n\s+echo "safestart: ', script)
