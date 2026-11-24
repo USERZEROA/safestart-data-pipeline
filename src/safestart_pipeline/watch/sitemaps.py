@@ -53,6 +53,7 @@ from .checks import Check
 from .feed import KEY_PREFIX as FEED_KEY_PREFIX
 from .polite import Answer, PoliteClient
 from .publish import Publisher, publish_new
+from .schedule import BUSY_RETRY
 from .state import WatchState
 
 # The least time between two reads of a site's sitemaps, whatever the schedule or a forced check asks.
@@ -61,7 +62,6 @@ MIN_INTERVAL = {"msha": timedelta(0), "osha": timedelta(days=1)}
 # commits its inventory after every request and a long download grows its file all the while; only the crawl's own
 # pauses are longer (a Retry-After or a suspected block, while it sends nothing).
 CRAWL_QUIET = timedelta(minutes=15)
-BUSY_RETRY = timedelta(hours=1)  # a site skipped while its crawl runs is due again this soon
 PARAMETERS = 500  # URLs per inventory query
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # the crawl inventory's times
 CHANGES = ("added", "changed", "dropped")

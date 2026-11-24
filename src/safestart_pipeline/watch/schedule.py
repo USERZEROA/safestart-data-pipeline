@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+BUSY_RETRY = timedelta(hours=1)  # retry a sitemap after a competing crawl
+
 SCHEDULE = {
     "versions": timedelta(hours=6),
     "sitemaps-msha": timedelta(hours=6),

@@ -110,11 +110,18 @@ def moment(text: object) -> str:
 
 def check_feed(root: Path, state: WatchState, publisher: Publisher) -> Check:
     folder = Folder(root)
-    numbers = folder.numbers()
-    if not numbers and folder.read("latest.json") is None:
+    if not (folder.path / "latest.json").is_file():
         return Check(SOURCE, "skipped", note="no feed on this host: no daily run has published a signed manifest here")
-    public = (folder.read("public-key.txt") or b"").decode("ascii", "replace").strip()
+    numbers = folder.numbers()
     last, remarks = int(state.mark(MARK) or 0), []
+    if numbers and numbers[-1] > last:
+        # The publisher writes numbered files and signatures first. Only latest.json completes the publication.
+        try:
+            latest = parse_manifest((folder.path / "latest.json").read_bytes(), "latest.json")["sequence"]
+        except (OSError, FeedError) as problem:
+            return Check(SOURCE, "error", note=f"Cannot read the published feed head: {problem}")
+        numbers = [number for number in numbers if number <= latest]
+    public = (folder.read("public-key.txt") or b"").decode("ascii", "replace").strip()
     if numbers and numbers[-1] < last:  # the folder was made again from 1
         remarks.append(f"the feed starts again below manifest {last}, so it was read again from its start")
         last = 0

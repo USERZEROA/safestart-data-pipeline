@@ -214,10 +214,42 @@ def test_a_manifest_that_is_not_signed_by_the_published_key_or_breaks_the_chain_
     assert again.status == "error" and len(publisher.events) == first - 1
 
 
+def test_failed_flush_leaves_the_manifest_for_the_next_check(folder, state):
+    class FailingPublisher(ListPublisher):
+        def flush(self):
+            raise RuntimeError("broker unavailable")
+
+    folder.publish([entry("/one", "changed", "2026-11-24T17:00:00Z", B, previous=A)])
+    with pytest.raises(RuntimeError, match="broker unavailable"):
+        check_feed(folder.root, state, FailingPublisher())
+    assert state.mark(watch_feed.MARK) is None
+    publisher = ListPublisher()
+    assert check_feed(folder.root, state, publisher).found == 1
+    assert state.mark(watch_feed.MARK) == "1"
+
+
 def test_no_feed_on_this_host_leaves_the_check_skipped(tmp_path, state):
     check = check_feed(tmp_path, state, ListPublisher())
     assert (check.status, check.note) == ("skipped",
                                           "no feed on this host: no daily run has published a signed manifest here")
+
+
+def test_numbered_files_wait_for_the_publish_to_finish(folder, state):
+    folder.publish([entry("/one", "new", "2026-11-24T17:00:00Z", A)])
+    latest = folder.path("latest.json")
+    first = latest.read_bytes()
+    latest.unlink()
+    publisher = ListPublisher()
+    assert check_feed(folder.root, state, publisher).status == "skipped"
+    assert state.mark(watch_feed.MARK) is None
+    folder.publish([entry("/two", "restored", "2026-11-25T17:00:00Z", B)])
+    second = latest.read_bytes()
+    latest.write_bytes(first)
+    assert check_feed(folder.root, state, publisher).found == 1
+    assert state.mark(watch_feed.MARK) == "1"
+    latest.write_bytes(second)
+    assert check_feed(folder.root, state, publisher).found == 1
+    assert [event.details["change"] for event in publisher.events] == ["new", "restored"]
 
 
 def test_manifests_removed_before_they_were_read_are_named(folder, state):
