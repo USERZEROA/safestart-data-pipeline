@@ -223,7 +223,8 @@ does not identify a section. MSHA's citations are to title 30; 11 violations cit
 ### document (102,470 rows)
 
 Every URL the three crawls learned of, from `state/crawl-{osha,msha,arlweb}.sqlite`, in whatever state it ended
-(`fetched`, `unchanged`, `skipped`, `not_found`, `redirect`, `error`, or `pending`/`retry` while a crawl runs). `kind`
+(`fetched`, `unchanged`, `skipped`, `not_found`, `redirect`, `error`, `rejected` for a body that failed its type check,
+or `pending`/`retry` while a crawl runs). `kind`
 is derived from the URL with the crawler's own rule (`crawl/urls.py`): a known file extension makes `pdf`, `office`
 (Word, Excel, PowerPoint, Visio), `data` (CSV, text, XML, JSON, archives, databases) or `other` (images, audio, video,
 programs); anything else, such as `/standardnumber/1910/1910.1200`, is a `page`. `content_type` is the media type

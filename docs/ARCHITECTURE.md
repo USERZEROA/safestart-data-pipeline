@@ -19,7 +19,8 @@ services, the stores, the orchestration, the entry points, the deployment and th
 | `watch/` | Live watchers: new dataset versions (record diffs), website changes (sitemaps), Federal Register documents |
 | `ml/` | Features from the lake with Polars and a mine accident-risk model (`docs/ML.md`) |
 | `dashboard/` | Streamlit app over the warehouse and the streaming store |
-| `flows/` | Prefect flows that run and schedule the batch and the model (`python -m safestart_pipeline.flows`) |
+| `flows/` | Prefect flows that run and schedule the batch, the model and the official files (`python -m safestart_pipeline.flows`) |
+| `official/` | The daily update of the official files (`run.py`, `daily.py`, `sources.py`), its record (`state.py`), the signed feed SafeStart reads (`feed.py`, docs/OFFICIAL_FILES.md) and the purge of retired originals (`purge.py`) |
 | `verify.py` | Completeness reports of the crawls and the bulk downloads (`ssp verify`) |
 | `sample.py` | A small synthetic data root the whole stack runs on, for CI and for readers without the data (`python -m safestart_pipeline.sample`) |
 
@@ -93,10 +94,11 @@ record becomes the same event whichever path finds it.
 | `regulation` | Federal Register document number | `agency`, `document_number`, `type`, `html_url`, `publication_date` |
 
 A page_change key holds the change and the lastmod, so a change is reported once while a later edit of the same page is
-reported again; a page the crawl never recorded is `added` once, and a later lastmod of it is `changed`. An event is
-serious, for the counts, when it is a violation with `sig_sub` true or an accident with `serious` true. A replayed
-event's `source` holds its dataset, the lake version it was read from and `through`, the last source day of its replay
-pass, which the analytics consumer's clock reads.
+reported again; a page the crawl never recorded, or first recorded after the watcher's previous read (the daily
+update of the official files records new sitemap URLs too), is `added` once, and a later lastmod of it is `changed`. An
+event is serious, for the counts, when it is a violation with `sig_sub` true or an accident with `serious` true. A
+replayed event's `source` holds its dataset, the lake version it was read from and `through`, the last source day of
+its replay pass, which the analytics consumer's clock reads.
 
 ## Streaming
 
@@ -139,7 +141,9 @@ pass, which the analytics consumer's clock reads.
   version. Where the watcher can write the data root's state folder it holds the crawl's lock while it reads a site's
   sitemaps; where it cannot (the containers, whose file locks do not reach a crawl on the host either), it skips a
   site while that crawl's inventory, its `-wal` or a download in progress (`raw/<site>/objects/tmp`) changed in the
-  last 15 minutes. Every request obeys robots.txt and the host's pacing, redirects and failed requests included
+  last 15 minutes. A skipped check is due again an hour later, so the daily update of the official files, which writes
+  OSHA's inventory from 16:30 to 04:30 UTC, never keeps OSHA's check from running. Every request obeys robots.txt and
+  the host's pacing, redirects and failed requests included
   (`watch/polite.py`). Their state (`SAFESTART_WATCH_STATE`, a small SQLite file) remembers every event published, the
   versions compared (refused ones marked) and when each source was checked; the version check spills DuckDB's
   overflow into a folder beside it. They log to standard error and to `SAFESTART_WATCH_LOG` unless it is `-`. Every
@@ -163,16 +167,21 @@ pass, which the analytics consumer's clock reads.
 ## Orchestration
 
 The orchestrator service (`python -m safestart_pipeline.flows serve`) runs the batch flow every day at 14:00 UTC
-(bulk downloads, lake, warehouse, exports) and the model flow every Sunday at 15:00 UTC, one at a time. With
-`PREFECT_API_URL` and `PREFECT_API_KEY` set it serves both flows as Prefect deployments (Prefect Cloud shows their runs
+(bulk downloads, lake, warehouse, exports), the model flow every Sunday at 15:00 UTC and the official flow (the daily
+update of the official files, `official/`) every day at 16:30 UTC until 04:30 UTC, one at a time. With
+`PREFECT_API_URL` and `PREFECT_API_KEY` set it serves the flows as Prefect deployments (Prefect Cloud shows their runs
 and can start one); without them it keeps the same schedule in its own process. `python -m safestart_pipeline.flows
-run batch|model` (or `ssp pipeline [--model]`) runs one now. It is the only service that writes the data root, so
-Compose starts it only with its profile (`COMPOSE_PROFILES=orchestrator`, `scripts/start.py --with-orchestrator`): the
-server turns it on, a workstation when asked. Served runs execute in processes of their own; the package's progress
-lines reach their Prefect logs through `PREFECT_LOGGING_EXTRA_LOGGERS`.
+run batch|model|official` (or `ssp pipeline [--model]`, `ssp official run`) runs one now. It is the only service
+that writes the data root, so Compose starts it only with its profile (`COMPOSE_PROFILES=orchestrator`,
+`scripts/start.py --with-orchestrator`): the server turns it on, a workstation when asked. Served runs execute in
+processes of their own; the package's progress lines reach their Prefect logs through
+`PREFECT_LOGGING_EXTRA_LOGGERS`.
 
 The batch and model flows and `ssp lake` hold one writer lock on the data root (`state/pipeline.lock`) from start to
 end, so a second run started meanwhile, by hand or by the schedule, fails at once instead of writing the same files.
+The official flow writes none of those files and does not take that lock: it holds each crawl site's lock
+(`state/crawl-<site>.lock`) while it asks that site, and its deadline keeps it clear of the batch's and the model's
+starts.
 Without a Prefect API, a run that raises before it can start (Prefect's local server not answering, for example) is
 tried again 15 minutes later, up to three times, and the schedule goes on; the orchestrator gives that local server
 120 seconds to start.
@@ -182,13 +191,18 @@ tried again 15 minutes later, up to three times, and the schedule goes on; the o
 - `ssp lake`: builds the Parquet lake.
 - `ssp pipeline [--no-download] [--model]`: runs the batch flow once (downloads, lake, warehouse, exports), then, with
   `--model`, the model flow.
+- `ssp official run [--site] [--until] [--budget]`, `ssp official status`: runs the daily update of the official files
+  now, without Prefect, then publishes its manifest; shows its latest run, queue, re-check cycle, feed and purge.
+- `ssp official manifest`, `ssp official purge [--delete]`, `ssp official keygen --out <file>`: publishes the feed's
+  next manifest now; reports, or with `--delete` deletes, the originals of URLs retired more than 30 days ago; writes
+  a new signing key pair (docs/OFFICIAL_FILES.md).
 - `ssp warehouse build|query [name]|export`, `ssp ml train|analyze`: the warehouse and model commands below.
 - `python -m safestart_pipeline.warehouse build`: builds the DuckDB warehouse.
 - `python -m safestart_pipeline.stream.init`: creates the Kafka topics and the PostgreSQL schema.
 - `python -m safestart_pipeline.stream.replay`: replays enforcement history through Kafka.
 - `python -m safestart_pipeline.stream.storage` / `.analytics`: the two consumer groups.
 - `python -m safestart_pipeline.watch once|loop`: runs the due live watchers once, or on their schedules.
-- `python -m safestart_pipeline.flows serve`: runs the batch and model flows on their schedules.
+- `python -m safestart_pipeline.flows serve`: runs the batch, model and official flows on their schedules.
 - `python -m safestart_pipeline.ml train`: builds features and trains the accident-risk model.
 - `streamlit run src/safestart_pipeline/dashboard/app.py`: the dashboard.
 - `python -m safestart_pipeline.sample <folder>`: writes the synthetic sample data root (docs/DEPLOYMENT.md).
