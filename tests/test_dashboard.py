@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -23,8 +23,10 @@ import streamlit as st
 from psycopg.types.json import Jsonb
 from streamlit.testing.v1 import AppTest
 
+from safestart_pipeline.crawl.crawler import iso
 from safestart_pipeline.dashboard import app as dashboard
 from safestart_pipeline.dashboard import charts, data
+from safestart_pipeline.official.state import OfficialState
 from safestart_pipeline.stream.events import ENFORCEMENT_KINDS, KINDS, Event
 from safestart_pipeline.warehouse.build import MACROS, build
 from test_warehouse import write_data_root
@@ -322,6 +324,114 @@ def test_a_search_with_more_matches_than_it_lists_says_so(stores, monkeypatch):
 def test_the_sources_page_counts_urls_and_distinct_files(stores):
     text = text_of(run_page("Sources"))
     assert "4 URLs downloaded from the MSHA and OSHA websites: 3 distinct files, 0.0 GB." in text
+
+
+def official_record(root: Path, *, manifest_age: timedelta | None = timedelta(hours=3),
+                    outcome: str = "published") -> None:
+    """The latest daily run of the official files (www.msha.gov refused, OSHA found changes), the latest attempt to
+    publish the feed with `outcome`, the newest manifest generated `manifest_age` ago (none for None), and a purge."""
+    now = datetime.now(UTC)
+    state = OfficialState(root / "state" / "official.sqlite")
+    state.start_run("official-1", started_at=iso(now - timedelta(hours=12)), until=iso(now), trigger="flow")
+    state.start_source("official-1", "msha", host="www.msha.gov", started_at=iso(now - timedelta(hours=12)))
+    state.end_source("official-1", "msha", ended_at=iso(now - timedelta(hours=12)), status="refused",
+                     note="https://www.msha.gov/sitemap.xml: refused, the host served an HTML page", requests=2,
+                     stop_reason="refused")
+    state.start_source("official-1", "osha", host="www.osha.gov", started_at=iso(now - timedelta(hours=12)))
+    state.end_source("official-1", "osha", ended_at=iso(now - timedelta(hours=1)), status="ok",
+                     note="2,803 requests, stopped: time limit", requests=2803, stop_reason="time limit",
+                     details={"changes": {"new": 3, "changed": 2, "gone": 1, "rejected": 1}, "checked_unchanged": 2500})
+    state.end_run("official-1", ended_at=iso(now - timedelta(hours=1)), stop_reason="done")
+    note = ("OFFICIAL_FEED_SIGNING_KEY is not set on this host, so nothing was published" if outcome == "unsigned"
+            else "manifest 12")
+    state.add_publish(attempted_at=iso(now - timedelta(hours=1)), trigger="flow", run_id="official-1", outcome=outcome,
+                      note=note)
+    state.add_purge(purged_at=iso(now - timedelta(hours=1)), site="osha", outcome="done", note="deleted 2 objects",
+                    deleted=2, deleted_bytes=3_500_000)
+    state.close()
+    if manifest_age is not None:
+        folder = root / "exports" / "official"
+        folder.mkdir(parents=True)
+        generated = iso(now - manifest_age)
+        (folder / "latest.json").write_text(json.dumps({
+            "format": "safestart-official-updates/1", "sequence": 12, "generatedAt": generated,
+            "window": {"start": iso(now - manifest_age - timedelta(days=1)), "end": generated},
+            "counts": {"all": {"new": 3}}}), encoding="utf-8")
+
+
+def test_the_sources_page_shows_the_latest_official_run_and_the_feed(stores):
+    official_record(stores)
+    app = run_page("Sources")
+    text = text_of(app)
+    assert "Official files" in text and "last started 12 hours ago" in text and "ended 1 hour ago (done)" in text
+    for tile in ("New: 3", "Changed: 2", "Gone: 1", "Restored: 0", "Moved: 0", "Refused files: 1",
+                 "Unchanged: 2,500"):
+        assert tile in text
+    assert ("www.msha.gov refused the run's requests; refusals are recorded, never worked around."
+            in [info.value for info in app.info])
+    assert "manifest 12, generated 3 hours ago" in text and "/feed/official/latest.json" in text
+    assert "2 files deleted, 3.5 MB" in text
+    assert [warning.value for warning in app.warning] == []  # nothing is wrong
+    [sources] = [frame.value for frame in app.dataframe if "requests" in frame.value]
+    assert sources["source"].tolist() == ["msha", "osha"] and sources["requests"].tolist() == [2, 2803]
+
+
+def test_a_feed_older_than_36_hours_or_not_published_is_a_warning(stores, tmp_path_factory, monkeypatch):
+    official_record(stores, manifest_age=timedelta(hours=40))
+    warnings = [warning.value for warning in run_page("Sources").warning]
+    assert len(warnings) == 1 and "40 hours old, more than 36" in warnings[0]
+
+    unsigned = tmp_path_factory.mktemp("unsigned")
+    monkeypatch.setenv("SAFESTART_DATA_ROOT", str(unsigned))
+    st.cache_data.clear()
+    official_record(unsigned, manifest_age=None, outcome="unsigned")
+    warnings = [warning.value for warning in run_page("Sources").warning]
+    assert len(warnings) == 1 and "published nothing: OFFICIAL\\_FEED\\_SIGNING\\_KEY is not set" in warnings[0]
+
+
+def test_a_run_that_stopped_unrecorded_and_a_purge_that_only_reported_or_failed_say_so(stores, tmp_path_factory,
+                                                                                        monkeypatch):
+    """A run past its deadline with no end recorded (its process died) is not "still running"; a purge on a host
+    without the feed's key is a dry run; a purge that could not delete a file is a warning."""
+    now = datetime.now(UTC)
+    state = OfficialState(stores / "state" / "official.sqlite")
+    state.start_run("official-died", started_at=iso(now - timedelta(hours=20)), until=iso(now - timedelta(hours=8)),
+                    trigger="flow")
+    state.start_source("official-died", "osha", host="www.osha.gov", started_at=iso(now - timedelta(hours=20)))
+    state.add_purge(purged_at=iso(now - timedelta(days=1)), site="osha", outcome="dry_run",
+                    note="a dry run: would delete 2 objects")
+    # www.msha.gov's inventory is of the first version on every host: skipped, which leaves the purge a dry run (the
+    # acceptance run of 2026-11-24 showed "0 files deleted" for this mix).
+    state.add_purge(purged_at=iso(now - timedelta(days=1)), site="msha", outcome="skipped",
+                    note="an inventory of the first version, which records no retirements")
+    state.close()
+    text = text_of(run_page("Sources"))
+    assert "last started 20 hours ago" in text and "stopped without recording its end" in text
+    assert "is still running" not in text
+    assert "a dry run, nothing deleted; only the server that signs the feed deletes them." in text
+    assert "files deleted" not in text
+
+    failed = tmp_path_factory.mktemp("failed")
+    monkeypatch.setenv("SAFESTART_DATA_ROOT", str(failed))
+    st.cache_data.clear()
+    official_record(failed)
+    state = OfficialState(failed / "state" / "official.sqlite")
+    state.add_purge(purged_at=iso(now), site="arlweb", outcome="error", deleted=1, deleted_bytes=10,
+                    note="deleted 1 objects, 10 bytes; 1 could not be deleted")
+    state.close()
+    app = run_page("Sources")
+    assert "3 files deleted, 3.5 MB" in text_of(app)
+    assert [warning.value for warning in app.warning] == [
+        "The latest purge of arlweb failed: deleted 1 objects, 10 bytes; 1 could not be deleted."]
+
+    skipped = tmp_path_factory.mktemp("skipped")
+    monkeypatch.setenv("SAFESTART_DATA_ROOT", str(skipped))
+    st.cache_data.clear()
+    state = OfficialState(skipped / "state" / "official.sqlite")
+    state.add_purge(purged_at=iso(now), site="osha", outcome="skipped", note="no crawl inventory on this host")
+    state.close()
+    text = text_of(run_page("Sources"))
+    assert "every site skipped (osha: no crawl inventory on this host)" in text and "files deleted" not in text
 
 
 def test_a_mine_brief_from_an_id_as_msha_writes_it(stores):

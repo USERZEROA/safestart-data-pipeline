@@ -1,8 +1,10 @@
-"""Read-only access to the warehouse and the streaming store, for the dashboard.
+"""Read-only access to the warehouse, the streaming store and the official files' record and feed, for the dashboard.
 
 Every query returns a `Table`: its rows, or no rows and one short sentence saying what is missing (the warehouse has
-not been built, a table or view is not there yet, PostgreSQL cannot be reached). A page shows that sentence where its
-chart would be, so a store that is down or not built yet empties only the panels that need it.
+not been built, a table or view is not there yet, PostgreSQL cannot be reached, no official run has been recorded). A
+page shows that sentence where its chart would be, so a store that is down or not built yet empties only the panels
+that need it. The official files' record (state/official.sqlite) and the feed (exports/official/latest.json) are read
+from the data root, which the dashboard's container mounts read-only.
 
 The warehouse is opened read-only for each query. The build writes a new file and swaps it in, so a short-lived
 connection always reads the newest complete warehouse and never holds an old one open. DuckDB would spill a query that
@@ -19,12 +21,15 @@ built from an older snapshot still describes a full year.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import sqlite3
 import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +39,10 @@ import psycopg
 from psycopg.conninfo import conninfo_to_dict
 
 from safestart_pipeline import config
+from safestart_pipeline.official.feed import feed_status
+from safestart_pipeline.official.purge import latest_purges
 from safestart_pipeline.stream.events import ENFORCEMENT_KINDS, MODES
+from safestart_pipeline.verify import read_only
 
 WAREHOUSE_BUILD = "python -m safestart_pipeline.warehouse build"
 STREAM_INIT = "python -m safestart_pipeline.stream.init"
@@ -467,3 +475,77 @@ def source_freshness() -> Table:
         """
     ), "checked_at")
 
+
+
+# The daily update of the official files (SQLite and JSON in the data root)
+
+OFFICIAL_RUN = "ssp official run"
+OFFICIAL_COUNTS = ("new", "changed", "gone", "restored", "moved", "rejected", "checked")
+
+
+def official_run() -> Table:
+    """The latest daily run of the official files, one row per source it asked: its host, status, requests, note and
+    what it found (state/official.sqlite), with the run's start, deadline, end and stop reason on every row."""
+    path = config.data_root() / "state" / "official.sqlite"
+    missing = Table(problem="No daily run of the official files on this host yet: the orchestrator's official flow "
+                            f"records one every day, and `{OFFICIAL_RUN}` one now.")
+    if not path.exists():
+        return missing
+    try:
+        db = read_only(path)
+        try:
+            run = db.execute("select * from runs order by started_at desc limit 1").fetchone()
+            rows = db.execute("select * from sources where run_id = ? order by started_at",
+                              (run["run_id"],)).fetchall() if run else []
+        finally:
+            db.close()
+    except sqlite3.Error as problem:
+        return Table(problem=f"The official files' record could not be read: {_first_line(problem)}")
+    if run is None:
+        return missing
+    records = []
+    for row in rows:
+        details = json.loads(row["details"] or "{}")
+        found = {**(details.get("changes") or {}), "checked": details.get("checked_unchanged", 0)}
+        records.append({"source": row["source"], "host": row["host"], "status": row["status"],
+                        "requests": row["requests"], "note": row["note"], "ended_at": row["ended_at"],
+                        **{name: int(found.get(name) or 0) for name in OFFICIAL_COUNTS},
+                        "run_started_at": run["started_at"], "run_until": run["until"],
+                        "run_ended_at": run["ended_at"], "run_stop": run["stop_reason"]})
+    columns = ["source", "host", "status", "requests", "note", "ended_at", *OFFICIAL_COUNTS, "run_started_at",
+               "run_until", "run_ended_at", "run_stop"]
+    return _with_times(Table(pd.DataFrame(records, columns=columns)), "ended_at", "run_started_at", "run_until",
+                       "run_ended_at")
+
+
+def official_feed() -> Table:
+    """The feed SafeStart reads, in one row: the newest manifest (exports/official/latest.json: its sequence, when it
+    was generated and its age in hours, whether that is too old, its window, or why it cannot be read) and the latest
+    attempt to publish one (its time, outcome and note)."""
+    try:
+        report = feed_status(config.data_root(), datetime.now(UTC))
+    except (OSError, sqlite3.Error) as problem:
+        return Table(problem=f"The feed's record could not be read: {_first_line(problem)}")
+    latest, attempt = report["latest"] or {}, report["last_attempt"] or {}
+    if not latest and not attempt:
+        return Table(problem="No feed for SafeStart on this host yet: each daily run of the official files publishes "
+                             "its manifest to exports/official/.")
+    window = latest.get("window") or {}
+    row = {"sequence": latest.get("sequence"), "generated_at": latest.get("generatedAt"),
+           "age_hours": latest.get("ageHours"), "stale": bool(latest.get("stale")), "problem": latest.get("problem"),
+           "window_start": window.get("start"), "window_end": window.get("end"),
+           "attempted_at": attempt.get("attempted_at"), "outcome": attempt.get("outcome"), "note": attempt.get("note")}
+    return _with_times(Table(pd.DataFrame([row])), "generated_at", "attempted_at")
+
+
+def official_purges() -> Table:
+    """Each site's latest purge of retired originals on this host (state/official.sqlite)."""
+    try:
+        purges = latest_purges(config.data_root())
+    except (OSError, sqlite3.Error) as problem:
+        return Table(problem=f"The purge record could not be read: {_first_line(problem)}")
+    frame = pd.DataFrame([{"site": site, **{key: found[key] for key in ("purged_at", "outcome", "deleted",
+                                                                        "deleted_bytes", "note")}}
+                          for site, found in sorted(purges.items())],
+                         columns=["site", "purged_at", "outcome", "deleted", "deleted_bytes", "note"])
+    return _with_times(Table(frame), "purged_at")

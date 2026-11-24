@@ -2,8 +2,9 @@
 
 Five pages: Live (events as they arrive), Enforcement (counts per day with forecasts and anomalies, and each
 district's history), Standards (the most cited 30 CFR sections, their text and the S&S trend), Mine brief (one mine
-as a crew sees it before a shift) and Sources (what the pipeline holds and how fresh it is). Pages read only through
-`data`, which turns a missing store into a sentence, so a panel shows either its data or what is missing.
+as a crew sees it before a shift) and Sources (what the pipeline holds and how fresh it is, the daily update of the
+official files and the feed SafeStart reads among it). Pages read only through `data`, which turns a missing store into
+a sentence, so a panel shows either its data or what is missing.
 
 The tabs run lazily and follow the URL (`?page=Mine+brief&mine=4609612`): only the open page queries its stores, and
 a mine's brief can be shared as a link. Warehouse answers stay cached until a new build is swapped in, but a query that
@@ -38,6 +39,7 @@ from safestart_pipeline.dashboard.charts import (
     NO_DISTRICT,
 )
 from safestart_pipeline.definitions import SERIOUS_DEGREES
+from safestart_pipeline.official.feed import STALE_AFTER
 from safestart_pipeline.stream.events import ENFORCEMENT_KINDS
 
 PAGES = ("Live", "Enforcement", "Standards", "Mine brief", "Sources")
@@ -73,6 +75,9 @@ SECTION_COLUMNS = {
 # A printf format cannot scale a number, so these columns are shown in the units their formats state: a share in
 # percent, and the nation's penalty totals in millions (a mine's stay in dollars, which millions would round to $0.0M).
 SECTION_SCALES = {"ss_share": 100, "proposed_penalty_total": 1e-6}
+OFFICIAL_LABELS = {"new": "New", "changed": "Changed", "gone": "Gone", "restored": "Restored", "moved": "Moved",
+                   "rejected": "Refused files", "checked": "Unchanged"}
+STALE_HOURS = int(STALE_AFTER.total_seconds() // 3600)
 
 
 # Cached reads
@@ -115,6 +120,11 @@ def warehouse(query: Callable[..., data.Table], *args: Any) -> data.Table:
 
 def stream(query: Callable[..., data.Table], *args: Any) -> data.Table:
     """A streaming-store query, cached for a few seconds."""
+    return _fresh_cached(query.__name__, args)
+
+
+def files(query: Callable[..., data.Table], *args: Any) -> data.Table:
+    """A read of the data root's own records (the official files' run, feed and purge), cached for a few seconds."""
     return _fresh_cached(query.__name__, args)
 
 
@@ -434,6 +444,8 @@ def sources_page() -> None:
         st.caption(f"{total:,} URLs downloaded from the MSHA and OSHA websites{distinct}.")
         st.altair_chart(charts.documents(documents.frame), width="stretch")
 
+    official_files()
+
     st.subheader("Live source checks", anchor=False)
     checks = stream(data.source_freshness)
     if shown(checks, "No live checks yet: start the watchers."):
@@ -459,6 +471,72 @@ def sources_page() -> None:
                          "errors_24h": st.column_config.NumberColumn("Errors (24 h)", format=COUNT_FORMAT),
                          "found_24h": st.column_config.NumberColumn("Found (24 h)", format=COUNT_FORMAT),
                          "note": "Note"})
+
+
+def official_files() -> None:
+    """The daily update of the official files: when it last ran, what it found, the hosts that refused it, and the feed
+    SafeStart reads, with a warning when its newest manifest is older than STALE_HOURS or the last publish failed."""
+    st.subheader("Official files", anchor=False)
+    now = datetime.now(UTC)
+    run = files(data.official_run)
+    if shown(run, "The latest run of the official files asked no source."):
+        frame = run.frame
+        first = frame.iloc[0]
+        started = first["run_started_at"]
+        if not pd.isna(first["run_ended_at"]):
+            ended = f"ended {ago(first['run_ended_at'], now)} ({md(first['run_stop'])})"
+        elif first["run_until"] < now:  # past its deadline with no end recorded: its process stopped or died
+            ended = "stopped without recording its end (the next run goes on from what it recorded)"
+        else:
+            ended = "is still running"
+        st.caption(f"The daily update of the official files last started {ago(started, now)} "
+                   f"({started:%Y-%m-%d %H:%M} UTC) and {ended}. It found:")
+        with st.container(horizontal=True, gap="small"):
+            for name, label in OFFICIAL_LABELS.items():
+                tile(label, count(frame[name].sum()))
+        refused = [md(host) for host in frame.loc[frame["status"] == "refused", "host"]]
+        if refused:
+            st.info(f"{', '.join(refused)} refused the run's requests; refusals are recorded, never worked around.",
+                    icon=":material/info:")
+        st.dataframe(frame, hide_index=True, column_order=["source", "status", "requests", "note"],
+                     column_config={"source": "Source", "status": "Status",
+                                    "requests": st.column_config.NumberColumn("Requests", format=COUNT_FORMAT),
+                                    "note": st.column_config.TextColumn("Note", width="large")})
+    feed = files(data.official_feed)
+    if shown(feed, ""):
+        row = feed.frame.iloc[0]
+        if not pd.isna(row["sequence"]):
+            st.caption(f"Feed for SafeStart (/feed/official/latest.json): manifest {int(row['sequence']):,}, "
+                       f"generated {ago(row['generated_at'], now)}, for {row['window_start']} to {row['window_end']}.")
+            if row["stale"]:
+                st.warning(f"The feed's newest manifest is {row['age_hours']:,.0f} hours old, more than {STALE_HOURS}: "
+                           "no daily run has published since. SafeStart treats the feed as stale until one does.",
+                           icon=":material/warning:")
+        elif isinstance(row["problem"], str):
+            st.warning(md(row["problem"]), icon=":material/warning:")
+        if row["outcome"] in ("unsigned", "error"):
+            what = "published nothing" if row["outcome"] == "unsigned" else "failed"
+            st.warning(f"The latest attempt to publish the feed, {ago(row['attempted_at'], now)}, {what}: "
+                       f"{md(row['note'])}.", icon=":material/warning:")
+    purges = files(data.official_purges)
+    if not purges.problem and not purges.empty:
+        frame = purges.frame
+        when = ago(frame["purged_at"].max(), now)
+        # A site with nothing to purge here (no inventory, one of the first version such as www.msha.gov's, or its
+        # crawl holding the lock) is skipped; the others say whether the purge deleted or only reported.
+        acted = frame.loc[frame["outcome"] != "skipped"]
+        if acted.empty:
+            st.caption(f"Latest purge of retired originals on this host ({when}): every site skipped ("
+                       + "; ".join(f"{md(row.site)}: {md(row.note)}" for row in frame.itertuples()) + ").")
+        elif (acted["outcome"] == "dry_run").all():
+            st.caption(f"Latest purge of retired originals on this host ({when}): a dry run, nothing deleted; only the "
+                       "server that signs the feed deletes them.")
+        else:
+            st.caption(f"Latest purge of retired originals on this host ({when}): {int(frame['deleted'].sum()):,} "
+                       f"files deleted, {frame['deleted_bytes'].sum() / 1e6:,.1f} MB, 30 days after every URL that "
+                       "referenced them was gone; the bucket keeps its copies.")
+        for failed in frame.loc[frame["outcome"] == "error"].itertuples():
+            st.warning(f"The latest purge of {failed.site} failed: {md(failed.note)}.", icon=":material/warning:")
 
 
 def header() -> None:
