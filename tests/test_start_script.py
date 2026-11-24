@@ -62,12 +62,12 @@ def test_the_first_run_writes_a_private_env_with_a_random_password(checkout):
 
 def test_later_runs_keep_the_password_and_save_new_options(checkout):
     first = start.prepare_env(checkout, volume_exists=no_volume)
-    second = start.prepare_env(checkout, data_root="F:/Safe Start Data", public_domain="34.120.7.15",
+    second = start.prepare_env(checkout, data_root="D:/Pipeline Data Root", public_domain="34.120.7.15",
                                volume_exists=lambda name: pytest.fail("an existing .env needs no volume check"))
     assert second["POSTGRES_PASSWORD"] == first["POSTGRES_PASSWORD"]
     text = (checkout / ".env").read_text(encoding="utf-8")
-    assert "DATA_ROOT='F:/Safe Start Data'\n" in text and "PUBLIC_DOMAIN=34.120.7.15\n" in text
-    assert start.read_env(text)["DATA_ROOT"] == "F:/Safe Start Data"
+    assert "DATA_ROOT='D:/Pipeline Data Root'\n" in text and "PUBLIC_DOMAIN=34.120.7.15\n" in text
+    assert start.read_env(text)["DATA_ROOT"] == "D:/Pipeline Data Root"
     assert start.prepare_env(checkout) == second  # nothing given, nothing changed
 
 
