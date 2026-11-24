@@ -1,4 +1,4 @@
-"""`python -m safestart_pipeline.watch once|loop`: the live watchers on their schedules.
+"""`python -m safestart_pipeline.watch once|loop`: the live watchers on their schedules (schedule.py).
 
 Dataset versions every 6 hours (MSHA publishes weekly, and the lake takes each new version when the acquire flow runs),
 MSHA's sitemaps every 6 hours, OSHA's once a day (it asks for 10 seconds between requests), and the Federal Register
@@ -21,7 +21,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
@@ -34,16 +34,11 @@ from ..crawl.sites import SITES
 from .checks import Check, record_check
 from .federal_register import check_federal_register
 from .publish import Publisher, kafka_publisher
+from .schedule import SCHEDULE
 from .sitemaps import check_sitemaps
 from .state import WatchState, default_path
 from .versions import check_versions
 
-SCHEDULE = {
-    "versions": timedelta(hours=6),
-    "sitemaps-msha": timedelta(hours=6),
-    "sitemaps-osha": timedelta(days=1),
-    "federal-register": timedelta(hours=1),
-}
 MAX_SLEEP_SECONDS = 900.0  # wake at least this often, so a changed clock or a stop request is noticed
 log = logging.getLogger("watch")
 

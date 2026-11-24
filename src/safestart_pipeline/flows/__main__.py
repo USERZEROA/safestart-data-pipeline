@@ -38,7 +38,7 @@ from . import PACKAGE, report_progress
 from .model import model
 from .official import official
 from .pipeline import batch
-from .schedule import SUNDAY, Schedule, run_on_schedule
+from .schedule import SCHEDULES, Schedule, run_on_schedule
 
 log = logging.getLogger(f"{PACKAGE}.flows")
 
@@ -51,9 +51,9 @@ class Job:
 
 
 JOBS = {
-    "batch": Job(batch, "daily", Schedule(hour=14)),
-    "model": Job(model, "weekly", Schedule(hour=15, weekday=SUNDAY)),
-    "official": Job(official, "daily", Schedule(hour=16, minute=30)),
+    "batch": Job(batch, "daily", SCHEDULES["batch"]),
+    "model": Job(model, "weekly", SCHEDULES["model"]),
+    "official": Job(official, "daily", SCHEDULES["official"]),
 }
 
 

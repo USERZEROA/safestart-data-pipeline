@@ -1,6 +1,7 @@
-"""When the scheduled flows run, stated once for both ways of running them: a Prefect deployment takes a schedule's cron
-string, and the local scheduler, for a host without a Prefect API, takes its next run after a given moment. Times are
-UTC.
+"""When the scheduled flows run (SCHEDULES), stated once for both ways of running them and for the dashboard, which
+shows each flow's next run: a Prefect deployment takes a schedule's cron string, and the local scheduler, for a host
+without a Prefect API, takes its next run after a given moment. Times are UTC. This module imports nothing heavy (no
+Prefect), so the dashboard can read it.
 
 The local scheduler runs one flow at a time, as `prefect.serve` does with a limit of one, so the warehouse build and the
 model training never compete for the host's memory. A run that ends after another flow's time leaves that flow due, so
@@ -55,6 +56,15 @@ class Schedule:
         if run <= moment:
             run += timedelta(days=1 if self.weekday is None else 7)
         return run
+
+
+# The daily batch (downloads, lake, warehouse, exports), the weekly model on Sundays after that day's batch, and the
+# daily update of the official files after both, which stops by 04:30 UTC the next day (official/run.py).
+SCHEDULES = {
+    "batch": Schedule(hour=14),
+    "model": Schedule(hour=15, weekday=SUNDAY),
+    "official": Schedule(hour=16, minute=30),
+}
 
 
 def run_on_schedule(schedules: Mapping[str, Schedule], run: Callable[[str], object], *,

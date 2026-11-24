@@ -58,7 +58,7 @@ from .state import HOSTS, OfficialState
 SOURCES = ("msha", "ecfr", "federal_register", "arlweb", "osha")  # the order of a run
 CRAWLED = ("arlweb", "osha")
 FINISH_BY = clock_time(4, 30)  # UTC: before SafeStart's planned daily import at 06:00 UTC
-# The other flows' starts (flows/__main__.py), as (weekday, Monday 0, or None for every day; time of day UTC).
+# The other flows' starts (flows/schedule.py), as (weekday, Monday 0, or None for every day; time of day UTC).
 KEEP_CLEAR = ((None, clock_time(14, 0)), (6, clock_time(15, 0)))
 CLEAR_MARGIN = timedelta(minutes=15)
 LOCK_WAIT = timedelta(minutes=10)

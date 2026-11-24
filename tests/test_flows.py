@@ -21,7 +21,7 @@ from safestart_pipeline.flows import __main__ as flows_main
 from safestart_pipeline.flows import model as model_flow
 from safestart_pipeline.flows import official as official_flow
 from safestart_pipeline.flows import pipeline
-from safestart_pipeline.flows.schedule import MAX_SLEEP_SECONDS, SUNDAY, Schedule, run_on_schedule
+from safestart_pipeline.flows.schedule import MAX_SLEEP_SECONDS, SCHEDULES, SUNDAY, Schedule, run_on_schedule
 from safestart_pipeline.lake.msha_ogd import LakeBuildError
 from safestart_pipeline.official import run as official_run
 
@@ -398,6 +398,11 @@ def test_the_official_run_stops_before_safestarts_import_and_never_runs_into_ano
         (weekday, at.hour, at.minute) for weekday, at in official_run.KEEP_CLEAR}
     for schedule in others:  # one flow run at a time: the batch and the model never wait behind it
         assert official_run.deadline(start) < schedule.next_after(start)
+
+
+def test_each_flow_runs_on_the_schedule_stated_once_for_the_dashboard_too():
+    assert {name: job.schedule for name, job in flows_main.JOBS.items()} == SCHEDULES
+    assert [schedule.cron for schedule in SCHEDULES.values()] == ["0 14 * * *", "0 15 * * 0", "30 16 * * *"]
 
 
 def test_an_official_run_the_local_scheduler_starts_late_keeps_the_deadline_of_its_due_time(jobs, monkeypatch):
