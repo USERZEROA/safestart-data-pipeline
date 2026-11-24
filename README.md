@@ -10,7 +10,7 @@ pipeline's main flow: a real Prefect run, the lake, the warehouse, the model, th
 [Watch it in the browser](https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@dbbe7820da447be395bf9fc096c7f91e5a6f76c3/docs/SafeStart-data-pipeline-video.mp4),
 or [download the file](https://github.com/USERZEROA/safestart-data-pipeline/raw/main/docs/SafeStart-data-pipeline-video.mp4).
 
-**Project documentation** (PDF, 10 pages): the executive summary, the architecture, the key components and their
+**Project documentation** (PDF, 11 pages): the executive summary, the architecture, the key components and their
 implementation. [Open the PDF](docs/SafeStart-data-pipeline-documentation.pdf).
 
 **Live deployment**: the dashboard at <https://35.254.13.119>, on Google Cloud and fed by the Kafka stream.
@@ -46,7 +46,7 @@ their catalogs (in `state/`), through a private Cloud Storage bucket.
 | Model | Serious-accident risk per mine and quarter: test ROC AUC 0.909; its riskiest 5% are ten times the base rate |
 | Delivery | Streamlit dashboard (5 pages), SafeStart exports, Prefect flows on a schedule, Google Cloud VM behind HTTPS |
 | Live | **<https://35.254.13.119>**: the dashboard served from the Google Cloud VM, fed by the live stream; Prefect Cloud runs its batch |
-| Quality | 424 tests; CI runs lint and the tests against PostgreSQL, then the whole stack on a synthetic sample data root |
+| Quality | 556 tests; CI runs lint and the tests against PostgreSQL, then the whole stack on a synthetic sample data root |
 
 **Evidence.** [docs/evidence/](docs/evidence/) copies the counts behind the figures above out of the records they come
 from, without local paths or ids: a real Prefect Cloud batch run, the newest completeness reports of the crawls and
@@ -57,13 +57,14 @@ the bulk downloads, a count of the raw archive and the 20 lake manifests.
 **Documentation.** This README is the project documentation: the summary above, then the architecture, the key
 components and their implementation; the PDF above is the same document, printed. The files in [docs/](docs/) are
 reference appendices with the full detail of each part: [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md),
-[QUERIES](docs/QUERIES.md), [ML](docs/ML.md), [SAFESTART_EXPORTS](docs/SAFESTART_EXPORTS.md) and
-[DEPLOYMENT](docs/DEPLOYMENT.md).
+[QUERIES](docs/QUERIES.md), [ML](docs/ML.md), [SAFESTART_EXPORTS](docs/SAFESTART_EXPORTS.md),
+[OFFICIAL_FILES](docs/OFFICIAL_FILES.md) and [DEPLOYMENT](docs/DEPLOYMENT.md).
 
 - **Overview:** [Team](#team) · [Architecture](#architecture) · [Quick start](#quick-start)
 - **Key components and their implementation:** [Sources and ingestion](#sources-and-ingestion) ·
   [Storage](#storage) · [Querying](#querying) · [Transformation and analysis](#transformation-and-analysis) ·
-  [Streaming](#streaming) · [Orchestration](#orchestration) · [Dashboard](#dashboard) · [Deployment](#deployment) ·
+  [Streaming](#streaming) · [Orchestration](#orchestration) ·
+  [Official files and the feed](#official-files-and-the-feed) · [Dashboard](#dashboard) · [Deployment](#deployment) ·
   [Testing and CI](#testing-and-ci)
 - **Reflection:** [Undercurrents of data engineering](#undercurrents-of-data-engineering) ·
   [How it feeds SafeStart](#how-it-feeds-safestart) · [Limits](#limits) · [Repository layout](#repository-layout)
@@ -102,20 +103,32 @@ flowchart TB
         K --> STORE[Storage consumer] --> PG[(PostgreSQL)]
         K --> AN[Analytics consumer<br/>counts + EWMA forecasts] --> PG
     end
+    subgraph Official["Official files (daily)"]
+        DAILY[Daily update<br/>sitemap, hubs, re-check]
+        DAILY --> INV[(Crawl inventories<br/>editions + changes)]
+        INV --> FEED[(Signed feed<br/>exports/official)]
+        FEED --> GW["HTTPS /feed/official/"]
+    end
     WEB --> CRAWL
     BULK --> ACQ
     FR --> WATCH
     WEB --> WATCH
+    WEB --> DAILY
+    FR --> DAILY
+    CRAWL -. inventory, backfilled once .-> INV
     LAKE --> REPLAY
     LAKE --> WATCH
     WH --> DASH[Streamlit dashboard]
     PG --> DASH
+    FEED -. status .-> DASH
+    GW --> SS[SafeStart<br/>planned importer]
 ```
 
 The batch side keeps a faithful, versioned copy of the sources and rebuilds what depends on them; the streaming side
 turns the same records into events with one contract (`stream/events.py`), so a replayed record and the same record
-found live by a watcher are the same event. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the packages, the event
-contract, the settings and the stores.
+found live by a watcher are the same event; the official-files side asks the websites every day what changed in the
+pages and documents the crawls hold, and publishes what it finds as a signed feed for SafeStart.
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the packages, the event contract, the settings and the stores.
 
 ## Quick start
 
@@ -196,10 +209,13 @@ rules:
 - One request at a time per host, a product-token User-Agent, conditional requests on re-checks, and backing off on
   `429`/`503` and on repeated `403` responses. A refusal is never worked around.
 - Every URL the crawler learns of, from a sitemap, a page link, a redirect or the project's own seed lists, ends
-  in a recorded state: fetched (with
-  its SHA-256), unchanged, redirect, not found, error after retries, or skipped with a reason (robots, page asset, query
-  string, size limit, alias of another URL, not needed by the project, or excluded because another source downloads
-  it).
+  in a recorded state: fetched (with its SHA-256), unchanged, redirect, not found, error after retries, rejected (a
+  body that failed its type check, after retries), or skipped with a reason (robots, page asset, query string, size
+  limit, alias of another URL, not needed by the project, or excluded because another source downloads it).
+- Every body is checked by its bytes before it is kept (`crawl/content.py`): a PDF needs `%PDF-` and an `%%EOF` near
+  its end, an Office file a sound zip or OLE directory, and XML and HTML must parse. An HTML page where the address or
+  the declared type says a file belongs is refused (OSHA serves such pages with status 200 at some PDF addresses), and
+  a refused body is never stored.
 - Each URL has one spelling (RFC 3986): lower-case host, no fragment or default port, escaped unreserved characters
   decoded and the remaining escapes in upper case; on OSHA, Drupal's `/index.php/<path>` is the page at `/<path>`.
 - Copies are complete: documents, images, audio and video are kept; a file is skipped only above 2 GB or an hour of
@@ -222,14 +238,14 @@ writes its report to `<data root>/reports/`.
 | Store | Holds, and why this store |
 |---|---|
 | Raw archive | every downloaded file, named by its SHA-256: a file reached under many URLs of one site is stored once in that site's folder, and a file's name proves its content |
-| Crawl and bulk state (SQLite) | one row per URL or bulk file and version, with its outcome: resumable runs, provenance, completeness checks |
+| Crawl and bulk state (SQLite) | one row per URL or bulk file and version, with its outcome, and every edition and change of each crawled URL: resumable runs, provenance, completeness checks, the daily update of the official files |
 | Lake (Parquet) | every version of the 20 MSHA datasets, typed, one file per source version: columnar, compressed, versioned history for Polars and DuckDB |
 | Warehouse (DuckDB) | the analytical model, 8 tables and 5 marts: fast SQL scans of millions of rows without a server on a 4 GB host |
 | Stream store (PostgreSQL) | events, exactly-once counts, forecasts and source checks ([its ERD](docs/ERD.md#stream-store-postgresql)): concurrent writers (the consumers and the watchers) and transactional upserts |
 
 Under the data root the raw archive stores each file as `raw/<folder>/objects/ab/cd/<sha256>`, with a folder per
-website and `raw/bulk/` for the bulk downloads, and `state/` holds a SQLite file per crawl and one for the bulk
-downloads; the stream store is the PostgreSQL schema `stream`.
+website and `raw/bulk/` for the bulk downloads, and `state/` holds a SQLite file per crawl, one for the bulk downloads
+and the daily update's own record (`official.sqlite`); the stream store is the PostgreSQL schema `stream`.
 
 **Lake.** `ssp lake` turns every downloaded version of each MSHA dataset into typed Parquet under
 `<data root>/lake/msha_ogd/<dataset>/`, one file per source version named after the zip's SHA-256, so a rebuild of an
@@ -402,14 +418,59 @@ changes, Federal Register documents). The `event_id` is the source's own key, so
 
 Prefect runs the batch side as flows of retried, logged tasks (`src/safestart_pipeline/flows/`): every day at 14:00 UTC
 the bulk downloads, the lake, the warehouse and the SafeStart exports; every Sunday at 15:00 UTC the model and the
-analysis tables. A failed step lets the later ones run on what is held wherever that is sound (a failed download keeps
-the copy already held), and the run is marked failed at the end. `python -m safestart_pipeline.flows serve` serves both
-flows as Prefect Cloud deployments when `PREFECT_API_URL` and `PREFECT_API_KEY` are set, and otherwise keeps the same
-schedule in its own process; `ssp pipeline` runs them once.
+analysis tables; every day at 16:30 UTC the daily update of the official files (below). A failed step lets the later
+ones run on what is held wherever that is sound (a failed download keeps the copy already held), and the run is marked
+failed at the end. `python -m safestart_pipeline.flows serve` serves the flows as Prefect Cloud deployments when
+`PREFECT_API_URL` and `PREFECT_API_KEY` are set, and otherwise keeps the same schedule in its own process; `ssp
+pipeline` runs the batch and the model once.
 
-The crawls stay outside Prefect on purpose: they run for days on a workstation, resumable and paced by each site's crawl
-delay, and feed the raw archive the flows read. Delivery is manual by design: CI tests every push, and the cloud server
-takes a new `main` when it is stopped and started (docs/DEPLOYMENT.md).
+The crawls that build an inventory stay outside Prefect on purpose: they run for days on a workstation, resumable and
+paced by each site's crawl delay, and feed the raw archive the flows read. Delivery is manual by design: CI tests every
+push, and the cloud server takes a new `main` when it is stopped and started (docs/DEPLOYMENT.md).
+
+## Official files and the feed
+
+The official flow (`flows/official.py`, package `official/`) re-checks the crawled copies of the official pages and
+documents without the workstation, and publishes what changed for SafeStart. It runs every day at 16:30 UTC, after the
+batch and the Sunday model, and stops by 04:30 UTC, before SafeStart's planned 06:00 import; `ssp official run` starts
+one by hand and `ssp official status` shows the latest. [docs/OFFICIAL_FILES.md](docs/OFFICIAL_FILES.md) has its rules
+and the feed's contract.
+
+- **What it asks.** A probe of `www.msha.gov`, the eCFR titles the batch found new and the Federal Register's final
+  rules for titles 29 and 30 (as hints), the MSHA legacy host's held documents for at most two hours, then OSHA until
+  the deadline: its sitemap, the 500 hub pages whose links reach 98.8% of the files the project's pages link to, new
+  URLs, and a rolling re-check of the held copies, the one due longest first. Every request keeps the crawler's rules
+  (robots.txt, the `Crawl-delay`, conditional requests, the stop on a sustained block), under the site's own crawl
+  lock, never the batch's.
+- **What it checks.** Every body is checked by its bytes before it is kept (above). A page has changed when the
+  SHA-256 of its main text has, so the values Drupal changes on every request never count; a file when its SHA-256
+  has. A 404 or 410 retires a URL at once, and its original is deleted from the server 30 days later unless it comes
+  back; a refusal, an error or no answer retires nothing.
+- **What the feed holds.** After each run a manifest lists what was new, changed, gone, restored or moved, the URLs
+  confirmed unchanged, the refused bodies, the eCFR and Federal Register hints and each source's status, a heartbeat
+  on a quiet day. Each manifest is signed with Ed25519 and chained to the one before by sequence and SHA-256.
+- **Where it is served.** The server writes the manifests to `exports/official/`, keeps them 45 days, and its HTTPS
+  gateway serves them read-only at `https://<server>/feed/official/`, with `latest.json`, its signature and the
+  public key; the signing key lives only in the server's `.env`. SafeStart's importer, planned in SafeStart's own
+  repository, is to take each manifest as a hint and download every file it acts on itself, from the official host.
+- **Backfill first.** The first crawls recorded their copies without a content hash. `ssp official backfill-hashes
+  <site>` examines them in the raw archive, which it only reads: of OSHA's 41,157 copies, 41,118 are usable, 30 are
+  HTML pages at PDF addresses and 9 are truncated PDFs (about 46 minutes on the workstation with a cold disk cache,
+  2026-11-24). The server holds none of the crawls' originals, so it skips a site whose inventory still holds copies
+  without a hash ("not backfilled") until the backfilled inventory is placed there through the bucket
+  (docs/DEPLOYMENT.md).
+
+In three runs from the workstation against the real sites on 2026-11-24 (263 requests in 23 minutes), the daily update
+found two real page edits, confirmed 63 OSHA hub pages unchanged (42 of them in new bytes with the same text), refused
+3 broken Federal Register files, and published 4 manifests whose signatures, chain and counts verified. Its limits:
+
+- OSHA's 10-second `Crawl-delay` allows about 8,300 requests a day against the 27,263 held copies the project needs,
+  so the re-check is rolling: a change is found when its URL next comes round (files about weekly, pages about
+  monthly), unless a hub page or the sitemap points to it sooner.
+- `www.msha.gov` refuses the cloud server (it serves an HTML page in place of its sitemap, as the watcher found): every
+  run records the refusal and never works around it, and that site's pages are not updated.
+- A page that keeps navigation inside its main content changes when the navigation does: in that run, 1 of 66 OSHA
+  hub pages was listed as changed only because its section menu shrank.
 
 ## Dashboard
 
@@ -421,7 +482,9 @@ phone:
 - **Standards**: the most cited sections with their text, and the S&S trend;
 - **Mine brief**: one mine's brief for a crew before a shift (search by name or MSHA ID): its 12-month record against
   the national injury rate, the standards cited most there with their text, and its recent accidents;
-- **Sources**: every dataset's versions, the downloaded corpus by site and kind, and the freshness of each live check.
+- **Sources**: every dataset's versions, the downloaded corpus by site and kind, the latest daily update of the
+  official files (what it found, the hosts that refused it, the feed's newest manifest and its age), and the freshness
+  of each live check.
 
 The mine brief of one of the largest underground coal mines, as the live dashboard serves it (desktop and phone):
 
@@ -442,8 +505,9 @@ limits that fit a 4 GB e2-medium. Every pipeline service runs as an unprivileged
 mounts the data root read-only, except the orchestrator, the one writer of the data root. On Google Cloud,
 `deploy/gcp/create-vm.sh` creates the VM, a reserved address, a firewall that admits only HTTP and HTTPS, and a service
 account that can only read the data bucket; at boot `deploy/gcp/startup.sh` adds swap, installs Docker, copies the data
-it lacks from the bucket and starts the stack with Caddy serving HTTPS. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) has the
-steps and a cost estimate.
+it lacks from the bucket, places a crawl inventory uploaded to the bucket's `state-replace/` (once per upload) and
+starts the stack with Caddy serving HTTPS: the dashboard, and the official-files feed at `/feed/official/` from a
+read-only mount. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) has the steps and a cost estimate.
 
 It runs that way now: an e2-medium in us-central1 serves the dashboard at <https://35.254.13.119> with a Let's Encrypt
 certificate for the address, the replay and the live watchers feed its stream, and its orchestrator serves the daily
@@ -451,7 +515,7 @@ batch and the weekly model as Prefect Cloud deployments.
 
 ## Testing and CI
 
-`uv run pytest` runs 424 tests: each package against small fixtures (synthetic lake versions, crawl stores, eCFR XML,
+`uv run pytest` runs 556 tests: each package against small fixtures (synthetic lake versions, crawl stores, eCFR XML,
 HTTP mocks of the sources), the PostgreSQL consumers against a real database when `TEST_DATABASE_URL` is set, the flows
 under a temporary Prefect API, the dashboard pages through Streamlit's AppTest on a warehouse the real build made, and
 the deployment files themselves (memory budget, mounts, users, the cloud scripts against a stand-in gcloud).
@@ -475,9 +539,10 @@ partition: storage is idempotent on `event_id`, and the analytics consumer stays
 since an advisory lock serializes its transactions (one instance is the configured default).
 
 **Modularity.** Each stage is a package with one job and a narrow interface (`crawl`, `acquire`, `lake`, `warehouse`,
-`stream`, `watch`, `ml`, `dashboard`, `flows`) and runs on its own (`ssp <command>` or `python -m <package>`). Stages
-meet only at documented contracts: the lake's manifests, the warehouse's tables and views (docs/ERD.md), the event
-envelope (`stream/events.py`) and the export files (docs/SAFESTART_EXPORTS.md).
+`stream`, `watch`, `ml`, `dashboard`, `flows`, `official`) and runs on its own (`ssp <command>` or `python -m
+<package>`). Stages meet only at documented contracts: the lake's manifests, the warehouse's tables and views
+(docs/ERD.md), the event envelope (`stream/events.py`), the export files (docs/SAFESTART_EXPORTS.md) and the official
+files' feed (docs/OFFICIAL_FILES.md).
 
 **Reusability.** One rule set (`definitions.py`) serves DuckDB SQL, Polars and Python; one record-to-event mapping
 (`stream/records.py`) serves the replay and the live watcher; the robots.txt client (`crawl/robots.py`) serves the
@@ -530,6 +595,11 @@ two flat Parquet files and a manifest (`ssp warehouse export`, [docs/SAFESTART_E
   so SafeStart's regulation library can put the most cited standards first and flag cited sections no longer in force;
 - `manifest.json`: row counts, file hashes and the exact source versions, so an importer can check what it loads.
 
+It also publishes the signed daily feed of the official files
+([Official files and the feed](#official-files-and-the-feed), [docs/OFFICIAL_FILES.md](docs/OFFICIAL_FILES.md)), from
+which SafeStart's planned importer is to learn which pages and documents are new, changed, gone or confirmed current,
+without taking any file from the pipeline.
+
 ## Limits
 
 - MSHA publishes its datasets with a lag: the newest days of a version are incomplete, so the newest days' counts are
@@ -544,6 +614,9 @@ two flat Parquet files and a manifest (`ssp warehouse export`, [docs/SAFESTART_E
   2026-11-10, so `ssp verify bulk --live` reports it as not complete until govinfo publishes a newer file.
 - 238 OSHA URLs answered 403 (90 of them pages the project needs) and are recorded as such; a refusal is never
   worked around.
+- The daily update of the official files re-checks OSHA only at its 10-second pace, cannot update `www.msha.gov`
+  pages from the cloud server, and takes a navigation change inside a page's main content for a change of the page
+  ([Official files and the feed](#official-files-and-the-feed)).
 - MSHA writes some quotes inside text doubled (`4"" x 3""`); the lake keeps text as MSHA wrote it, so 14,278 accident
   narratives show doubled quotes.
 
@@ -551,11 +624,12 @@ two flat Parquet files and a manifest (`ssp warehouse export`, [docs/SAFESTART_E
 
 ```
 src/safestart_pipeline/   crawl, acquire, lake, warehouse, stream, watch, ml,
-                          dashboard, flows, definitions, sample, cli
+                          dashboard, flows, official, definitions, sample, cli
 tests/                    pytest suite (fixtures only; never the real data root)
 docs/                     ARCHITECTURE, ERD, QUERIES, ML, SAFESTART_EXPORTS,
-                          DEPLOYMENT; ml/ (the published model metrics),
-                          evidence/ (the records behind the summary figures)
+                          OFFICIAL_FILES, DEPLOYMENT; ml/ (the published model
+                          metrics), evidence/ (the records behind the summary
+                          figures)
 deploy/                   Caddyfile and the Google Cloud scripts
 scripts/                  start.py (Compose launcher), smoke_test.py,
                           crawl start/stop for Windows
