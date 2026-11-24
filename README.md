@@ -212,10 +212,12 @@ rules:
   in a recorded state: fetched (with its SHA-256), unchanged, redirect, not found, error after retries, rejected (a
   body that failed its type check, after retries), or skipped with a reason (robots, page asset, query string, size
   limit, alias of another URL, not needed by the project, or excluded because another source downloads it).
-- Every body is checked by its bytes before it is kept (`crawl/content.py`): a PDF needs `%PDF-` and an `%%EOF` near
-  its end, an Office file a sound zip or OLE directory, and XML and HTML must parse. An HTML page where the address or
-  the declared type says a file belongs is refused (OSHA serves such pages with status 200 at some PDF addresses), and
-  a refused body is never stored.
+- Since 2026-11-24 every body is checked by its bytes before it is kept (`crawl/content.py`): a PDF needs `%PDF-` and an
+  `%%EOF` near its end, an Office file a sound zip or OLE directory, and XML and HTML must parse. An HTML page where the
+  address or the declared type says a file belongs is refused (OSHA serves such pages with status 200 at some PDF
+  addresses), and a refused body is never kept. The crawls counted above came before the check: the content-hash
+  backfill ([below](#official-files-and-the-feed)) finds 39 of their 41,157 OSHA copies failing, and marks such a copy
+  rejected but leaves its file in the raw archive and the counts above.
 - Each URL has one spelling (RFC 3986): lower-case host, no fragment or default port, escaped unreserved characters
   decoded and the remaining escapes in upper case; on OSHA, Drupal's `/index.php/<path>` is the page at `/<path>`.
 - Copies are complete: documents, images, audio and video are kept; a file is skipped only above 2 GB or an hour of
