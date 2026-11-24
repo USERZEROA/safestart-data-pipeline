@@ -294,6 +294,7 @@ erDiagram
 
 ```mermaid
 erDiagram
+    direction RL
     mine ||--o{ accident : "reports"
     mine ||--o{ production_quarter : "reports hours in"
     mine {
@@ -316,17 +317,18 @@ erDiagram
 
 ```mermaid
 erDiagram
-    document {
-        VARCHAR url PK
-        VARCHAR site
-        VARCHAR kind
-        VARCHAR sha256
-    }
+    direction LR
     dataset_version {
         VARCHAR dataset PK
         VARCHAR version PK
         BIGINT rows
         BOOLEAN is_current
+    }
+    document {
+        VARCHAR url PK
+        VARCHAR site
+        VARCHAR kind
+        VARCHAR sha256
     }
 ```
 

@@ -47,22 +47,30 @@ variable `SAFESTART_<NAME>` wins, then `<name>` in `pipeline.local.toml`, then t
 environment. The defaults address the local Compose stack as `127.0.0.1` (PostgreSQL 15432, Kafka 19092): its host
 ports listen on IPv4 only, and on Windows `localhost` tries IPv6 first, which stalls every connection.
 
-| Setting | Default | Used by |
-|---|---|---|
-| `SAFESTART_DATA_ROOT` | `./data` (or `data_root` in `pipeline.local.toml`) | every stage |
-| `SAFESTART_WAREHOUSE_PATH` | `<data root>/warehouse/safestart.duckdb` | warehouse, exports, dashboard |
-| `SAFESTART_WAREHOUSE_MEMORY_LIMIT` | `1GB` | the warehouse build's DuckDB |
-| `SAFESTART_POSTGRES_URL` | `postgresql://safestart:safestart@127.0.0.1:15432/safestart` | stream services, dashboard |
-| `SAFESTART_KAFKA_BOOTSTRAP` | `127.0.0.1:19092` | Kafka clients |
-| `SAFESTART_KAFKA_PARTITIONS` | `3` | partitions of a new topic (`kafka_partitions`; the initializer's `--partitions` wins) |
-| `SAFESTART_KAFKA_SECURITY_PROTOCOL` | `SASL_SSL` once a user name is set | Kafka clients, for a managed broker |
-| `SAFESTART_KAFKA_SASL_MECHANISM` | `PLAIN` (or `SCRAM-SHA-256`, `SCRAM-SHA-512`) | Kafka clients |
-| `SAFESTART_KAFKA_SASL_USERNAME`, `SAFESTART_KAFKA_SASL_PASSWORD` | none | Kafka clients; read from the environment only |
-| `SAFESTART_KAFKA_SSL_CA_LOCATION` | the system's certificates | Kafka clients |
-| `SAFESTART_WATCH_STATE` | `<data root>/state/watch.sqlite` | the watchers' state; `/state/watch.sqlite` in Compose |
-| `SAFESTART_WATCH_LOG` | `<data root>/logs/watch.log`; `-` for standard error alone | the watchers' log; `-` in Compose |
-| `PREFECT_API_URL`, `PREFECT_API_KEY` | unset: the orchestrator keeps the schedule itself | the orchestrator (Prefect's own settings) |
-| `POLARS_MAX_THREADS`, `OMP_NUM_THREADS` | all cores | the batch and the model; 2 in Compose, as on the e2-medium |
+- `SAFESTART_DATA_ROOT`: defaults to `./data` (or `data_root` in `pipeline.local.toml`); used by every stage.
+- `SAFESTART_WAREHOUSE_PATH`: defaults to `<data root>/warehouse/safestart.duckdb`; used by the warehouse, the exports
+  and the dashboard.
+- `SAFESTART_WAREHOUSE_MEMORY_LIMIT`: defaults to `1GB`; used by the warehouse build's DuckDB.
+- `SAFESTART_POSTGRES_URL`: defaults to `postgresql://safestart:safestart@127.0.0.1:15432/safestart`; used by the
+  stream services and the dashboard.
+- `SAFESTART_KAFKA_BOOTSTRAP`: defaults to `127.0.0.1:19092`; used by the Kafka clients.
+- `SAFESTART_KAFKA_PARTITIONS`: defaults to `3`; used for the partitions of a new topic (`kafka_partitions`; the
+  initializer's `--partitions` wins).
+- `SAFESTART_KAFKA_SECURITY_PROTOCOL`: defaults to `SASL_SSL` once a user name is set; used by the Kafka clients, for a
+  managed broker.
+- `SAFESTART_KAFKA_SASL_MECHANISM`: defaults to `PLAIN` (or `SCRAM-SHA-256`, `SCRAM-SHA-512`); used by the Kafka
+  clients.
+- `SAFESTART_KAFKA_SASL_USERNAME`, `SAFESTART_KAFKA_SASL_PASSWORD`: no default; used by the Kafka clients, which read
+  them from the environment only.
+- `SAFESTART_KAFKA_SSL_CA_LOCATION`: defaults to the system's certificates; used by the Kafka clients.
+- `SAFESTART_WATCH_STATE`: defaults to `<data root>/state/watch.sqlite` (`/state/watch.sqlite` in Compose); used by
+  the watchers for their state.
+- `SAFESTART_WATCH_LOG`: defaults to `<data root>/logs/watch.log`, and `-` means standard error alone (`-` in Compose);
+  used by the watchers for their log.
+- `PREFECT_API_URL`, `PREFECT_API_KEY`: unset by default, so the orchestrator keeps the schedule itself; used by the
+  orchestrator (Prefect's own settings).
+- `POLARS_MAX_THREADS`, `OMP_NUM_THREADS`: default to all cores (2 in Compose, as on the e2-medium); used by the batch
+  and the model.
 
 ## The event contract
 
@@ -171,20 +179,19 @@ tried again 15 minutes later, up to three times, and the schedule goes on; the o
 
 ## Entry points
 
-| Command | Does |
-|---|---|
-| `ssp lake` | Builds the Parquet lake |
-| `ssp pipeline [--no-download] [--model]` | Runs the batch flow once (downloads, lake, warehouse, exports), then the model flow |
-| `ssp warehouse build\|query [name]\|export`, `ssp ml train\|analyze` | The warehouse and model commands below |
-| `python -m safestart_pipeline.warehouse build` | Builds the DuckDB warehouse |
-| `python -m safestart_pipeline.stream.init` | Creates the Kafka topics and the PostgreSQL schema |
-| `python -m safestart_pipeline.stream.replay` | Replays enforcement history through Kafka |
-| `python -m safestart_pipeline.stream.storage` / `.analytics` | The two consumer groups |
-| `python -m safestart_pipeline.watch once\|loop` | Runs the due live watchers once, or on their schedules |
-| `python -m safestart_pipeline.flows serve` | Runs the batch and model flows on their schedules |
-| `python -m safestart_pipeline.ml train` | Builds features and trains the accident-risk model |
-| `streamlit run src/safestart_pipeline/dashboard/app.py` | The dashboard |
-| `python -m safestart_pipeline.sample <folder>` | Writes the synthetic sample data root (docs/DEPLOYMENT.md) |
+- `ssp lake`: builds the Parquet lake.
+- `ssp pipeline [--no-download] [--model]`: runs the batch flow once (downloads, lake, warehouse, exports), then, with
+  `--model`, the model flow.
+- `ssp warehouse build|query [name]|export`, `ssp ml train|analyze`: the warehouse and model commands below.
+- `python -m safestart_pipeline.warehouse build`: builds the DuckDB warehouse.
+- `python -m safestart_pipeline.stream.init`: creates the Kafka topics and the PostgreSQL schema.
+- `python -m safestart_pipeline.stream.replay`: replays enforcement history through Kafka.
+- `python -m safestart_pipeline.stream.storage` / `.analytics`: the two consumer groups.
+- `python -m safestart_pipeline.watch once|loop`: runs the due live watchers once, or on their schedules.
+- `python -m safestart_pipeline.flows serve`: runs the batch and model flows on their schedules.
+- `python -m safestart_pipeline.ml train`: builds features and trains the accident-risk model.
+- `streamlit run src/safestart_pipeline/dashboard/app.py`: the dashboard.
+- `python -m safestart_pipeline.sample <folder>`: writes the synthetic sample data root (docs/DEPLOYMENT.md).
 
 ## Deployment
 

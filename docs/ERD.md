@@ -127,6 +127,14 @@ erDiagram
 
 ```mermaid
 erDiagram
+    direction LR
+    dataset_version {
+        VARCHAR dataset PK
+        VARCHAR version PK
+        BIGINT rows
+        TIMESTAMP built_at
+        BOOLEAN is_current
+    }
     document {
         VARCHAR url PK
         VARCHAR site "osha, msha, arlweb"
@@ -137,13 +145,6 @@ erDiagram
         VARCHAR sha256
         TIMESTAMP fetched_at
         BOOLEAN in_sitemap
-    }
-    dataset_version {
-        VARCHAR dataset PK
-        VARCHAR version PK
-        BIGINT rows
-        TIMESTAMP built_at
-        BOOLEAN is_current
     }
 ```
 
@@ -243,13 +244,18 @@ employee, the people whose hours `production_quarter` holds, and a rate pairs a 
 quarter's hours; a mine's own rate counts its injuries only in the quarters it reported hours for (below). A
 commodity's violations, injuries and hours are those whose `coal_metal`, their mine's, is that commodity.
 
-| View | One row per | Columns |
-|---|---|---|
-| `mart_top_cited_sections` | cited section | `cfr_section`, its title 30 `heading` (null if not in today's CFR), `citations`, `ss_citations`, `ss_share`, `proposed_penalty_total`, `last_cited` |
-| `mart_mine_scorecard` | mine | the mine's identity and location, `inspections_12m`, `violations_12m`, `ss_violations_12m`, `proposed_penalty_12m`, `accidents_12m`, `serious_accidents_12m`, `hours_worked_12m`, `injury_rate_12m` (per 200,000 hours over the quarters the mine reported hours for, null without hours), `top_sections_12m` (up to five most cited sections, most cited first, `VARCHAR[]`) |
-| `mart_ss_trend` | year and commodity | `violations`, `ss_violations`, `ss_share` (S&S share of all violations issued that year) |
-| `mart_injury_rate` | year and commodity | `injuries`, `hours_worked`, `rate_per_200k`, counting only quarters with reported hours (the current year is partial) |
-| `mart_district_year` | district and year | `inspections` (by begin date), `violations`, `ss_violations`, `accidents`, by the mine's district |
+- `mart_top_cited_sections` (one row per cited section): `cfr_section`, its title 30 `heading` (null if not in today's
+  CFR), `citations`, `ss_citations`, `ss_share`, `proposed_penalty_total`, `last_cited`.
+- `mart_mine_scorecard` (one row per mine): the mine's identity and location, `inspections_12m`, `violations_12m`,
+  `ss_violations_12m`, `proposed_penalty_12m`, `accidents_12m`, `serious_accidents_12m`, `hours_worked_12m`,
+  `injury_rate_12m` (per 200,000 hours over the quarters the mine reported hours for, null without hours),
+  `top_sections_12m` (up to five most cited sections, most cited first, `VARCHAR[]`).
+- `mart_ss_trend` (one row per year and commodity): `violations`, `ss_violations`, `ss_share` (S&S share of all
+  violations issued that year).
+- `mart_injury_rate` (one row per year and commodity): `injuries`, `hours_worked`, `rate_per_200k`, counting only
+  quarters with reported hours (the current year is partial).
+- `mart_district_year` (one row per district and year): `inspections` (by begin date), `violations`, `ss_violations`,
+  `accidents`, by the mine's district.
 
 In the scorecard, `hours_worked_12m` and `injury_rate_12m` use the four latest quarters with reported hours that end by
 the window's end (2025 Q4 to 2026 Q3 here), since hours are reported per quarter; the other counts use the 12m window.
@@ -274,20 +280,24 @@ The warehouse also holds the macros `is_fatal(degree)` and `is_injury(degree)`, 
 
 The checks of the 2026-11-23 build:
 
-| Check | Rows | Detail |
-|---|---:|---|
-| `null_key:<table>` | 0 | rows with a null key column, left out of the table and kept in `null_key_row` |
-| `unique_key:<table>` | 1 (inspection), 51 (violation), 0 elsewhere | repeated keys; their copies are identical in the warehouse's columns |
-| `commodity_differs_from_mine:violation` | 89,673 | violations whose own flag is not their mine's (67,619 coal at metal and non-metal mines, 22,054 the reverse); they count under the mine's |
-| `commodity_differs_from_mine:production_quarter` | 784 | production reports whose own flag is not their mine's (766 coal at metal and non-metal mines, 18 the reverse) |
-| `commodity_differs_from_mine:<table>` | 0 (inspection, accident) | every inspection's and accident's own flag is its mine's |
-| `reference:violation.event_no` | 103 | violations whose inspection is not in the inspection file (`6929559`, `F00332A` ...) |
-| `reference:<table>.mine_id` | 0 | every mine referred to is in `mine` |
-| `cited_section_not_in_title_30` | 5,040 | 103 cited numbers have no text in today's title 30 (`75.383`, `70.207`, `75.1101-23` ...) |
-| `part_section_not_parsed` | 0 | every cited part/section starts with a section number |
-| `section_number_in_both_titles` | 286 | numbers in titles 29 and 30; 11 violations cite one |
-| `part_not_a_number` | 31 | sections of lettered parts |
-| `mine_coordinates_dropped` | 478 | coordinates outside the U.S. and its territories |
+- `null_key:<table>` (0 rows): rows with a null key column, left out of the table and kept in `null_key_row`.
+- `unique_key:<table>` (1 row in inspection, 51 in violation, 0 elsewhere): repeated keys; their copies are identical
+  in the warehouse's columns.
+- `commodity_differs_from_mine:violation` (89,673 rows): violations whose own flag is not their mine's (67,619 coal at
+  metal and non-metal mines, 22,054 the reverse); they count under the mine's.
+- `commodity_differs_from_mine:production_quarter` (784 rows): production reports whose own flag is not their mine's
+  (766 coal at metal and non-metal mines, 18 the reverse).
+- `commodity_differs_from_mine:<table>` (0 rows in inspection and accident): every inspection's and accident's own
+  flag is its mine's.
+- `reference:violation.event_no` (103 rows): violations whose inspection is not in the inspection file (`6929559`,
+  `F00332A` ...).
+- `reference:<table>.mine_id` (0 rows): every mine referred to is in `mine`.
+- `cited_section_not_in_title_30` (5,040 rows): 103 cited numbers have no text in today's title 30 (`75.383`,
+  `70.207`, `75.1101-23` ...).
+- `part_section_not_parsed` (0 rows): every cited part/section starts with a section number.
+- `section_number_in_both_titles` (286 rows): numbers in titles 29 and 30; 11 violations cite one.
+- `part_not_a_number` (31 rows): sections of lettered parts.
+- `mine_coordinates_dropped` (478 rows): coordinates outside the U.S. and its territories.
 
 ## Stream store (PostgreSQL)
 
