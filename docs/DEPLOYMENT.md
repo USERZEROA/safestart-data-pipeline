@@ -121,9 +121,11 @@ it, write the sample data root, a few hundred kilobytes of invented records in M
 
 ```bash
 uv sync --all-extras
-uv run python -m safestart_pipeline.sample sample-data   # a new or empty folder; the lake is built from its zips
+# a new or empty folder; the lake is built from its zips
+uv run python -m safestart_pipeline.sample sample-data
 python scripts/start.py --data-root sample-data
-docker compose --profile orchestrator run --rm orchestrator python -m safestart_pipeline.flows run batch --no-download
+docker compose --profile orchestrator run --rm orchestrator \
+  python -m safestart_pipeline.flows run batch --no-download
 docker compose run --rm replay python -m safestart_pipeline.stream.replay --day-seconds 0
 uv run --extra stream python scripts/smoke_test.py
 ```
@@ -172,7 +174,8 @@ On a Linux server with Docker, Python 3 and ports 80 and 443 open:
 
 ```bash
 python3 scripts/start.py --public-domain pipeline.example.org --data-root /srv/safestart-data
-python3 scripts/start.py --public-domain 203.0.113.10 --data-root /srv/safestart-data   # an IP address works too
+# an IP address works too
+python3 scripts/start.py --public-domain 203.0.113.10 --data-root /srv/safestart-data
 ```
 
 `--public-domain` adds `docker-compose.public.yml`: Caddy listens on ports 80 and 443 and obtains a certificate from
@@ -324,7 +327,8 @@ answer with, and every page that came back in other bytes would otherwise be rep
 2. Upload it:
 
    ```powershell
-   gcloud storage cp <folder with the data root>/state/crawl-osha.sqlite gs://<bucket>/state-replace/crawl-osha.sqlite
+   gcloud storage cp <folder with the data root>/state/crawl-osha.sqlite `
+     gs://<bucket>/state-replace/crawl-osha.sqlite
    ```
 
 3. Stop and start the server, as for an update. At boot, `deploy/gcp/replace-state.sh` downloads the upload beside the
