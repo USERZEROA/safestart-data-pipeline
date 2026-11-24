@@ -1,11 +1,12 @@
 """The watchers' own state: a small SQLite file, `<data root>/state/watch.sqlite`.
 
 It remembers the id of every event a watcher has published, so nothing is published twice however checks overlap; the
-dataset versions already compared, a refused one marked as such; and named times, such as when each source was last
-checked. The watchers find a few thousand records a week, so the file stays small. SAFESTART_WATCH_STATE (or
-`watch_state` in pipeline.local.toml) names another file, so a check can run against a data root it must only read:
-the containers mount the data root read-only and keep the state at /state/watch.sqlite on a volume of its own. The
-version check spills DuckDB's overflow into a folder beside this file, so that folder must be writable too.
+dataset versions already compared, a refused one marked as such; named times, such as when each source was last checked;
+and marks, how far a check has read a source, such as the last manifest of the official feed it finished. The watchers
+find a few thousand records a week, so the file stays small. SAFESTART_WATCH_STATE (or `watch_state` in
+pipeline.local.toml) names another file, so a check can run against a data root it must only read: the containers mount
+the data root read-only and keep the state at /state/watch.sqlite on a volume of its own. The version check spills
+DuckDB's overflow into a folder beside this file, so that folder must be writable too.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ create table if not exists compared (
   primary key (dataset, version)
 );
 create table if not exists times (name text primary key, value text not null);
+create table if not exists marks (name text primary key, value text not null);
 """
 PARAMETERS = 500  # host parameters per query, well under SQLite's limit
 
@@ -108,3 +110,13 @@ class WatchState:
 
     def clear_time(self, name: str) -> None:
         self.db.execute("delete from times where name = ?", (name,))
+
+    # Marks ------------------------------------------------------------------------------------------------------------
+
+    def mark(self, name: str) -> str | None:
+        """How far a check has read a source (its own value), or None before its first read."""
+        row = self.db.execute("select value from marks where name = ?", (name,)).fetchone()
+        return row[0] if row else None
+
+    def set_mark(self, name: str, value: str) -> None:
+        self.db.execute("insert or replace into marks (name, value) values (?, ?)", (name, value))

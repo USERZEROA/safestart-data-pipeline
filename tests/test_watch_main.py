@@ -53,6 +53,16 @@ def test_an_event_is_published_once_however_often_it_is_found(tmp_path):
     reopened.close()
 
 
+def test_a_mark_says_how_far_a_check_has_read_and_outlives_the_process(tmp_path):
+    state = WatchState(tmp_path / "watch.sqlite")
+    assert state.mark("feed-official:sequence") is None
+    state.set_mark("feed-official:sequence", "3")
+    state.close()
+    reopened = WatchState(tmp_path / "watch.sqlite")
+    assert reopened.mark("feed-official:sequence") == "3"
+    reopened.close()
+
+
 def test_the_kafka_publisher_comes_from_the_stream_layer_when_it_exists(monkeypatch):
     made = ListPublisher()
     monkeypatch.setitem(sys.modules, KAFKA_MODULE, types.SimpleNamespace(make_publisher=lambda: made))
