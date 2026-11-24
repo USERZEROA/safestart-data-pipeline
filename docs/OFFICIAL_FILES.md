@@ -29,12 +29,18 @@ is written under `state/official.lock`; the run never takes the data root's `pip
 batch or the model, or holds them up.
 
 ```bash
-uv run ssp official run [--site osha] [--until 04:30] [--budget 500]   # a run now, then its manifest
-uv run ssp official manifest                                           # a manifest now (a heartbeat if nothing is new)
-uv run ssp official status                                             # the latest run, the queue, the feed, the purge
-uv run ssp official purge [--delete]                                   # retired originals: reported, or deleted
-uv run ssp official keygen --out <file>                                # a new signing key pair; prints the public key
-python -m safestart_pipeline.flows run official                        # the whole flow once, under Prefect
+# a run now, then its manifest
+uv run ssp official run [--site osha] [--until 04:30] [--budget 500]
+# a manifest now (a heartbeat if nothing is new)
+uv run ssp official manifest
+# the latest run, the queue, the feed, the purge
+uv run ssp official status
+# retired originals: reported, or deleted
+uv run ssp official purge [--delete]
+# a new signing key pair; prints the public key
+uv run ssp official keygen --out <file>
+# the whole flow once, under Prefect
+python -m safestart_pipeline.flows run official
 ```
 
 ## What a run asks, and the rules it keeps
@@ -173,14 +179,16 @@ Abbreviated, with one entry (an illustration: the values are made up, the shape 
 {"format":"safestart-official-updates/1","sequence":12,"previousSequence":11,
  "previousSha256":"fa9d89aa...","generatedAt":"2026-12-01T04:30:12Z",
  "window":{"start":"2026-11-30T04:30:11Z","end":"2026-12-01T04:30:12Z"},
- "sources":[{"source":"osha","host":"www.osha.gov","status":"ok","note":"2,803 requests, stopped: time limit; ...",
+ "sources":[{"source":"osha","host":"www.osha.gov","status":"ok",
+             "note":"2,803 requests, stopped: time limit; ...",
              "requests":2803,"stopReason":"time limit",
              "cycle":{"held":27263,"checkedLast30Days":12034,"oldestCheckAt":"2026-11-18T00:22:55Z"}},
-            {"source":"msha","host":"www.msha.gov","status":"refused","note":"...; recorded, never worked around",
+            {"source":"msha","host":"www.msha.gov","status":"refused",
+             "note":"...; recorded, never worked around",
              "requests":2,"stopReason":"refused","cycle":null}, ...],
- "entries":[{"source":"osha","url":"https://www.osha.gov/laws-regs/standardinterpretations/2026-11-20","change":"new",
-             "sha256":"6c9e...","contentSha256":"1d4b...","previousContentSha256":null,"bytes":48211,
-             "contentType":"text/html; charset=UTF-8","detectedType":"html","httpStatus":200,
+ "entries":[{"source":"osha","url":"https://www.osha.gov/laws-regs/standardinterpretations/2026-11-20",
+             "change":"new","sha256":"6c9e...","contentSha256":"1d4b...","previousContentSha256":null,
+             "bytes":48211,"contentType":"text/html; charset=UTF-8","detectedType":"html","httpStatus":200,
              "observedAt":"2026-11-30T17:02:41Z"}],
  "ecfr":[{"title":29,"issueDate":"2026-11-26","previousIssueDate":"2026-11-19"}],
  "checked":["https://www.osha.gov/...", ...],"rejected":[],
@@ -197,8 +205,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 feed = "https://<server>/feed/official"
 data = httpx.get(f"{feed}/latest.json").content
 signature = base64.b64decode(httpx.get(f"{feed}/latest.json.sig").content)
-Ed25519PublicKey.from_public_bytes(base64.b64decode(PINNED_PUBLIC_KEY)).verify(signature, data)  # raises if not
-previous_sha256 = hashlib.sha256(previous_bytes).hexdigest()  # equals the next manifest's previousSha256
+# raises InvalidSignature unless the pinned key signed these very bytes
+Ed25519PublicKey.from_public_bytes(base64.b64decode(PINNED_PUBLIC_KEY)).verify(signature, data)
+# a manifest's SHA-256 is the next manifest's previousSha256
+previous_sha256 = hashlib.sha256(previous_bytes).hexdigest()
 ```
 
 In Node (SafeStart): `crypto.verify(null, data, crypto.createPublicKey({key: Buffer.concat([Buffer.from(
