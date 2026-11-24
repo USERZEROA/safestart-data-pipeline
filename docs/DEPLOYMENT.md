@@ -313,7 +313,10 @@ Operating the server:
 
 Once its daily update runs, the server owns its OSHA and legacy-host inventories: it records every change in them. To
 put a newer inventory in their place without SSH (the first time: the workstation's OSHA inventory, once its content
-hashes are recorded), upload it to the bucket's `state-replace/` and restart the server:
+hashes are recorded), upload it to the bucket's `state-replace/` and restart the server. Until then the daily update
+leaves a site whose inventory still holds copies without a content hash alone: it records the site as `skipped` ("not
+backfilled", with how many such copies there are), since the server keeps no originals to compare an answer with, and
+every page that came back in other bytes would otherwise be reported as changed.
 
 1. On the workstation, finish the inventory and close it: `uv run ssp official backfill-hashes osha` (resumable; the
    originals are only read) until `uv run ssp status osha` shows `"copies_without_content_hash": 0`, with no crawl of
@@ -337,9 +340,8 @@ upload stays in the bucket, and only a newer upload replaces it again. An upload
 logged and never retried, and the server's copy stays. A replacement discards what the server recorded in that
 inventory since the last one (what the feed published stays published), so upload it before the server's first daily
 update where possible. Only crawl inventories (`crawl-<site>.sqlite`) are taken from `state-replace/`. The legacy
-host's (`crawl-arlweb.sqlite`) can be placed the same way after `uv run ssp official backfill-hashes arlweb`; until
-then the server holds no verified copy of its documents to ask about conditionally, so its first round of re-checks
-downloads each of them whole.
+host's (`crawl-arlweb.sqlite`) is placed the same way after `uv run ssp official backfill-hashes arlweb`; until then
+the daily update skips the legacy host as well.
 
 ### The official-files feed
 

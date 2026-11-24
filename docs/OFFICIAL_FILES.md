@@ -70,6 +70,12 @@ after a sustained block. A refusal (401, 403, 429, 451, a challenge page) is rec
   before the rule (on OSHA 13,855 of 41,118: paragraph-level interlinking pages, OSHA's copy of CFR text, alliance and
   grant pages and the files only they link to), is kept but marked when a run starts, so that it is never re-checked,
   confirmed or a hub, never in a manifest, and not in `cycle`. A copy the rules no longer name is asked about again.
+- **Not backfilled.** A crawled site whose inventory still holds copies without a content hash (recorded before
+  content hashes existed; `ssp status <site>` counts them as `copies_without_content_hash`) is not asked at all: the
+  source is `skipped`, with the stop reason `not backfilled` and a note that says how many. The server keeps no
+  originals, so such a copy cannot be compared with an answer in other bytes, and every page that came back so would
+  be listed as `changed`. The inventory is backfilled where its originals are (`ssp official backfill-hashes <site>`)
+  and then placed on the server (docs/DEPLOYMENT.md, "Placing a crawl inventory on the server").
 
 ## The feed
 
@@ -252,6 +258,7 @@ from the next manifest on; since SafeStart pins the public key, a new key goes w
 | A file in `exports/official/manifests/` is not a manifest | `error` on every publish, nothing more published | look at it; remove or restore the file by hand |
 | The feed is older than 36 hours | the dashboard's warning (and SafeStart's, by its design) | look at the orchestrator's official runs |
 | A crawl holds a site's lock | the site `skipped` (after 10 minutes), its purge skipped | nothing, or stop that crawl |
+| A site's inventory was not backfilled | the site `skipped` (`not backfilled`), with how many copies lack a content hash | backfill it where its originals are and place it on the server (docs/DEPLOYMENT.md) |
 
 ## Limits
 

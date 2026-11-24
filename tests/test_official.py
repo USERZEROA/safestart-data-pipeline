@@ -4,7 +4,7 @@ block), its sitemap pass (new, dropped and listed-again URLs, an incomplete or r
 pass (the greedy cover, new links, files no longer linked), the order of its queue, URLs asked again for their return,
 held copies and returning URLs the project does not need (never asked), its deadline and budget, a crash and the run
 that resumes it; www.msha.gov's probe, the eCFR editions, the Federal Register's rules; a whole run, with a lock another
-process holds; and `ssp official run|status`."""
+process holds or an inventory that was not backfilled; and `ssp official run|status`."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ import pytest
 
 from safestart_pipeline import cli
 from safestart_pipeline.acquire.bulk import BulkStore
+from safestart_pipeline.crawl.backfill import backfill_hashes
 from safestart_pipeline.crawl.crawler import BLOCK_PAUSE_SECONDS, Crawler, iso
 from safestart_pipeline.crawl.locks import SiteLock
 from safestart_pipeline.crawl.sites import Site
@@ -31,7 +32,7 @@ from safestart_pipeline.official.daily import DailyCrawl, Plan, choose_hubs
 from safestart_pipeline.official.run import OfficialRun, run_official
 from safestart_pipeline.official.state import OfficialState
 from test_crawler import HOST, Clock, example_site, pdf_bytes
-from test_editions import SOFT_ERROR, Answers
+from test_editions import SOFT_ERROR, Answers, first_store, held
 
 ROBOTS = b"User-agent: *\nCrawl-delay: 10\nDisallow: /private/\n"
 PDF = {"content-type": "application/pdf"}
@@ -807,6 +808,42 @@ def test_arlweb_takes_at_most_its_share_of_the_window(whole):
     unreachable.close()
     assert (result["status"], result["stop_reason"]) == ("unavailable", "robots.txt unreachable")
     assert whole.clock.now == started + PLANS["arlweb"].share
+
+
+def test_a_site_whose_inventory_was_not_backfilled_is_not_asked_until_it_is(tmp_path):
+    """The server keeps no originals, so a copy recorded before content hashes cannot be compared with an answer in
+    other bytes, and every such page would be reported as changed. A run leaves a site whose inventory (here of the
+    first version, as the boot copies it) still holds such copies alone and says why; once the inventory is backfilled
+    where its originals are, the site is asked as on any other day."""
+    site, clock, archive = site_answers(), Clock(), tmp_path / "archive"
+    clock.now = START
+    inventory = tmp_path / "state" / "crawl-osha.sqlite"
+    inventory.parent.mkdir()
+    first_store(inventory, [held(f"{HOST}/hazcom", page("Hazard communication", "/files/c.pdf", "/files/e.pdf"),
+                                 HTML["content-type"], archive=archive),
+                            held(f"{HOST}/files/c.pdf", pdf_bytes(320), PDF["content-type"], archive=archive)])
+
+    def run_osha() -> dict:
+        with httpx.Client(transport=httpx.MockTransport(site.handler)) as client:
+            return run_official(tmp_path, client, sources=["osha"], sites=SITES, plans=PLANS, sleep=clock.sleep,
+                                now=lambda: clock.now, until=clock.now + timedelta(hours=12),
+                                publish=False)["sources"]["osha"]
+
+    skipped = run_osha()
+    assert (skipped["status"], skipped["stop_reason"], skipped["requests"]) == ("skipped", "not backfilled", 0)
+    assert skipped["details"] == {"copies_without_content_hash": 2} and site.requests == []
+    assert skipped["note"].startswith("2 held copies in state/crawl-osha.sqlite have no content hash")
+    assert "`ssp official backfill-hashes osha`" in skipped["note"]
+    with closing(sqlite3.connect(tmp_path / "state" / "official.sqlite")) as state:
+        assert state.execute("select status, stop_reason from sources").fetchall() == [("skipped", "not backfilled")]
+
+    with closing(Store(inventory)) as store:
+        assert backfill_hashes(store, archive)["usable"] == 2
+    clock.now += timedelta(days=1)
+    asked = run_osha()
+    assert asked["status"] == "ok" and asked["requests"] > 0 and site.requests
+    with closing(sqlite3.connect(inventory)) as db:
+        assert db.execute("select count(*) from changes where change = 'changed'").fetchone()[0] == 0
 
 
 # The command line -----------------------------------------------------------------------------------------------------

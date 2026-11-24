@@ -15,6 +15,14 @@ up to LOCK_WAIT, which a watcher's check (it holds the lock while it reads a sit
 outlasts; a crawl that holds it longer leaves the site "skipped" for the day. The probe of www.msha.gov takes the msha
 crawl's lock the same way. The eCFR and Federal Register sources only read the bulk store and ask the API.
 
+A crawl site whose inventory still holds copies without a content hash (recorded before content hashes existed and never
+backfilled; `ssp status <site>` counts them as copies_without_content_hash) is not asked at all: it is recorded as
+"skipped" ("not backfilled") with a note that says how many and what to do. Where the originals are not kept, as on the
+server, such a copy cannot be compared with an answer in other bytes, and every copy that comes back so (on OSHA every
+page, since Drupal changes some of its bytes with every request) would be reported as changed. The site is asked again
+once the backfilled inventory is in place (`ssp official backfill-hashes <site>` where its originals are,
+docs/DEPLOYMENT.md).
+
 The deadline is the first 04:30 UTC after the run's scheduled start (its start when run by hand), so the day's findings
 exist before SafeStart's 06:00 UTC import, but never later than 15 minutes before the next start of another flow (the
 daily 14:00 batch, the Sunday 15:00 model), which a flow run would otherwise hold up, since the flows run one at a time:
@@ -79,6 +87,15 @@ def parse_until(value: str, now: datetime) -> datetime:
         return next_at(now, clock_time(hour, minute))
     moment = datetime.fromisoformat(value)  # Python 3.11 on reads a trailing Z as UTC
     return moment.astimezone(UTC) if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def not_backfilled(name: str, count: int) -> str:
+    """Why a crawl site whose inventory holds `count` copies without a content hash was not asked."""
+    return (f"{count:,} held copies in state/crawl-{name}.sqlite have no content hash (the inventory was not"
+            f" backfilled; `ssp status {name}`: copies_without_content_hash), so {name} was not asked: an answer in"
+            " other bytes cannot be compared with such a copy and would be reported as a change; run `ssp official"
+            f" backfill-hashes {name}` where its originals are, then place the inventory here (docs/DEPLOYMENT.md,"
+            ' "Placing a crawl inventory on the server")')
 
 
 def ordered(sources: Iterable[str] | None) -> list[str]:
@@ -160,6 +177,9 @@ class OfficialRun:
             crawler = Crawler(site, self.root, self.client, sleep=self.sleep, now=self.now,
                               log=logging.getLogger(f"safestart_pipeline.official.{name}"))
             try:
+                if unexamined := crawler.store.unexamined_count():
+                    return outcome("skipped", not_backfilled(name, unexamined), stop_reason="not backfilled",
+                                   copies_without_content_hash=unexamined)
                 return DailyCrawl(crawler, plan, until=until, budget=self.budget).run()
             finally:
                 crawler.store.close()
