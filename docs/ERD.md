@@ -272,3 +272,154 @@ The checks of the 2026-11-23 build:
 | `section_number_in_both_titles` | 286 | numbers in titles 29 and 30; 11 violations cite one |
 | `part_not_a_number` | 31 | sections of lettered parts |
 | `mine_coordinates_dropped` | 478 | coordinates outside the U.S. and its territories |
+
+## Stream store (PostgreSQL)
+
+The stream store is the PostgreSQL schema `stream`, defined in `src/safestart_pipeline/stream/schema.sql` and applied
+by `python -m safestart_pipeline.stream.init` before the stream services start (every statement is idempotent, so init
+can run before each start). Two Kafka consumer groups and the watchers write it: the storage consumer (group
+`safestart-storage`) writes `events`; the analytics consumer (group `safestart-analytics`) writes `counted_events`,
+`daily_counts` and `forecasts`, one transaction per batch under an advisory lock; the watchers write `source_checks`
+directly, one row per check. Each consumer commits its Kafka offsets only after its transaction and every write is
+keyed, so an event that arrives again (a replay loop, a batch redelivered after a crash) is neither stored nor counted
+twice. The dashboard reads every table but `counted_events`. docs/ARCHITECTURE.md describes the event contract, the
+consumers and the watchers.
+
+```mermaid
+erDiagram
+    events |o..o| counted_events : "same event_id (logical)"
+    counted_events }|..|| daily_counts : "grouped into (logical)"
+    daily_counts |o..o| forecasts : "same key (logical)"
+
+    events {
+        text event_id PK "kind:source key"
+        smallint schema_version "always 1"
+        text kind "7 kinds on 2 topics"
+        text mode "replay or live"
+        timestamptz occurred_at "at the source"
+        timestamptz emitted_at "by the producer"
+        text mine_id "null without a mine"
+        text district "the mine's"
+        text state "the mine's"
+        text coal_metal "C or M, the mine's"
+        text title "one line for the feed"
+        jsonb details "the kind's own values"
+        jsonb source "where the record came from"
+        text kafka_topic
+        integer kafka_partition
+        bigint kafka_offset "where it first arrived"
+        timestamptz received_at "when stored"
+    }
+    counted_events {
+        text event_id PK
+        date day "UTC date of occurred_at"
+        text kind
+        text district "empty without one"
+        boolean serious
+        timestamptz counted_at
+    }
+    daily_counts {
+        date day PK "source day"
+        text kind PK
+        text district PK "empty without one"
+        integer events
+        integer serious
+        timestamptz updated_at
+    }
+    forecasts {
+        date day PK
+        text kind PK
+        text district PK
+        float8 observed "the day's events"
+        float8 predicted
+        float8 residual "observed - predicted"
+        boolean anomaly
+        text method "ewma-weekday(...)"
+        timestamptz updated_at
+    }
+    source_checks {
+        text source PK "the check's name"
+        timestamptz checked_at PK "when it started"
+        text status "ok, unchanged, refused, error, skipped"
+        integer found "new events published"
+        text note
+    }
+```
+
+Keys are `PRIMARY KEY` constraints, and the schema declares no foreign keys: each dashed line is a logical link, kept
+by the code that writes the tables, not by a constraint. Types are as `schema.sql` declares them, `double precision`
+written as its alias `float8` (a type in the diagram is one word). CHECK constraints keep `schema_version` at 1,
+`kind`, `mode`, `coal_metal` and `status` to the values this section names, and the counts `events`, `serious` and
+`found` at zero or more.
+
+- `events` and `counted_events` share `event_id`. Every valid event reaches both, but two consumer groups write them,
+  each reading Kafka at its own pace, so either table can hold an event the other has not reached yet; a foreign key
+  either way would make one consumer wait for the other.
+- `daily_counts` is always `counted_events` grouped by `day`, `kind` and `district`: one statement writes a new event
+  to the ledger and adds it to its group's count, so every count row has at least one ledger row behind it (the smoke
+  test, `scripts/smoke_test.py`, deletes its own run's ledger and count rows together, in one transaction).
+- `forecasts` has the key of `daily_counts`, `(day, kind, district)`, and a forecast's `observed` is that count row's
+  `events`, or 0 when there is none: a series has a forecast for a day without events when the same weekday in the 26
+  weeks before had some, and a count row has no forecast until its day is complete.
+- `source_checks` links to no table: `found` counts the events a check published, but an event does not name the check
+  that found it.
+
+An enforcement event's `mine_id` is MSHA's mine ID, the warehouse's `mine.mine_id`, but the warehouse is another
+database, so no key can tie them; the event carries its mine's district, state and commodity itself, so its readers
+need no lookup.
+
+### events
+
+One row per valid event from either topic, `msha.enforcement` or `safety.sources`, stored once by its `event_id`
+(`<kind>:<source key>`, fixed for a given source record): an event that arrives again leaves the row as it was first
+stored, with the topic, partition and offset it first arrived at. The envelope has columns of its own; JSON holds only
+what varies by kind: `details`, the kind's own values (JSON scalars, listed per kind in docs/ARCHITECTURE.md), and
+`source`, where the record came from (names to strings, such as a replayed event's dataset, lake version and
+`through`, the last source day of its pass). `kind` is an enforcement kind (`inspection`, `violation`, `accident`,
+`order_107a`) or a source kind (`dataset_version`, `page_change`, `regulation`); `mode` is `replay` (history sent in
+source-time order) or `live` (found by a watcher). `occurred_at` is when the record happened at the source (midnight
+UTC for a record that carries only a date; the check's start for a dropped page or a page change without a lastmod),
+`emitted_at` when the replay or a watcher made the event, and `received_at` when the storage consumer stored it.
+`mine_id`, `district`, `state` and `coal_metal` are null for an event without a mine, every source event among them;
+an enforcement event has its record's `mine_id` and takes the other three from that mine in the lake's current mines
+dataset (`stream/records.py` gives the fallbacks for a mine the dataset lacks). The table is indexed by kind and source
+time, by mine and source time, by arrival, and by mode and arrival, the last for the dashboard's Live page when it
+shows one mode's newest events and arrivals (it shows both modes by default).
+
+### counted_events
+
+The analytics consumer's ledger: one row per event it has counted, written by the statement that adds the event to
+`daily_counts`, so an event that arrives again is never counted twice. `day` is the event's source day, the UTC date of
+its `occurred_at`; `district` is its district, or empty when it has none; `serious` is true for a violation with
+`sig_sub` true or an accident with `serious` true, flags the producers set by the shared rules (`definitions.py`).
+`counted_at` is when it was counted.
+
+### daily_counts
+
+Events per source day, kind and district, for every kind, the source kinds included (their district is empty):
+`events` counts them and `serious` the serious ones. `updated_at` is when the row's count last moved. The dashboard's
+Enforcement page charts the four enforcement kinds from it, by period and district.
+
+### forecasts
+
+The one-step-ahead forecast of each complete source day of a series (kind and district) that has events on that day or
+in its history, method `ewma-weekday(alpha=0.1,weeks=26,k=3.0)`: `predicted` is an exponentially weighted average of
+the same weekday's counts in the 26 weeks before (smoothing 0.1), `residual` is `observed` minus `predicted`, and
+`anomaly` is true when |residual| exceeds three scales, judged only with four weeks of history or more (the scale is in
+docs/ARCHITECTURE.md). A day is complete once every partition the consumer reads has moved past it or been read to its
+end, and at least one has moved past it; while a replay pass runs, only replayed events move a partition. An event that
+arrives for a day already forecast recomputes the forecasts that depend on that day, so each row is what
+`daily_counts` alone gives: the PostgreSQL tests (`tests/test_stream_postgres.py`) recompute every forecast from
+`daily_counts` and compare. `updated_at` is when the row's values last changed. The dashboard's Enforcement page shows
+the enforcement kinds' forecasts and anomalies.
+
+### source_checks
+
+One row per check of a live source by a watcher (`python -m safestart_pipeline.watch`), stored when PostgreSQL is
+reachable; the watcher's log keeps every check either way. `source` is the check's name: `versions` and
+`sitemaps-msha` every 6 hours, `sitemaps-osha` once a day and `federal-register` every hour. `checked_at` is when the
+check started; `status` is `ok` (new events found), `unchanged`, `refused` (the host would not serve the watcher, as
+when it answers a sitemap's URL with an HTML page; the refusal is recorded, never worked around), `error` or `skipped`;
+`found` is the number of new events it published; `note` says what the check found, or why it was refused, failed or
+was skipped (such as OSHA's sitemaps read less than a day before, or a site's crawl running). The dashboard's
+Sources page shows each source's newest check and the last day's checks, errors and events found.
