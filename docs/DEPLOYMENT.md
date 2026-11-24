@@ -85,7 +85,7 @@ the launcher says when the folder belongs to someone else (`sudo chown -R 10001:
 
 Then:
 
-- Dashboard: <http://localhost:8501>.
+- Dashboard: `http://localhost:8501` on the machine running the stack.
 - Kafka for local tools: `127.0.0.1:19092`; PostgreSQL: `postgresql://safestart:<password>@127.0.0.1:15432/safestart`.
   Use `127.0.0.1` rather than `localhost`: the host ports are open on IPv4 only, and on Windows `localhost` tries IPv6
   first, which costs two seconds per connection. The settings' defaults (`config.py`) do the same.

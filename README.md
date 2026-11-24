@@ -139,8 +139,9 @@ python scripts/start.py --data-root <folder with lake/ and warehouse/>   # write
 uv run --extra stream python scripts/smoke_test.py                      # events through Kafka into PostgreSQL
 ```
 
-The dashboard is then at <http://localhost:8501> (`DASHBOARD_HOST_PORT` in `.env` moves it). `--with-orchestrator`
-also starts the Prefect orchestrator, which runs the batch flows on their schedules and writes the data root.
+The dashboard then runs on your own machine at `http://localhost:8501` (`DASHBOARD_HOST_PORT` in `.env` moves it;
+the copy already running in the cloud is at <https://35.254.13.119>). `--with-orchestrator` also starts the
+Prefect orchestrator, which runs the batch flows on their schedules and writes the data root.
 
 Without the real data root (the stack reads about 4.5 GB of it: the bulk files, the crawl state, the lake and the
 warehouse), try it on a small synthetic one, the root CI runs the whole stack on
