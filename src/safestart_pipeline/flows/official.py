@@ -1,0 +1,77 @@
+"""Prefect flow for the daily update of the official files (official/): each source a task with its own log line of
+counts, one after another, until the run's deadline.
+
+It is served every day at 16:30 UTC (flows/__main__.py), after the 14:00 batch and the Sunday 15:00 model, and stops by
+04:30 UTC the next day (official/run.py: the first 04:30 after its scheduled start, or 15 minutes before the batch or
+the model if one comes first, for a run started by hand), so the batch and the model never wait behind it when the
+flows run one at a time. It holds each site's crawl lock while it asks that site, never the data root's pipeline.lock:
+it writes only the crawl stores, their objects and state/official.sqlite, which the batch and model flows do not write.
+
+A source that fails is retried once five minutes later and the others still run; the run then fails at the end, so
+Prefect shows it and can notify. A crash loses at most the answer being recorded: the next run, or a retry, goes on
+from the inventory (official/daily.py). Run once with `python -m safestart_pipeline.flows run official`, or without
+Prefect with `ssp official run`.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from prefect import flow, get_run_logger, task
+from prefect.cache_policies import NO_CACHE
+from prefect.runtime import flow_run
+
+from ..config import data_root
+from ..crawl.crawler import iso, make_client, utc_now
+from ..official.run import OfficialRun, deadline, ordered, parse_until
+from . import report_progress
+
+
+@task(name="official-source", task_run_name="{source}", retries=1, retry_delay_seconds=300, cache_policy=NO_CACHE)
+def source_task(run: OfficialRun, source: str) -> dict:
+    result = run.source(source)
+    details = result.get("details", {})
+    counts = {key: details[key] for key in ("asked", "changes", "checked_unchanged", "hints") if key in details}
+    get_run_logger().info("%s: %s after %d requests (%s); %s; counts %s", source, result["status"], result["requests"],
+                          result["stop_reason"], result["note"], counts)
+    return result
+
+
+def scheduled_start() -> datetime:
+    """When this flow run was due: its scheduled start under a Prefect API, else now."""
+    start = flow_run.scheduled_start_time
+    return start.astimezone(UTC) if isinstance(start, datetime) else utc_now()
+
+
+@flow(name="safestart-official")
+def official(sources: list[str] | None = None, until: str | None = None, budget: int | None = None) -> dict:
+    """The day's run of the official files: www.msha.gov's probe, the eCFR editions, the Federal Register's rules,
+    arlweb and OSHA, until `until` (ISO 8601 or HH:MM UTC; by default the deadline of official/run.py), each crawl site
+    within `budget` requests (by default its own)."""
+    report_progress()
+    logger = get_run_logger()
+    names = ordered(sources)
+    stop_at = parse_until(until, utc_now()) if until else deadline(scheduled_start())
+    results: dict[str, dict] = {}
+    problems: list[str] = []
+    root = data_root()
+    with make_client() as client:
+        run = OfficialRun(root, client, until=stop_at, budget=budget, trigger="flow")
+        logger.info("official run %s: %s until %s", run.run_id, ", ".join(names), iso(stop_at))
+        ended = "interrupted"
+        try:
+            for name in names:
+                state = source_task(run, name, return_state=True)
+                if state.is_failed():
+                    problems.append(f"{name}: {state.message}")
+                    results[name] = {"status": "error", "note": state.message}
+                else:
+                    results[name] = state.result()
+            ended = "errors" if problems else "done"
+        finally:
+            run.close(ended)
+    logger.info("official run %s: %s", run.run_id, {name: result["status"] for name, result in results.items()})
+    summary: dict[str, object] = {"run_id": run.run_id, "until": iso(stop_at), "sources": results}
+    if problems:
+        raise RuntimeError("; ".join(problems))
+    return summary

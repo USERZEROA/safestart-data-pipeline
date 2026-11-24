@@ -1,11 +1,13 @@
-"""`python -m safestart_pipeline.flows serve | run [batch|model] [--no-download]`: the flows on their schedules, or one
-of them now.
+"""`python -m safestart_pipeline.flows serve | run [batch|model|official] [--no-download]`: the flows on their
+schedules, or one of them now.
 
 The batch flow runs every day at 14:00 UTC, so new files are taken the day they appear: MSHA replaces all 20 open-data
 files at once, on no fixed weekday (the bulk store holds two such replacements, Last-Modified Tuesday 2026-11-17 13:54
-UTC and Monday 2026-11-23 12:50 UTC). The model flow runs every Sunday at 15:00 UTC, after that day's batch.
+UTC and Monday 2026-11-23 12:50 UTC). The model flow runs every Sunday at 15:00 UTC, after that day's batch. The
+official flow (the daily update of the official files) runs every day at 16:30 UTC, after both, and stops by 04:30 UTC
+the next day (official/run.py), so neither ever waits behind it.
 
-`serve` registers both flows as deployments of the Prefect API that PREFECT_API_URL names (with PREFECT_API_KEY for
+`serve` registers the flows as deployments of the Prefect API that PREFECT_API_URL names (with PREFECT_API_KEY for
 Prefect Cloud) and executes the runs that API schedules, one at a time. Without PREFECT_API_URL in the environment it
 keeps the same schedule in this process (schedule.py): it sleeps until the next run is due, runs the flow, logs the
 outcome and repeats, so the container works without Prefect Cloud. Either way a failed run is logged and the schedule
@@ -23,13 +25,18 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import timedelta
+from functools import partial
 
 from prefect import Flow, serve
 from prefect.schedules import Cron
 from prefect.types.entrypoint import EntrypointType
 
+from ..crawl.crawler import iso, utc_now
+from ..official.run import deadline
 from . import PACKAGE, report_progress
 from .model import model
+from .official import official
 from .pipeline import batch
 from .schedule import SUNDAY, Schedule, run_on_schedule
 
@@ -46,6 +53,7 @@ class Job:
 JOBS = {
     "batch": Job(batch, "daily", Schedule(hour=14)),
     "model": Job(model, "weekly", Schedule(hour=15, weekday=SUNDAY)),
+    "official": Job(official, "daily", Schedule(hour=16, minute=30)),
 }
 
 
@@ -56,10 +64,15 @@ def serve_deployments() -> None:
           limit=1)
 
 
-def run_flow(name: str, *, download: bool = True) -> dict[str, object]:
+def run_flow(name: str, *, download: bool = True, scheduled: bool = False) -> dict[str, object]:
     """Run one flow in this process and return its outcome. A failed run is logged (Prefect logs its traceback) and
-    returned rather than raised, so whatever comes next still runs."""
-    state = JOBS[name].flow(return_state=True, **({"download": download} if name == "batch" else {}))
+    returned rather than raised, so whatever comes next still runs. Started by the local scheduler (`scheduled`), the
+    official flow keeps the deadline of the time it was due, as under a Prefect API, even when another flow ran late."""
+    options: dict[str, object] = {"download": download} if name == "batch" else {}
+    if name == "official" and scheduled:
+        due = JOBS[name].schedule.next_after(utc_now() - timedelta(days=1))  # the latest of its times, now or before
+        options["until"] = iso(deadline(due))
+    state = JOBS[name].flow(return_state=True, **options)
     if not state.is_completed():
         log.error("%s run %s: %s", name, state.type.value.lower(), state.message)
         return {"state": state.type.value.lower(), "error": state.message}
@@ -76,7 +89,7 @@ def run_once(names: list[str], *, download: bool = True) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m safestart_pipeline.flows",
-                                     description="SafeStart's batch and model flows")
+                                     description="SafeStart's batch, model and official-files flows")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("serve", help="run the flows on their schedules: as Prefect deployments when PREFECT_API_URL "
                                       "is set, otherwise in this process")
@@ -95,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         serve_deployments()
         return 0
     try:
-        run_on_schedule({name: job.schedule for name, job in JOBS.items()}, run_flow)
+        run_on_schedule({name: job.schedule for name, job in JOBS.items()}, partial(run_flow, scheduled=True))
     except KeyboardInterrupt:
         log.info("stopped")
     return 0

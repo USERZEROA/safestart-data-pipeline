@@ -1,4 +1,4 @@
-"""The batch and model flows with every step replaced by a fake (under a temporary Prefect API),
+"""The batch, model and official flows with every step replaced by a fake (under a temporary Prefect API),
 the schedules, and `python -m safestart_pipeline.flows serve|run`."""
 
 import asyncio
@@ -9,6 +9,7 @@ import runpy
 import sys
 from datetime import UTC, datetime, timedelta, timezone
 from functools import partial
+from typing import ClassVar
 
 import pytest
 from prefect import flow
@@ -18,12 +19,15 @@ from prefect.testing.utilities import prefect_test_harness
 from safestart_pipeline.crawl.locks import SiteLock
 from safestart_pipeline.flows import __main__ as flows_main
 from safestart_pipeline.flows import model as model_flow
+from safestart_pipeline.flows import official as official_flow
 from safestart_pipeline.flows import pipeline
 from safestart_pipeline.flows.schedule import MAX_SLEEP_SECONDS, SUNDAY, Schedule, run_on_schedule
 from safestart_pipeline.lake.msha_ogd import LakeBuildError
+from safestart_pipeline.official import run as official_run
 
 SATURDAY_NOON = datetime(2026, 11, 21, 12, 0, tzinfo=UTC)
 DAILY, WEEKLY = Schedule(hour=14), Schedule(hour=15, weekday=SUNDAY)
+OFFICIAL_MINUTES = 12 * 60  # 16:30 to its 04:30 deadline
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -179,6 +183,69 @@ def test_a_failed_training_still_writes_the_analysis_then_fails_the_run(model_st
     assert model_steps.names == ["train", "train", "analyze"]
 
 
+# The official flow ----------------------------------------------------------------------------------------------------
+
+
+class FakeOfficialRun:
+    """Stands in for official.run.OfficialRun: each source answers from `answers`, or raises its exception."""
+
+    made: ClassVar[list["FakeOfficialRun"]] = []
+
+    def __init__(self, root, client, *, until, budget=None, trigger="cli"):
+        self.root, self.until, self.budget, self.trigger = root, until, budget, trigger
+        self.run_id, self.asked, self.closed = "official-test", [], None
+        self.answers: dict[str, object] = {}
+        FakeOfficialRun.made.append(self)
+
+    def source(self, name):
+        self.asked.append(name)
+        answer = self.answers.get(name, {"status": "ok", "note": f"{name} asked", "requests": 2,
+                                         "stop_reason": "done", "details": {"changes": {"new": 1}}})
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    def close(self, stop_reason):
+        self.closed = stop_reason
+
+
+@pytest.fixture
+def official_runs(monkeypatch, root):
+    FakeOfficialRun.made = []
+    monkeypatch.setattr(official_flow, "OfficialRun", FakeOfficialRun)
+    monkeypatch.setattr(official_flow, "source_task", official_flow.source_task.with_options(retry_delay_seconds=0))
+    monkeypatch.setattr(official_flow, "scheduled_start", lambda: datetime(2026, 11, 21, 16, 30, tzinfo=UTC))
+    return FakeOfficialRun.made
+
+
+def test_the_official_flow_asks_each_source_in_turn_until_the_deadline_of_its_scheduled_start(official_runs, root,
+                                                                                               caplog, monkeypatch):
+    caplog.set_level(logging.INFO, logger="test.official")
+    monkeypatch.setattr(official_flow, "get_run_logger", lambda: logging.getLogger("test.official"))
+    summary = official_flow.official()
+    [run] = official_runs
+    assert run.asked == ["msha", "ecfr", "federal_register", "arlweb", "osha"] and run.closed == "done"
+    assert (run.root, run.until, run.trigger) == (root, datetime(2026, 11, 22, 4, 30, tzinfo=UTC), "flow")
+    assert summary["until"] == "2026-11-22T04:30:00Z" and summary["sources"]["osha"]["status"] == "ok"
+    assert any("osha: ok after 2 requests (done)" in record.getMessage() for record in caplog.records)
+
+
+def test_a_failing_source_is_retried_once_the_others_still_run_and_the_flow_fails_at_the_end(official_runs,
+                                                                                            monkeypatch):
+    real_init = FakeOfficialRun.__init__
+
+    def init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        self.answers["arlweb"] = OSError("disk full")
+
+    monkeypatch.setattr(FakeOfficialRun, "__init__", init)
+    with pytest.raises(RuntimeError, match="arlweb: .*disk full"):
+        official_flow.official(sources=["osha", "arlweb"], until="2026-11-22T01:00:00Z", budget=40)
+    [run] = official_runs
+    assert run.asked == ["arlweb", "arlweb", "osha"]  # retried once, then the next source
+    assert (run.until, run.budget, run.closed) == (datetime(2026, 11, 22, 1, 0, tzinfo=UTC), 40, "errors")
+
+
 # One writer of the data root ------------------------------------------------------------------------------------------
 
 
@@ -251,7 +318,8 @@ class Stop(BaseException):
 
 
 def scheduled_runs(minutes: dict[str, int], count: int) -> tuple[list[tuple[str, datetime]], Clock]:
-    """The local scheduler's first `count` runs from Saturday noon, each flow's run taking its minutes."""
+    """The local scheduler's first `count` runs from Saturday noon of the flows named in `minutes`, each flow's run
+    taking its minutes."""
     clock, runs = Clock(SATURDAY_NOON), []
 
     def run(name: str) -> None:
@@ -261,16 +329,18 @@ def scheduled_runs(minutes: dict[str, int], count: int) -> tuple[list[tuple[str,
             raise Stop
 
     with pytest.raises(Stop):
-        run_on_schedule({name: job.schedule for name, job in flows_main.JOBS.items()}, run, now=clock.now,
+        run_on_schedule({name: flows_main.JOBS[name].schedule for name in minutes}, run, now=clock.now,
                         sleep=clock.sleep)
     return runs, clock
 
 
 def test_the_local_scheduler_runs_each_flow_at_its_time_and_one_that_came_due_meanwhile_next():
-    runs, clock = scheduled_runs({"batch": 70, "model": 30}, 4)
+    runs, clock = scheduled_runs({"batch": 70, "model": 30, "official": OFFICIAL_MINUTES}, 6)
     assert runs == [("batch", datetime(2026, 11, 21, 14, 0, tzinfo=UTC)),
-                    ("batch", datetime(2026, 11, 22, 14, 0, tzinfo=UTC)),
+                    ("official", datetime(2026, 11, 21, 16, 30, tzinfo=UTC)),
+                    ("batch", datetime(2026, 11, 22, 14, 0, tzinfo=UTC)),  # the official run ended at 04:30
                     ("model", datetime(2026, 11, 22, 15, 10, tzinfo=UTC)),  # due at 15:00, while the batch ran
+                    ("official", datetime(2026, 11, 22, 16, 30, tzinfo=UTC)),
                     ("batch", datetime(2026, 11, 23, 14, 0, tzinfo=UTC))]
     assert max(clock.sleeps) <= MAX_SLEEP_SECONDS
 
@@ -280,6 +350,33 @@ def test_a_run_that_outlasts_its_flows_next_time_skips_that_time():
     assert runs == [("batch", datetime(2026, 11, 21, 14, 0, tzinfo=UTC)),
                     ("model", datetime(2026, 11, 22, 15, 0, tzinfo=UTC)),
                     ("batch", datetime(2026, 11, 23, 14, 0, tzinfo=UTC))]
+
+
+@pytest.mark.parametrize(("start", "expected"), [
+    (datetime(2026, 11, 21, 16, 30, tzinfo=UTC), datetime(2026, 11, 22, 4, 30, tzinfo=UTC)),  # as scheduled
+    (datetime(2026, 11, 21, 22, 0, tzinfo=UTC), datetime(2026, 11, 22, 4, 30, tzinfo=UTC)),
+    (datetime(2026, 11, 22, 3, 0, tzinfo=UTC), datetime(2026, 11, 22, 4, 30, tzinfo=UTC)),
+    (datetime(2026, 11, 22, 5, 0, tzinfo=UTC), datetime(2026, 11, 22, 13, 45, tzinfo=UTC)),  # by hand, by day
+    (datetime(2026, 11, 22, 13, 50, tzinfo=UTC), datetime(2026, 11, 22, 13, 45, tzinfo=UTC)),  # already past
+    (datetime(2026, 11, 22, 14, 30, tzinfo=UTC), datetime(2026, 11, 22, 14, 45, tzinfo=UTC)),  # Sunday: the model
+    (datetime(2026, 11, 23, 14, 30, tzinfo=UTC), datetime(2026, 11, 24, 4, 30, tzinfo=UTC)),
+])
+def test_the_official_run_stops_before_safestarts_import_and_never_runs_into_another_flow(start, expected):
+    assert official_run.deadline(start) == expected
+    others = [job.schedule for name, job in flows_main.JOBS.items() if name != "official"]
+    assert {(schedule.weekday, schedule.hour, schedule.minute) for schedule in others} == {
+        (weekday, at.hour, at.minute) for weekday, at in official_run.KEEP_CLEAR}
+    for schedule in others:  # one flow run at a time: the batch and the model never wait behind it
+        assert official_run.deadline(start) < schedule.next_after(start)
+
+
+def test_an_official_run_the_local_scheduler_starts_late_keeps_the_deadline_of_its_due_time(jobs, monkeypatch):
+    """A batch that ran 25 hours leaves the official run due since yesterday 16:30: it ends at once, at the deadline
+    of the time it was due, so the Sunday model does not wait 13 hours behind it."""
+    monkeypatch.setattr(flows_main, "utc_now", lambda: datetime(2026, 11, 22, 15, 0, tzinfo=UTC))
+    assert flows_main.run_flow("official", scheduled=True)["state"] == "completed"
+    assert flows_main.run_flow("official")["state"] == "completed"  # by hand: the flow's own default
+    assert jobs.official == [{"until": "2026-11-22T04:30:00Z"}, {}]
 
 
 def batch_runs(failures: int, count: int) -> list[datetime]:
@@ -324,7 +421,7 @@ def unexpected(*args, **kwargs):
     raise AssertionError(f"not expected: {args} {kwargs}")
 
 
-def test_serve_registers_both_flows_with_the_prefect_api_when_one_is_set(monkeypatch):
+def test_serve_registers_every_flow_with_the_prefect_api_when_one_is_set(monkeypatch):
     served = []
     monkeypatch.setenv("PREFECT_API_URL", "http://127.0.0.1:4200/api")
     monkeypatch.delenv("PREFECT_LOGGING_EXTRA_LOGGERS", raising=False)
@@ -338,6 +435,7 @@ def test_serve_registers_both_flows_with_the_prefect_api_when_one_is_set(monkeyp
             for deployment in deployments] == [
         ("safestart-batch", "daily", "safestart_pipeline.flows.pipeline.batch", [("0 14 * * *", "UTC")]),
         ("safestart-model", "weekly", "safestart_pipeline.flows.model.model", [("0 15 * * 0", "UTC")]),
+        ("safestart-official", "daily", "safestart_pipeline.flows.official.official", [("30 16 * * *", "UTC")]),
     ]
     assert os.environ["PREFECT_LOGGING_EXTRA_LOGGERS"] == "safestart_pipeline"  # inherited by the runs' processes
 
@@ -373,8 +471,8 @@ def test_the_entry_points_own_lines_reach_the_log_when_it_runs_as_a_module(monke
 def test_serve_keeps_the_schedule_in_this_process_without_a_prefect_api(monkeypatch):
     clock, runs = Clock(datetime(2026, 11, 23, 13, 59, 30, tzinfo=UTC)), []
 
-    def run_flow(name):
-        runs.append((name, clock.now()))
+    def run_flow(name, **options):
+        runs.append((name, clock.now(), options))
         raise KeyboardInterrupt  # the container is stopped
 
     monkeypatch.delenv("PREFECT_API_URL", raising=False)
@@ -382,26 +480,42 @@ def test_serve_keeps_the_schedule_in_this_process_without_a_prefect_api(monkeypa
     monkeypatch.setattr(flows_main, "run_on_schedule", partial(run_on_schedule, now=clock.now, sleep=clock.sleep))
     monkeypatch.setattr(flows_main, "run_flow", run_flow)
     assert flows_main.main(["serve"]) == 0
-    assert runs == [("batch", datetime(2026, 11, 23, 14, 0, tzinfo=UTC))] and clock.sleeps == [30.0]
+    assert runs == [("batch", datetime(2026, 11, 23, 14, 0, tzinfo=UTC), {"scheduled": True})]
+    assert clock.sleeps == [30.0]
+
+
+class Calls(list):
+    """The batch's download choices; `official` holds the parameters the official flow was given."""
+
+    official: list[dict]
 
 
 @pytest.fixture
 def jobs(monkeypatch):
-    """Stand-ins for the two flows: the batch records its download choice, the model fails."""
-    downloads = []
+    """Stand-ins for the three flows: the batch records its download choice, the model fails, the official flow
+    records its parameters."""
+    calls = Calls()
+    calls.official = []
 
     @flow(name="safestart-batch")
     def batch(download: bool = True):
-        downloads.append(download)
+        calls.append(download)
         return {"lake": {"mines": {"rows": 3}}}
 
     @flow(name="safestart-model")
     def model():
         raise RuntimeError("train-accident-risk: no labeled quarters")
 
+    @flow(name="safestart-official")
+    def official_files(until: str | None = None):
+        calls.official.append({"until": until} if until else {})
+        return {"sources": {}}
+
     monkeypatch.setattr(flows_main, "JOBS", {"batch": flows_main.Job(batch, "daily", DAILY),
-                                             "model": flows_main.Job(model, "weekly", WEEKLY)})
-    return downloads
+                                             "model": flows_main.Job(model, "weekly", WEEKLY),
+                                             "official": flows_main.Job(official_files, "daily",
+                                                                        Schedule(hour=16, minute=30))})
+    return calls
 
 
 def test_run_runs_the_batch_now_and_prints_its_outcome(jobs, capsys):

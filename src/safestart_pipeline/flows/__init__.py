@@ -2,6 +2,7 @@
 
 - pipeline.py: the daily batch flow (downloads, lake, warehouse, SafeStart exports); acquire.py: its download step.
 - model.py: the weekly model flow (accident-risk model, lake analysis tables).
+- official.py: the daily flow of the official files (official/): what the sites changed since the last run.
 - __main__.py: `python -m safestart_pipeline.flows serve | run`, with or without a Prefect API.
 - schedule.py: when the flows run.
 
@@ -11,7 +12,9 @@ DuckDB and scikit-learn (measured on Windows: 91 MB after importing the flows, 2
 One writer of the data root at a time. The batch and model flows hold the data root's writer lock for their whole run,
 whoever starts them (the schedule, Prefect, `ssp pipeline`, `flows run`), and so does `ssp lake`: two batches at once
 would write the same temporary files, Parquet partials and manifests, and a second downloader empties the temporary
-folder of the bulk store under the first. A second writer fails at once instead of waiting.
+folder of the bulk store under the first. A second writer fails at once instead of waiting. The official flow writes
+none of those files: it holds each crawl site's own lock (state/crawl-<site>.lock) while it asks that site and writes
+its crawl store and objects, and records its runs in state/official.sqlite.
 """
 
 import logging

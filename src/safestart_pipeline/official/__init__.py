@@ -1,6 +1,6 @@
 """The daily update of the official files: what the sites changed since the last run, found politely.
 
-- run.py: a whole run (`ssp official run`) and `ssp official status`.
+- run.py: a whole run (`ssp official run`, the official flow in flows/official.py) and `ssp official status`.
 - daily.py: one crawl site's run (OSHA: sitemaps, hub pass, queue; arlweb: queue), through the crawler's own rules.
 - sources.py: www.msha.gov's probe, the eCFR editions and the Federal Register's final rules.
 - state.py: the run's record, state/official.sqlite.
