@@ -1,0 +1,280 @@
+/* The dashboard's look beyond the theme in .streamlit/config.toml: tokens, a few overrides of Streamlit's own elements
+   (by the test ids Streamlit 1.67 renders), and the components view.py writes. Motion plays only where view.py marks a
+   real change or a source being asked now, and never for a viewer who asks for reduced motion. */
+
+:root {
+  --ss-bg: #0b0d10;
+  --ss-surface: #14171c;
+  --ss-surface-2: #1b1f26;
+  --ss-line: #262b33;
+  --ss-line-2: #323843;
+  --ss-ink: #eef1f5;
+  --ss-ink-2: #b8c0cc;
+  --ss-muted: #8a93a0;
+  --ss-dim: #5b6370;
+  --ss-accent: #2fd3e6;
+  --ss-accent-ink: #7fe3f0;
+  --ss-accent-soft: rgba(47, 211, 230, 0.12);
+  --ss-accent-line: rgba(47, 211, 230, 0.45);
+  --ss-good: #0ca30c;
+  --ss-warning: #fab219;
+  --ss-serious: #ec835a;
+  --ss-critical: #d03b3b;
+  --ss-radius: 12px;
+}
+
+/* Streamlit's own elements ----------------------------------------------------------------------------------------- */
+
+/* The page: a faint cyan glow at the top, behind the header. */
+[data-testid="stAppViewContainer"] {
+  background:
+    radial-gradient(1200px 380px at 12% -120px, rgba(47, 211, 230, 0.10), transparent 70%),
+    radial-gradient(900px 300px at 95% -160px, rgba(57, 135, 229, 0.10), transparent 70%),
+    var(--ss-bg);
+}
+[data-testid="stHeader"] { background: transparent; }
+[data-testid="stMainBlockContainer"] { padding-top: 1.75rem; }
+@media (max-width: 480px) {
+  [data-testid="stMainBlockContainer"] { padding-top: 1.25rem; }
+  [data-testid="stHeading"] h1 { max-width: calc(100% - 6rem); }
+}
+[data-testid="stHeading"] h1 {
+  letter-spacing: -0.01em;
+  background: linear-gradient(92deg, #ffffff 0%, #d7f6fa 45%, var(--ss-accent) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+@media (max-width: 480px) {
+  [data-testid="stHeading"] h1 { font-size: 1.35rem; }
+}
+
+/* Tabs: Streamlit draws keyboard focus as an outer ring in the primary color, which the tab bar clips into two
+   vertical bars. Drawn inside the tab instead, so it shows whole, in the accent. */
+.stTabs [data-testid="stTab"] { padding-left: 0.35rem; padding-right: 0.35rem; }
+.stTabs [data-testid="stTab"][data-focus-visible] {
+  box-shadow: inset 0 0 0 2px var(--ss-accent-line);
+  border-radius: 6px;
+}
+
+/* Cards: bordered containers, metrics and charts sit on the surface. */
+[data-testid="stVerticalBlock"][data-test-border="true"],
+div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="border"] {
+  background: var(--ss-surface);
+}
+[data-testid="stMetric"] {
+  background: var(--ss-surface);
+  border-radius: var(--ss-radius);
+}
+[data-testid="stExpander"] details {
+  background: var(--ss-surface);
+  border-color: var(--ss-line);
+}
+
+[data-testid="stVegaLiteChart"] {
+  background: var(--ss-surface); border: 1px solid var(--ss-line); border-radius: var(--ss-radius); overflow: hidden;
+}
+
+/* Segmented controls scroll sideways on a phone instead of wrapping onto a second line. */
+@media (max-width: 480px) {
+  [data-testid="stButtonGroup"] > div { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  [data-testid="stButtonGroup"] > div::-webkit-scrollbar { display: none; }
+}
+
+/* Shared pieces */
+
+.ss-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ss-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 9px; border-radius: 999px;
+  border: 1px solid var(--ss-line); background: var(--ss-surface-2);
+  color: var(--ss-ink-2); font-size: 0.74rem; line-height: 1.5; white-space: nowrap;
+}
+.ss-chip.accent { color: var(--ss-accent-ink); border-color: var(--ss-accent-line); background: var(--ss-accent-soft); }
+.ss-chip.good { color: #8fe38f; border-color: rgba(12, 163, 12, 0.45); background: rgba(12, 163, 12, 0.12); }
+.ss-chip.warning { color: #ffd27a; border-color: rgba(250, 178, 25, 0.45); background: rgba(250, 178, 25, 0.10); }
+.ss-chip.serious { color: #f5b08f; border-color: rgba(236, 131, 90, 0.45); background: rgba(236, 131, 90, 0.10); }
+.ss-chip.critical { color: #ff9a9a; border-color: rgba(208, 59, 59, 0.55); background: rgba(208, 59, 59, 0.12); }
+.ss-chip.muted { color: var(--ss-muted); }
+.ss-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--ss-muted)); flex: none; }
+.ss-dot.good { --c: var(--ss-good); }
+.ss-dot.warning { --c: var(--ss-warning); }
+.ss-dot.serious { --c: var(--ss-serious); }
+.ss-dot.critical { --c: var(--ss-critical); }
+.ss-dot.accent { --c: var(--ss-accent); }
+.ss-dot.muted { --c: var(--ss-muted); }
+.ss-dot.dim { --c: var(--ss-dim); }
+.ss-muted { color: var(--ss-muted); }
+.ss-num { font-variant-numeric: tabular-nums; }
+.ss-kicker {
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ss-muted);
+}
+.ss-kicker code {
+  font-size: 0.66rem; letter-spacing: 0.02em; text-transform: none; color: var(--ss-accent-ink);
+  background: var(--ss-accent-soft); padding: 1px 6px; border-radius: 6px;
+}
+.ss-source { font-size: 0.72rem; color: var(--ss-muted); margin-top: 6px; }
+.ss-source code { font-size: 0.68rem; color: var(--ss-muted); background: transparent; padding: 0; }
+
+/* A pulse: a source is being asked right now (its phase follows the clock, so a redraw does not restart it). */
+.ss-pulse {
+  position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--ss-accent); flex: none;
+  box-shadow: 0 0 0 0 rgba(47, 211, 230, 0.6);
+  animation: ss-pulse 1.8s ease-out infinite;
+}
+@keyframes ss-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(47, 211, 230, 0.55); }
+  70%, 100% { box-shadow: 0 0 0 10px rgba(47, 211, 230, 0); }
+}
+
+/* The Live page's tiles */
+
+.ss-kpis { display: grid; grid-template-columns: 4fr 3fr; gap: 14px; margin: 2px 0 6px; }
+.ss-group { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 8px; align-content: start; }
+@media (min-width: 861px) {
+  .ss-group { grid-template-rows: auto 1fr; align-content: stretch; }
+}
+.ss-group-head {
+  grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 0 2px; min-height: 20px;
+}
+.ss-tile {
+  position: relative; min-width: 0; overflow: hidden;
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 11px 12px 10px; border-radius: var(--ss-radius);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 60%), var(--ss-surface);
+  border: 1px solid var(--ss-line);
+}
+.ss-tile::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px;
+  background: linear-gradient(90deg, var(--c), transparent 85%); opacity: 0.85;
+}
+.ss-tile-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ss-tile-label {
+  color: var(--ss-ink-2); font-size: 0.8rem; font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ss-new {
+  margin-left: 5px; flex: none; font-size: 0.68rem; font-weight: 700; color: var(--ss-bg);
+  background: var(--ss-accent); border-radius: 999px; padding: 0 7px; line-height: 1.6;
+}
+.ss-val {
+  display: flex; flex-wrap: wrap; align-items: center;
+  color: var(--ss-ink); font-weight: 650; line-height: 1.15; letter-spacing: -0.01em;
+  font-size: clamp(1.35rem, 1.75vw, 2rem); white-space: nowrap;
+}
+.ss-delta { min-height: 1.3em; display: flex; }
+.ss-delta .ss-chip { font-size: 0.7rem; padding: 0 6px; max-width: 100%; white-space: normal; }
+.ss-spark { display: flex; align-items: flex-end; gap: 2px; height: 22px; margin-top: 2px; }
+.ss-spark i {
+  flex: 1 1 0; min-width: 2px; height: max(2px, calc(var(--h) * 100%));
+  background: var(--ss-line-2); border-radius: 2px 2px 0 0;
+}
+.ss-spark i.some { background: color-mix(in srgb, var(--c) 55%, var(--ss-surface)); }
+.ss-spark i.today { background: var(--ss-accent); }
+.ss-foot {
+  color: var(--ss-muted); font-size: 0.7rem; line-height: 1.35;
+  display: flex; flex-wrap: wrap; column-gap: 6px;
+}
+.ss-foot span { overflow-wrap: anywhere; }
+
+/* A tile whose value changed since this viewer's last look: its digits roll and it glows, once. */
+.ss-tile.changed { animation: ss-arrive 1.8s ease-out 1; }
+@keyframes ss-arrive {
+  from {
+    border-color: var(--ss-accent);
+    box-shadow: 0 0 0 1px var(--ss-accent-line), 0 0 26px rgba(47, 211, 230, 0.35);
+  }
+}
+.ss-odo { display: inline-block; white-space: nowrap; }
+.ss-d { position: relative; display: inline-block; height: 1.15em; overflow: hidden; vertical-align: top; }
+.ss-d .w { visibility: hidden; }
+.ss-d .r {
+  position: absolute; left: 50%; top: 0;
+  transform: translate(-50%, calc(var(--to) * -1.15em));
+  animation: ss-roll 1.3s cubic-bezier(0.2, 0.8, 0.2, 1) 1 both;
+}
+.ss-d .r b { display: block; height: 1.15em; line-height: 1.15em; font-weight: inherit; text-align: center; }
+@keyframes ss-roll { from { transform: translate(-50%, calc(var(--from) * -1.15em)); } }
+
+@media (max-width: 860px) {
+  .ss-kpis { grid-template-columns: 1fr; gap: 12px; }
+}
+@media (max-width: 480px) {
+  .ss-group.enforcement { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ss-tile { padding: 10px 10px 9px; }
+  .ss-group.sources .ss-tile-head { min-height: 2.2em; }
+  .ss-val { font-size: 1.4rem; }
+  .ss-group.sources .ss-val { font-size: 1.25rem; }
+}
+
+/* The Now strip and other cards */
+
+.ss-cards { display: grid; grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr)); gap: 10px; margin: 4px 0 8px; }
+@media (max-width: 900px) { .ss-cards { grid-template-columns: 1fr; } }
+.ss-card {
+  position: relative; min-width: 0; padding: 12px 14px; border-radius: var(--ss-radius);
+  background: var(--ss-surface); border: 1px solid var(--ss-line);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.ss-card.live {
+  border-color: var(--ss-accent-line); box-shadow: 0 0 0 1px var(--ss-accent-soft), 0 8px 28px rgba(47, 211, 230, 0.08);
+}
+.ss-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ss-card-title { font-weight: 650; color: var(--ss-ink); font-size: 0.92rem; }
+.ss-card-head .ss-chip { margin-left: auto; }
+.ss-big { font-size: 1.55rem; font-weight: 650; line-height: 1.1; color: var(--ss-ink); }
+.ss-big small { font-size: 0.78rem; font-weight: 500; color: var(--ss-muted); margin-left: 4px; }
+.ss-line { color: var(--ss-ink-2); font-size: 0.82rem; line-height: 1.45; }
+.ss-line b { color: var(--ss-ink); font-weight: 600; }
+.ss-list { display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.ss-list li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.ss-list .what { color: var(--ss-ink-2); font-size: 0.8rem; }
+.ss-list .when { color: var(--ss-muted); font-size: 0.74rem; white-space: nowrap; }
+.ss-list .when.soon { color: var(--ss-accent-ink); }
+.ss-list .sep { grid-column: 1 / -1; border-top: 1px solid var(--ss-line); margin: 2px 0; }
+
+.ss-meter {
+  position: relative; height: 6px; border-radius: 999px; background: var(--ss-accent-soft); overflow: hidden;
+}
+.ss-meter i {
+  position: absolute; inset: 0 auto 0 0; width: calc(var(--p) * 100%); border-radius: inherit;
+  background: linear-gradient(90deg, rgba(47, 211, 230, 0.55), var(--ss-accent));
+}
+
+.ss-bars { display: flex; align-items: flex-end; gap: 3px; height: 34px; }
+.ss-bars i {
+  flex: 1 1 0; min-width: 3px; height: max(2px, calc(var(--h) * 100%));
+  background: color-mix(in srgb, var(--ss-accent) 45%, var(--ss-surface)); border-radius: 2px 2px 0 0;
+}
+.ss-bars i.last { background: var(--ss-accent); }
+.ss-bars i.failed { background: var(--ss-critical); }
+.ss-bars i.unsigned { background: var(--ss-warning); }
+
+/* The newest events */
+
+.ss-feed { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.ss-feed li {
+  display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 2px 10px; align-items: start;
+  padding: 8px 6px; border-bottom: 1px solid var(--ss-line);
+}
+.ss-feed li:last-child { border-bottom: 0; }
+.ss-feed .ss-dot { margin-top: 6px; }
+.ss-feed .title { color: var(--ss-ink); font-size: 0.86rem; line-height: 1.35; overflow-wrap: anywhere; }
+.ss-feed .meta {
+  grid-column: 2 / 4; color: var(--ss-muted); font-size: 0.74rem; display: flex; flex-wrap: wrap; gap: 4px 10px;
+}
+.ss-feed .meta .kind { color: var(--ss-ink-2); }
+.ss-feed .when { color: var(--ss-muted); font-size: 0.74rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ss-feed li.fresh { animation: ss-slide 0.6s ease-out 1 both; box-shadow: inset 2px 0 0 var(--ss-accent); }
+@keyframes ss-slide { from { opacity: 0; transform: translateY(-6px); } }
+.ss-feed a { color: var(--ss-ink); text-decoration: none; border-bottom: 1px dotted var(--ss-line-2); }
+.ss-feed a:hover { color: var(--ss-accent-ink); border-bottom-color: var(--ss-accent-line); }
+
+/* Reduced motion: nothing moves, the final state shows. */
+@media (prefers-reduced-motion: reduce) {
+  .ss-anim, .ss-anim *, .ss-tile.changed, .ss-pulse, .ss-feed li.fresh, .ss-d .r {
+    animation: none !important;
+    transition: none !important;
+  }
+}

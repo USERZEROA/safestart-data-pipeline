@@ -24,6 +24,7 @@ from psycopg.types.json import Jsonb
 from streamlit.testing.v1 import AppTest
 
 from safestart_pipeline.crawl.crawler import iso
+from safestart_pipeline.crawl.store import Store
 from safestart_pipeline.dashboard import app as dashboard
 from safestart_pipeline.dashboard import charts, data
 from safestart_pipeline.official.state import OfficialState
@@ -119,8 +120,10 @@ def stream_tables(now: pd.Timestamp) -> dict[str, pd.DataFrame]:
     minute = pd.Timedelta(minutes=1)
     return {
         "event_counts": pd.DataFrame({"kind": ["violation", "inspection", "regulation"], "events": [120, 40, 2],
-                                      "last_received": [now] * 3}),
-        "arrivals": pd.DataFrame({"minute": [now - 2 * minute, now - minute] * 2,
+                                      "last_received": [now] * 3, "last_24h": [3, 0, 2]}),
+        "daily_by_kind": pd.DataFrame({"day": [now.date()], "kind": ["violation"], "events": [7]}),
+        "arrivals": pd.DataFrame({"mode": ["replay", "live", "replay", "live"],
+                                  "at": [now - 2 * minute, now - minute] * 2,
                                   "kind": ["violation", "violation", "inspection", "regulation"],
                                   "events": [30, 25, 4, 1]}),
         "latest_events": pd.DataFrame({
@@ -139,8 +142,10 @@ def stream_tables(now: pd.Timestamp) -> dict[str, pd.DataFrame]:
         "recent_anomalies": pd.DataFrame({"day": pd.to_datetime(["2026-11-21"]), "district": ["C04"],
                                           "observed": [30.0], "predicted": [10.1], "residual": [19.9],
                                           "method": ["ewma"]}),
+        "check_history": pd.DataFrame({"source": ["feed-official"], "checked_at": [now - minute],
+                                       "status": ["unchanged"], "found": [0], "note": ["quiet manifest"]}),
         "source_freshness": pd.DataFrame({
-            "source": ["federal_register", "msha_ogd", "sitemaps-msha"],
+            "source": ["feed-official", "versions", "sitemaps-msha"],
             "checked_at": [now - 5 * minute, now, now - 2 * minute], "status": ["ok", "error", "refused"],
             "found": [1, 0, 0], "note": ["", "timeout", "refused, the host served an HTML page instead of the sitemap"],
             "checks_24h": [24, 12, 4], "errors_24h": [0, 1, 0], "found_24h": [3, 0, 0]}),
@@ -203,6 +208,7 @@ def text_of(app: AppTest) -> str:
     """Everything a run shows as text: headings, captions, messages, metrics, expander labels and table cells."""
     parts = [element.value for kind in ("title", "subheader", "markdown", "caption", "info", "warning")
              for element in getattr(app, kind)]
+    parts += [element.proto.body for element in app.get("html") if not element.proto.body.startswith("<style>")]
     parts += [f"{metric.label}: {metric.value}" for metric in app.metric]
     parts += [expander.label for expander in app.expander]
     parts += [frame.value.to_string() for frame in app.dataframe]
@@ -236,7 +242,8 @@ def test_every_page_renders_from_the_warehouse_without_postgres(stores):
     assert chart_count(shown["Sources"]) == 1
 
 
-def test_every_page_renders_from_a_warehouse_the_build_made(built_warehouse, monkeypatch):
+def test_every_page_renders_from_a_warehouse_the_build_made(built_warehouse, tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFESTART_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv("SAFESTART_WAREHOUSE_PATH", str(built_warehouse))
     monkeypatch.setenv("SAFESTART_POSTGRES_URL", UNREACHABLE)
     st.cache_data.clear()
@@ -261,8 +268,11 @@ def test_every_page_says_what_is_missing_without_any_store(tmp_path, monkeypatch
     st.cache_data.clear()
     for page in dashboard.PAGES:
         app = run_page(page, mine="4609612")
-        assert chart_count(app) == 0
-        if page != "Live":
+        if page == "Live":
+            assert chart_count(app) <= 1  # scheduled markers can fall inside the next 12 h without local history
+            assert "No activity available for the last 48 hours." in text_of(app)
+        else:
+            assert chart_count(app) == 0
             assert "No warehouse yet" in text_of(app), page
     assert not (tmp_path / "missing.duckdb").exists()  # read-only: nothing is created
 
@@ -365,11 +375,12 @@ def test_the_sources_page_shows_the_latest_official_run_and_the_feed(stores):
     text = text_of(app)
     assert "Official files" in text and "last started 12 hours ago" in text and "ended 1 hour ago (done)" in text
     for tile in ("New: 3", "Changed: 2", "Gone: 1", "Restored: 0", "Moved: 0", "Refused files: 1",
-                 "Unchanged: 2,500"):
+                 "Confirmed unchanged: 2,500"):
         assert tile in text
     assert ("www.msha.gov refused the run's requests; refusals are recorded, never worked around."
             in [info.value for info in app.info])
     assert "manifest 12, generated 3 hours ago" in text and "/feed/official/latest.json" in text
+    assert "3 changes, 0 confirmed unchanged" in text  # the newest manifest, independently of the publish log
     assert "2 files deleted, 3.5 MB" in text
     assert [warning.value for warning in app.warning] == []  # nothing is wrong
     [sources] = [frame.value for frame in app.dataframe if "requests" in frame.value]
@@ -462,9 +473,15 @@ def test_numbers_read_the_same_in_every_browser_language(stream_rows):
 
 def test_stream_pages_render_events_forecasts_and_checks(stream_rows):
     live = run_page("Live")
-    assert {metric.label: metric.value for metric in live.metric}["Violations"] == "120"
+    markup = text_of(live)
+    assert markup.count('data-kind="') == 7
+    assert 'aria-label="Violations: 120.' in markup and "+3 in 24 h" in markup
+    assert 'ss-anim changed' not in markup
+    assert "quiet manifest" in str(live.get("vega_lite_chart")[-1].proto)
+    assert 'class="ss-feed"' in markup and ">None<" not in markup
+    assert "prefers-reduced-motion" in next(e.proto.body for e in live.get("html") if "<style>" in e.proto.body)
     assert "S&S violation of 30 CFR 75.400" in text_of(live)
-    assert chart_count(live) == 1
+    assert chart_count(live) == 3  # Replay, Live and the heartbeat
 
     enforcement = run_page("Enforcement")
     assert chart_count(enforcement) == 4  # counts over time, by district, the forecast and the district history
@@ -473,10 +490,110 @@ def test_stream_pages_render_events_forecasts_and_checks(stream_rows):
 
     sources = run_page("Sources")
     # A failed check warns; a refused one is noted, as a refusal is the host's answer, not a fault.
-    assert [warning.value for warning in sources.warning] == [r"The newest check failed for msha\_ogd."]
+    assert [warning.value for warning in sources.warning] == ["The newest check failed for versions."]
     assert ("The newest check of sitemaps-msha was refused by the host; refusals are recorded, never worked around."
             in [info.value for info in sources.info])
-    assert sources.dataframe[-1].value["age"].tolist() == ["5 minutes ago", "just now", "2 minutes ago"]
+    assert sources.subheader[0].value == "Official files"
+    checks = next(frame.value for frame in sources.dataframe if "checks_24h" in frame.value)
+    assert "5 minutes ago" in checks.iloc[0].age and "UTC" in checks.iloc[0]["next"]
+
+
+def test_tiles_remember_each_modes_last_observation_and_do_not_animate_a_refresh(stream_rows, monkeypatch):
+    now = pd.Timestamp.now(tz="UTC")
+    counts = stream_tables(now)["event_counts"]
+    monkeypatch.setattr(data, "event_counts", stand_in("event_counts", counts))
+    app = run_page("Live")
+
+    def changed():
+        return [e.proto.body.count("ss-anim changed") for e in app.get("html")
+                if 'data-kind="violation"' in e.proto.body]
+
+    assert changed() == [0]
+    counts.loc[counts["kind"] == "violation", "events"] += 1
+    st.cache_data.clear()
+    app.run()
+    assert changed() == [1] and 'aria-label="Violations: 121.' in text_of(app)
+    app.run()
+    assert changed() == [0]
+    app.segmented_control(key="live_mode").set_value("replay").run()
+    assert changed() == [0]
+    app.segmented_control(key="live_mode").set_value("all").run()
+    assert changed() == [0]
+
+
+def test_live_crawl_counts_only_this_sources_window_and_stops_pulsing_when_quiet(stores):
+    now = datetime.now(UTC)
+    start, until = iso(now - timedelta(hours=1)), iso(now + timedelta(hours=11))
+    state = OfficialState(stores / "state" / "official.sqlite")
+    state.start_run("active", started_at=start, until=until, trigger="flow")
+    state.start_source("active", "osha", host="www.osha.gov", started_at=start)
+    state.close()
+    unavailable = data.official_run().frame.iloc[0]
+    assert pd.isna(unavailable["requests"]) and pd.isna(unavailable["changed"])
+    html = text_of(run_page("Sources"))
+    assert "Crawl progress unavailable for osha" in html and "Answered 304 (active source): –" in html
+    st.cache_data.clear()
+    store = Store(stores / "state" / "crawl-osha.sqlite")
+    page = "https://www.osha.gov/test-page"
+    old = iso(now - timedelta(hours=2))
+    for at, status in [(old, 304), (start, 304), (iso(now), 200)]:
+        store.db.execute("insert into fetches (url, fetched_at, http_status) values (?, ?, ?)", (page, at, status))
+    for at, change in [(old, "new"), (start, "changed"), (start, "rejected")]:
+        store.add_change(page, change, observed_at=at, run_id="crawl")
+    store.close()
+
+    row = data.official_run().frame.iloc[0]
+    assert [row[name] for name in ("requests", "not_modified", "new", "changed", "rejected")] == [2, 1, 0, 1, 1]
+    assert data.official_changes().frame["change"].tolist() == ["changed"]
+    assert len(data.official_runs().frame) == 1
+    html = text_of(run_page("Sources"))
+    assert "Answered 304 (active source): 1" in html and 'aria-label="being asked now"' in html
+    assert 'href="https://www.osha.gov/test-page"' in html and "Confirmed unchanged: 0" not in html
+    assert "ss-pulse" not in dashboard.official_card(now + timedelta(minutes=2), "Live")
+
+
+def test_daily_trend_pads_only_answered_days_and_schedule_honors_a_busy_crawl():
+    today = NOW.date()
+    table = data.Table(pd.DataFrame({"kind": ["inspection"], "day": [today], "events": [13]}))
+    series = dashboard.trend_days(table, NOW)["inspection"]
+    assert len(series) == 14 and series[-1] == (today.isoformat(), 13)
+    assert series[0] == ((today - timedelta(days=13)).isoformat(), 0)
+    assert dashboard.trend_days(data.Table(problem="unavailable"), NOW) == {}
+    table = data.Table(pd.DataFrame({
+        "source": ["sitemaps-osha"], "checked_at": [NOW], "status": ["skipped"],
+        "note": ["the osha crawl is running; asked again in 1:00:00"]}))
+    assert dashboard.newest_checks(table)["sitemaps-osha"]["next"] == NOW + timedelta(hours=1)
+
+
+def test_the_last_fourteen_publishes_and_every_attempt_in_the_heartbeat_window(stores):
+    state = OfficialState(stores / "state" / "official.sqlite")
+    now = datetime.now(UTC)
+    for index in range(52):
+        at = now - (timedelta(days=3) if index == 0 else timedelta(minutes=52 - index))
+        state.add_publish(attempted_at=iso(at), trigger="flow", outcome="published", note="",
+                          first_sequence=index + 1, last_sequence=index + 1, counts={"changed": index, "checked": 1})
+    state.close()
+    chart = data.feed_history().frame
+    assert chart["changes"].tolist() == list(range(38, 52))
+    assert data.feed_history(None, 48).frame["changes"].tolist() == list(range(1, 52))
+
+
+def test_successful_empty_store_shows_zero_and_a_failed_read_stays_unknown(stores, monkeypatch):
+    for name in ("event_counts", "daily_by_kind", "source_freshness", "latest_events", "arrivals", "check_history"):
+        monkeypatch.setattr(data, name, stand_in(name, pd.DataFrame()))
+    live = run_page("Live")
+    html = text_of(live)
+    assert html.count("+0 in 24 h") >= 7 and 'aria-label="Page changes: 0.' in html
+    assert "No live events received" in html and "No replay events received" in html
+
+    def event_counts(mode):
+        return data.Table(problem="Stream read failed.")
+
+    monkeypatch.setattr(data, "event_counts", event_counts)
+    st.cache_data.clear()
+    live.run()
+    html = text_of(live)
+    assert 'aria-label="Page changes: –.' in html and "ss-anim changed" not in html
 
 
 def test_duckdb_spills_into_a_folder_of_this_process_not_beside_the_read_only_warehouse(stores):
@@ -553,17 +670,20 @@ def test_every_kind_has_a_label_and_a_fixed_color():
 
 def test_charts_keep_an_entitys_color_whatever_else_is_shown():
     rows = stream_tables(NOW)
-    spec = charts.arrivals(rows["arrivals"].query("kind == 'inspection'")).to_dict()
+    start = NOW - pd.Timedelta(minutes=15)
+    spec = charts.activity(rows["arrivals"].query("kind == 'inspection'"), "minute", start, NOW).to_dict()
+    assert spec["title"] == "Replay"
     assert spec["encoding"]["color"]["scale"] == {"domain": ["Inspections"],
                                                   "range": [charts.KIND_COLORS["inspection"]]}
-    minutes = spec["encoding"]["x"]["scale"]["domain"]  # every minute keeps its place, quiet ones included
-    assert len(minutes) == 15 and minutes[-1] == "11:58" and spec["encoding"]["x"]["axis"]["values"][-1] == "11:58"
+    assert spec["transform"][0]["stack"] == "events" and spec["transform"][0]["groupby"] == ["begins", "ends"]
+    assert (spec["encoding"]["y"]["field"], spec["encoding"]["y2"]["field"]) == ("top", "bottom")
+    assert len(spec["encoding"]["x"]["scale"]["domain"]) == 2  # continuous time retains empty intervals
     trend = pd.DataFrame({"year": [1999, 2000, 2000], "coal_metal": ["C", "C", "M"], "violations": [3, 5831, 6368],
                           "ss_violations": [0, 2365, 1975], "ss_share": [0.0, 0.41, 0.31]})
     assert charts.ss_trend(trend).data["year"].tolist() == [2000, 2000]  # no share from three stragglers
     layers = charts.forecast(rows["forecasts"], "violation").to_dict()["layer"]
     assert all(layer["encoding"]["color"]["legend"] for layer in layers)  # a None on one layer hides the legend
-    for chart in (charts.arrivals(rows["arrivals"]),
+    for chart in (charts.activity(rows["arrivals"].query("mode == 'live'"), "hour", start, NOW),
                   charts.counts_over_time(rows["daily_counts"], "violation", "day"),
                   charts.counts_over_time(rows["daily_counts"], "inspection", "week"),
                   charts.counts_by_district(rows["daily_counts"], "accident", "last 90 days"),
@@ -625,7 +745,18 @@ def test_stream_queries_run_on_postgresql(stores, stream_database, monkeypatch):
         "violation": 1, "inspection": 1, "regulation": 1}
     assert data.event_counts("live").frame["kind"].tolist() == ["regulation"]
     assert data.latest_events("replay", 5).frame["kind"].tolist() == ["inspection", "violation"]
-    assert data.arrivals().frame["events"].sum() == 3
+    counts = data.event_counts("live").frame.iloc[0]
+    assert counts["last_24h"] == 1 and counts["last_received"].tzinfo is not None
+    connection.execute("update stream.events set received_at = now() - interval '25 hours' where kind = 'inspection'")
+    assert data.event_counts().frame.set_index("kind").loc["inspection", "last_24h"] == 0
+    assert data.arrivals().frame["events"].sum() == 2
+    for grain in ("hour", "day"):
+        arrivals = data.arrivals("replay", 48 * 60, grain).frame
+        assert arrivals["events"].sum() == 2 and set(arrivals["mode"]) == {"replay"}
+    assert len(data.check_history(24).frame) == 4
+    connection.execute("insert into stream.daily_counts (day, kind, district, events) values"
+                       " (current_date, 'page_change', '', 2), (current_date - 14, 'page_change', '', 6)")
+    assert data.daily_by_kind().frame.query("kind == 'page_change'")["events"].tolist() == [2]
     weekly = data.daily_counts("violation", 30, "week").frame
     assert weekly["events"].sum() == 17 and str(weekly["period"].dtype).startswith("datetime64")
     assert data.forecast_districts("violation").frame["anomalies"].tolist() == [1]

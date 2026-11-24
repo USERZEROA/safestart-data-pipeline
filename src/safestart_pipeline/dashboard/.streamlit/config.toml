@@ -1,0 +1,21 @@
+# The dashboard's theme: dark, with one cyan accent for selection, focus, progress and "now". Streamlit reads this file
+# because it sits beside the app's main script (`streamlit run src/safestart_pipeline/dashboard/app.py`, locally and in
+# the image); theme.css styles the rest. The chart colors are the data palette's dark steps (charts.py), never the
+# accent, so a series never reads as selected.
+[theme]
+base = "dark"
+primaryColor = "#2fd3e6"
+backgroundColor = "#0b0d10"
+secondaryBackgroundColor = "#14171c"
+textColor = "#eef1f5"
+linkColor = "#7fe3f0"
+borderColor = "#262b33"
+dataframeBorderColor = "#20252c"
+dataframeHeaderBackgroundColor = "#14171c"
+baseRadius = "0.6rem"
+paddingTop = "1.25rem"
+headingFontSizes = ["1.75rem", "1.3rem", "1.1rem"]
+headingFontWeights = [700, 650, 600]
+metricValueFontSize = "1.7rem"
+metricValueFontWeight = 650
+chartCategoricalColors = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#0ca30c", "#9085e9"]

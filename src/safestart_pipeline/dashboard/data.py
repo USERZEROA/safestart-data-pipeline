@@ -13,7 +13,11 @@ process gives it a folder of its own in the system's temporary folder. PostgreSQ
 read-only too, with a connect timeout and a statement timeout, so an absent or slow store cannot stall a page or load
 the small host; once PostgreSQL has refused a connection, it is reported unreachable for a few seconds without trying
 again, so a page with several panels waits for one timeout, not one per panel. Messages name the store's host and
-port, never the connection URL, which may carry a password.
+port, never the connection URL, which may carry a password. Sessions count days and hours in UTC.
+
+The official run's progress is read from the crawl store it writes while it runs (the requests it has sent and the
+changes it has found since its source began), through `verify.read_only`, the newest rows only, so a look at a store of
+a gigabyte stays bounded.
 
 "12 months" means the 12 months before the newest violation issue date in the warehouse, as in the marts, so a brief
 built from an older snapshot still describes a full year.
@@ -29,7 +33,7 @@ import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +59,7 @@ RETRY_AFTER_SECONDS = 10
 WAREHOUSE_SETTINGS = {"memory_limit": "192MiB", "threads": 2,
                       "temp_directory": str(Path(tempfile.gettempdir()) / f"safestart-dashboard-{os.getpid()}")}
 GRAINS = frozenset({"day", "week", "month"})
+ARRIVAL_GRAINS = frozenset({"minute", "hour", "day"})
 
 
 @dataclass(frozen=True)
@@ -327,7 +332,7 @@ def stream_query(sql: str, params: Mapping[str, Any] | None = None) -> Table:
     try:
         connection = psycopg.connect(
             url, connect_timeout=CONNECT_TIMEOUT_SECONDS, autocommit=True, application_name="safestart-dashboard",
-            options=f"-c default_transaction_read_only=on -c statement_timeout={STATEMENT_TIMEOUT_MS}",
+            options=f"-c default_transaction_read_only=on -c statement_timeout={STATEMENT_TIMEOUT_MS} -c TimeZone=UTC",
         )
     except psycopg.Error:  # its message can quote the URL, so it is not shown
         _unreachable_until[url] = time.monotonic() + RETRY_AFTER_SECONDS
@@ -354,12 +359,27 @@ def _mode_filter(mode: str | None) -> tuple[str, dict[str, str]]:
 
 
 def event_counts(mode: str | None = None) -> Table:
-    """Events stored by kind."""
+    """Stored events of the selected mode, with arrivals in the last 24 hours from the same scan."""
     where, params = _mode_filter(mode)
     return _with_times(stream_query(
-        f"select kind, count(*) as events, max(received_at) as last_received from stream.events {where} group by kind",
-        params,
+        f"""
+        select kind, count(*) as events, max(received_at) as last_received,
+               count(*) filter (where received_at > now() - interval '24 hours') as last_24h
+        from stream.events {where}
+        group by kind
+        """, params,
     ), "last_received")
+
+
+def daily_by_kind(days: int = 14) -> Table:
+    """Source-day totals across both modes, as counted by the analytics consumer. Today is a UTC date."""
+    return stream_query(
+        """
+        select day, kind, sum(events)::bigint as events from stream.daily_counts
+        where day > current_date - %(days)s::integer and day <= current_date
+        group by day, kind order by day, kind
+        """, {"days": days},
+    )
 
 
 def latest_events(mode: str | None = None, limit: int = 25) -> Table:
@@ -376,19 +396,22 @@ def latest_events(mode: str | None = None, limit: int = 25) -> Table:
     ), "received_at", "occurred_at")
 
 
-def arrivals(mode: str | None = None, minutes: int = 15) -> Table:
-    """Events received per minute and kind over the last `minutes` minutes (a range read of the received_at index)."""
+def arrivals(mode: str | None = None, minutes: int = 15, grain: str = "minute") -> Table:
+    """Events received per `grain` (minute, hour or day, UTC), mode and kind over the last `minutes` minutes (a range
+    read of the received_at index)."""
+    if grain not in ARRIVAL_GRAINS:
+        raise ValueError(f"grain must be one of {sorted(ARRIVAL_GRAINS)}, not {grain!r}")
     where, params = _mode_filter(mode)
     recent = "received_at > now() - make_interval(mins => %(minutes)s)"
     return _with_times(stream_query(
         f"""
-        select date_trunc('minute', received_at) as minute, kind, count(*) as events
+        select date_trunc(%(grain)s, received_at) as at, mode, kind, count(*) as events
         from stream.events {f"{where} and {recent}" if where else f"where {recent}"}
-        group by 1, 2
-        order by 1, 2
+        group by 1, 2, 3
+        order by 1, 2, 3
         """,
-        {**params, "minutes": minutes},
-    ), "minute")
+        {**params, "minutes": minutes, "grain": grain},
+    ), "at")
 
 
 def _enforcement_kind(kind: str) -> str:
@@ -476,17 +499,65 @@ def source_freshness() -> Table:
     ), "checked_at")
 
 
+def check_history(hours: int = 48) -> Table:
+    """Every watcher check of the last `hours` hours, oldest first."""
+    return _with_times(stream_query(
+        """
+        select source, checked_at, status, found, note
+        from stream.source_checks
+        where checked_at > now() - make_interval(hours => %(hours)s)
+        order by checked_at
+        """,
+        {"hours": hours},
+    ), "checked_at")
+
 
 # The daily update of the official files (SQLite and JSON in the data root)
 
 OFFICIAL_RUN = "ssp official run"
 OFFICIAL_COUNTS = ("new", "changed", "gone", "restored", "moved", "rejected", "checked")
+CRAWL_STORES = ("osha", "arlweb")  # the official run's sources that write a crawl store as they go
+PROGRESS_ROWS = 10_000  # the newest requests read for a running source: more than a day's budget of either crawl
+
+
+def _official_path() -> Path:
+    return config.data_root() / "state" / "official.sqlite"
+
+
+def crawl_progress(source: str, since: str, until: str) -> dict:
+    """What a running source of the official run has done since `since` (its start), from its crawl store: the
+    requests it sent, the newest one's time, how many answered 304 (unchanged), and its changes by kind. Only the
+    newest PROGRESS_ROWS requests are read, so the look stays small however large the store is."""
+    path = config.data_root() / "state" / f"crawl-{source}.sqlite"
+    found = {"asked": 0, "last_request": None, "not_modified": 0, **dict.fromkeys(OFFICIAL_COUNTS[:-1], 0)}
+    if not path.is_file():
+        raise FileNotFoundError(f"{path.name} is missing")
+    db = read_only(path)
+    try:
+        row = db.execute(
+            "select count(*) as asked, max(fetched_at) as last_request,"
+            " coalesce(sum(http_status = 304), 0) as not_modified"
+            " from (select fetched_at, http_status from fetches order by rowid desc limit ?)"
+            " where fetched_at between ? and ?",
+            (PROGRESS_ROWS, since, until)).fetchone()
+        found |= {key: row[key] for key in ("asked", "last_request", "not_modified")}
+        try:
+            for change, number in db.execute(
+                    "select change, count(*) from changes where observed_at between ? and ? group by change",
+                    (since, until)):
+                found[change] = number
+        except sqlite3.OperationalError as problem:
+            if "no such table: changes" not in str(problem):  # first-version stores have no changes table
+                raise
+    finally:
+        db.close()
+    return found
 
 
 def official_run() -> Table:
     """The latest daily run of the official files, one row per source it asked: its host, status, requests, note and
     what it found (state/official.sqlite), with the run's start, deadline, end and stop reason on every row."""
-    path = config.data_root() / "state" / "official.sqlite"
+    path = _official_path()
     missing = Table(problem="No daily run of the official files on this host yet: the orchestrator's official flow "
                             f"records one every day, and `{OFFICIAL_RUN}` one now.")
     if not path.exists():
@@ -499,23 +570,132 @@ def official_run() -> Table:
                               (run["run_id"],)).fetchall() if run else []
         finally:
             db.close()
+        records = []
+        if run and not rows:  # the run record is committed before its first source starts
+            rows = [{"source": None, "host": None, "status": "waiting", "requests": 0, "note": None,
+                     "started_at": None, "ended_at": None, "details": None}]
+        for row in rows:
+            details = json.loads(row["details"] or "{}")
+            found = {**(details.get("changes") or {}), "checked": details.get("checked_unchanged", 0)}
+            live = row["status"] == "running" and row["ended_at"] is None and row["source"] in CRAWL_STORES
+            progress, note = {}, row["note"]
+            if live:
+                try:
+                    progress = crawl_progress(row["source"], row["started_at"], run["ended_at"] or run["until"])
+                except (OSError, sqlite3.Error) as problem:
+                    note = f"Crawl progress unavailable: {_first_line(problem)}"
+                found = {name: progress.get(name) for name in OFFICIAL_COUNTS}
+            records.append({"source": row["source"], "host": row["host"], "status": row["status"],
+                            "requests": progress.get("asked") if live else row["requests"], "note": note,
+                            "started_at": row["started_at"], "ended_at": row["ended_at"],
+                            **{name: found.get(name) if live else int(found.get(name) or 0)
+                               for name in OFFICIAL_COUNTS},
+                            "live": live, "last_request": progress.get("last_request"),
+                            "not_modified": progress.get("not_modified") if live else 0,
+                            "run_id": run["run_id"], "run_started_at": run["started_at"], "run_until": run["until"],
+                            "run_ended_at": run["ended_at"], "run_stop": run["stop_reason"]})
     except sqlite3.Error as problem:
         return Table(problem=f"The official files' record could not be read: {_first_line(problem)}")
     if run is None:
         return missing
+    columns = ["source", "host", "status", "requests", "note", "started_at", "ended_at", *OFFICIAL_COUNTS, "live",
+               "last_request", "not_modified", "run_id", "run_started_at", "run_until", "run_ended_at", "run_stop"]
+    return _with_times(Table(pd.DataFrame(records, columns=columns)), "started_at", "ended_at", "last_request",
+                       "run_started_at", "run_until", "run_ended_at")
+
+
+def official_runs(hours: int = 48) -> Table:
+    """The daily runs of the official files that ended in the last `hours` hours or have not ended: their start,
+    deadline, end and stop reason."""
+    path = _official_path()
+    if not path.exists():
+        return Table(problem="No daily run of the official files on this host yet.")
+    since = (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        db = read_only(path)
+        try:
+            rows = db.execute("select run_id, started_at, until, ended_at, stop_reason from runs"
+                              " where coalesce(ended_at, until) >= ? order by started_at", (since,)).fetchall()
+        finally:
+            db.close()
+    except sqlite3.Error as problem:
+        return Table(problem=f"The official files' record could not be read: {_first_line(problem)}")
+    frame = pd.DataFrame([dict(row) for row in rows], columns=["run_id", "started_at", "until", "ended_at",
+                                                               "stop_reason"])
+    return _with_times(Table(frame), "started_at", "until", "ended_at")
+
+
+def official_changes(limit: int = 10) -> Table:
+    """The newest pages and files the latest official run found new, changed, gone, restored or moved, newest first,
+    from the crawl stores it writes (refused files apart)."""
+    path = _official_path()
+    if not path.exists():
+        return Table(problem="No daily run of the official files on this host yet.")
+    try:
+        db = read_only(path)
+        try:
+            sources = db.execute(
+                "select s.source, s.started_at, coalesce(s.ended_at, r.ended_at, r.until) as until, s.crawl_run_id"
+                " from sources s join runs r using (run_id)"
+                " where r.run_id = (select run_id from runs order by started_at desc limit 1)"
+                " and (s.crawl_run_id is not null or s.status = 'running')").fetchall()
+        finally:
+            db.close()
+        found = []
+        for row in sources:
+            source = row["source"]
+            store = config.data_root() / "state" / f"crawl-{source}.sqlite"
+            if source not in CRAWL_STORES or not store.exists():
+                continue
+            db = read_only(store)
+            try:
+                found += [{"source": source, **dict(change)} for change in db.execute(
+                    "select url, change, detected_type, observed_at from changes where observed_at between ? and ?"
+                    " and (? is null or run_id = ?) and change != 'rejected' order by observed_at desc, id desc"
+                    " limit ?", (row["started_at"], row["until"], row["crawl_run_id"], row["crawl_run_id"], limit))]
+            except sqlite3.OperationalError as problem:
+                if "no such table: changes" not in str(problem):
+                    raise
+            finally:
+                db.close()
+    except sqlite3.Error as problem:
+        return Table(problem=f"The official files' record could not be read: {_first_line(problem)}")
+    frame = pd.DataFrame(sorted(found, key=lambda row: row["observed_at"], reverse=True)[:limit],
+                         columns=["source", "url", "change", "detected_type", "observed_at"])
+    return _with_times(Table(frame), "observed_at")
+
+
+def feed_history(limit: int | None = 14, hours: int | None = None) -> Table:
+    """The latest attempts to publish the feed, oldest first: when, the outcome, the manifests written, their window,
+    and how many pages and files they listed as changed (new, changed, gone, restored or moved)."""
+    path = _official_path()
+    if not path.exists():
+        return Table(problem="No feed for SafeStart on this host yet.")
+    since = (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ") if hours else ""
+    try:
+        db = read_only(path)
+        try:
+            rows = db.execute("select attempted_at, outcome, first_sequence, last_sequence, window_start,"
+                              " window_end, counts, note from publishes where attempted_at >= ? order by id desc"
+                              " limit ?", (since, -1 if limit is None else limit)).fetchall()
+        except sqlite3.OperationalError as problem:
+            if "no such table: publishes" not in str(problem):
+                raise
+            rows = []  # a record from before the feed
+        finally:
+            db.close()
+    except sqlite3.Error as problem:
+        return Table(problem=f"The feed's record could not be read: {_first_line(problem)}")
     records = []
-    for row in rows:
-        details = json.loads(row["details"] or "{}")
-        found = {**(details.get("changes") or {}), "checked": details.get("checked_unchanged", 0)}
-        records.append({"source": row["source"], "host": row["host"], "status": row["status"],
-                        "requests": row["requests"], "note": row["note"], "ended_at": row["ended_at"],
-                        **{name: int(found.get(name) or 0) for name in OFFICIAL_COUNTS},
-                        "run_started_at": run["started_at"], "run_until": run["until"],
-                        "run_ended_at": run["ended_at"], "run_stop": run["stop_reason"]})
-    columns = ["source", "host", "status", "requests", "note", "ended_at", *OFFICIAL_COUNTS, "run_started_at",
-               "run_until", "run_ended_at", "run_stop"]
-    return _with_times(Table(pd.DataFrame(records, columns=columns)), "ended_at", "run_started_at", "run_until",
-                       "run_ended_at")
+    for row in reversed(rows):
+        counts = json.loads(row["counts"]) if row["counts"] else {}
+        records.append({**{key: row[key] for key in ("attempted_at", "outcome", "first_sequence", "last_sequence",
+                                                      "window_start", "window_end", "note")},
+                        "changes": sum(int(counts.get(name) or 0) for name in OFFICIAL_COUNTS[:5]),
+                        "checked": int(counts.get("checked") or 0)})
+    frame = pd.DataFrame(records, columns=["attempted_at", "outcome", "first_sequence", "last_sequence",
+                                           "window_start", "window_end", "note", "changes", "checked"])
+    return _with_times(Table(frame), "attempted_at", "window_start", "window_end")
 
 
 def official_feed() -> Table:
@@ -530,8 +710,10 @@ def official_feed() -> Table:
     if not latest and not attempt:
         return Table(problem="No feed for SafeStart on this host yet: each daily run of the official files publishes "
                              "its manifest to exports/official/.")
+    counts = latest.get("counts") or {}
     window = latest.get("window") or {}
     row = {"sequence": latest.get("sequence"), "generated_at": latest.get("generatedAt"),
+           "changes": sum(counts.get(name, 0) for name in OFFICIAL_COUNTS[:5]), "checked": counts.get("checked", 0),
            "age_hours": latest.get("ageHours"), "stale": bool(latest.get("stale")), "problem": latest.get("problem"),
            "window_start": window.get("start"), "window_end": window.get("end"),
            "attempted_at": attempt.get("attempted_at"), "outcome": attempt.get("outcome"), "note": attempt.get("note")}

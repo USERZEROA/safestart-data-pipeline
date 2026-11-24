@@ -5,6 +5,11 @@ whose neighbors stay distinguishable under color-vision deficiency, and severity
 for S&S violations and serious accidents, critical for anomalies) that never stand for a series. A chart with one
 series uses the first hue and no legend; a chart with more carries a legend, so color never carries meaning alone.
 Every axis names its unit and every mark has a tooltip.
+
+The dashboard is dark (.streamlit/config.toml), so the hues are the palette's dark steps, checked as a set against the
+card surface (every neighbor apart under color-vision deficiency, each at least 3:1 against the surface); magnitudes
+run from a dark blue that recedes into the surface to a light one; touching marks are parted by a gap of the surface's
+color. The activity and heartbeat axes use a UTC scale in every browser.
 """
 
 from __future__ import annotations
@@ -13,12 +18,17 @@ import altair as alt
 import pandas as pd
 
 BLUE, ORANGE, AQUA, YELLOW, MAGENTA, GREEN, VIOLET = (
-    "#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6")
+    "#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#0ca30c", "#9085e9")
 CATEGORICAL = (BLUE, ORANGE, AQUA, YELLOW, MAGENTA, GREEN, VIOLET)
 SERIOUS = "#ec835a"  # status color: S&S violations and serious accidents (definitions.py)
 CRITICAL = "#d03b3b"  # status color: anomalies
-MUTED = "#898781"  # forecasts and folded "other" categories
-SEQUENTIAL = ("#cde2fb", "#104281")  # one hue, light to dark, for magnitudes
+MUTED = "#8a93a0"  # forecasts and folded "other" categories
+SEQUENTIAL = ("#104281", "#cde2fb")  # one hue for magnitudes: low recedes into the dark surface, high is light
+SURFACE = "#14171c"  # the card surface (theme.css), whose color parts touching marks
+ACCENT = "#2fd3e6"  # the interface's accent: "now" and the work under way, never a series
+# Status colors with the words that go with them (the dashboard always prints the status beside its color).
+TONES = {"good": "#0ca30c", "muted": "#8a93a0", "warning": "#fab219", "serious": "#ec835a", "critical": "#d03b3b",
+         "dim": "#5b6370", "accent": ACCENT}
 
 KIND_ORDER = ("inspection", "violation", "accident", "order_107a", "dataset_version", "page_change", "regulation")
 KIND_LABELS = {
@@ -50,26 +60,87 @@ def _fixed_colors(domain: list[str], colors: dict[str, str]) -> alt.Scale:
     return alt.Scale(domain=domain, range=[colors[name] for name in domain])
 
 
-def arrivals(frame: pd.DataFrame, minutes: int = 15) -> alt.Chart:
-    """Events received per minute over the last `minutes` minutes, stacked by kind (columns minute as UTC
-    timestamps, kind, events). Every minute keeps its place, so a quiet minute shows as a gap."""
+STEPS = {"minute": pd.Timedelta(minutes=1), "hour": pd.Timedelta(hours=1), "day": pd.Timedelta(days=1)}
+PERIOD_FORMATS = {"minute": "%Y-%m-%d %H:%M", "hour": "%Y-%m-%d %H:00", "day": "%Y-%m-%d"}
+
+
+def _time_axis(start: pd.Timestamp, end: pd.Timestamp) -> alt.Axis:
+    """A UTC time axis: the date at each midnight, the hour between, as wide as the screen allows."""
+    days = (end - start) / pd.Timedelta(days=1)
+    if days <= 0.25:
+        return alt.Axis(title=None, format="%H:%M", labelAngle=0, grid=False)
+    return alt.Axis(title=None, labelAngle=0, grid=False, labelOverlap=True, labelExpr=(
+        "utchours(datum.value) == 0 && utcminutes(datum.value) == 0 ? utcFormat(datum.value, '%b %d') "
+        ": utcFormat(datum.value, '%H:%M')"), tickCount=8 if days < 3 else 7)
+
+
+def activity(frame: pd.DataFrame, grain: str, start: pd.Timestamp, end: pd.Timestamp) -> alt.Chart:
+    """One mode, stacked by kind on the shared UTC window, with its own linear count scale."""
     present = [kind for kind in KIND_ORDER if kind in set(frame["kind"])]
-    labels = {kind: KIND_LABELS[kind] for kind in present}
-    newest = frame["minute"].max()
-    clock = [moment.strftime("%H:%M") for moment in pd.date_range(newest - pd.Timedelta(minutes=minutes - 1), newest,
-                                                                     freq="min")]
-    data = frame.assign(kind=frame["kind"].map(labels), clock=frame["minute"].dt.strftime("%H:%M"))
-    return alt.Chart(data[data["clock"].isin(clock)]).mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2).encode(
-        x=alt.X("clock:O", title="Received (UTC)", scale=alt.Scale(domain=clock),
-                axis=alt.Axis(values=clock[::-5][::-1], labelAngle=0)),
-        y=alt.Y("sum(events):Q", title="Events received per minute"),
-        color=alt.Color("kind:N", title=None, legend=_top_legend(columns=4),
-                        scale=_fixed_colors(list(labels.values()),
-                                            {labels[kind]: KIND_COLORS[kind] for kind in present})),
-        order=alt.Order("kind:N"),
-        tooltip=[alt.Tooltip("clock:O", title="Minute (UTC)"), alt.Tooltip("kind:N", title="Kind"),
-                 alt.Tooltip("sum(events):Q", title="Events", format=",")],
-    ).properties(height=220)
+    labels = [KIND_LABELS[kind] for kind in present]
+    begins = pd.to_datetime(frame["at"], utc=True)
+    data = frame.assign(kind=frame["kind"].map(KIND_LABELS),
+                        begins=begins.clip(lower=start), ends=(begins + STEPS[grain]).clip(upper=end),
+                        period=begins.dt.strftime(PERIOD_FORMATS[grain]) + " UTC")
+    domain = [start.isoformat(), end.isoformat()]
+    stacked = alt.Chart(data).transform_stack(
+        stack="events", groupby=["begins", "ends"], sort=[alt.SortField(field="kind")], as_=["bottom", "top"])
+    return stacked.mark_rect(clip=True, stroke=SURFACE, strokeWidth=0.5).encode(
+        x=alt.X("begins:T", scale=alt.Scale(type="utc", domain=domain), axis=_time_axis(start, end)),
+        x2="ends:T",
+        y=alt.Y("top:Q", title=f"Events per {grain}",
+                axis=alt.Axis(format="~s", tickCount=4, minExtent=40)),
+        y2="bottom:Q",
+        color=alt.Color("kind:N", title=None, legend=_top_legend(columns=2),
+                        scale=alt.Scale(domain=labels, range=[KIND_COLORS[kind] for kind in present])),
+        tooltip=[alt.Tooltip("period:N", title="Received (UTC)"), alt.Tooltip("kind:N", title="Kind"),
+                 alt.Tooltip("events:Q", title="Events", format=",")],
+    ).properties(height=255, title=frame["mode"].iloc[0].capitalize())
+
+
+HEARTBEAT_ROWS = ("Federal Register", "Dataset versions", "MSHA sitemaps", "OSHA sitemaps", "Official feed",
+                  "Official run", "Feed manifests", "Batch flow")
+
+
+def heartbeat(marks: pd.DataFrame, spans: pd.DataFrame, start: pd.Timestamp, now: pd.Timestamp,
+              end: pd.Timestamp) -> alt.LayerChart:
+    """The pipeline's checks and runs on one UTC time axis from `start` to `end`, one row each (HEARTBEAT_ROWS): a tick
+    per watcher check and a diamond per publish of the feed, colored by outcome; the official runs as bars; the
+    warehouse's build; a hollow circle where each is next due; a line at `now`, the future shaded.
+
+    `marks` has the columns row, at (UTC), shape (check, publish, build or due), tone (a key of TONES), and what, when,
+    status and note for its tooltip; `spans` has row, begins, ends, tone, what, when and status."""
+    domain = [start.isoformat(), end.isoformat()]
+    rows = alt.Y("row:N", title=None, scale=alt.Scale(domain=list(HEARTBEAT_ROWS)),
+                 axis=alt.Axis(labelOverlap=False, ticks=False, domain=False, labelPadding=8, labelLimit=140))
+    x = alt.X("at:T", scale=alt.Scale(type="utc", domain=domain), axis=_time_axis(start, end))
+    tones = alt.Scale(domain=list(TONES), range=list(TONES.values()))
+    tooltip = [alt.Tooltip("what:N", title="What"), alt.Tooltip("when:N", title="When (UTC)"),
+               alt.Tooltip("status:N", title="Status"), alt.Tooltip("note:N", title="Note")]
+    base = alt.Chart(marks).encode(x=x, y=rows, color=alt.Color("tone:N", scale=tones, legend=None), tooltip=tooltip)
+    scale = alt.Scale(type="utc", domain=domain)
+    future = alt.Chart(pd.DataFrame({"begins": [now], "ends": [end]})).mark_rect(
+        color=ACCENT, opacity=0.06).encode(x=alt.X("begins:T", scale=scale), x2="ends:T")
+    layers = [future]
+    if len(spans):
+        layers.append(alt.Chart(spans).mark_bar(height=10, cornerRadius=3).encode(
+            x=alt.X("begins:T", scale=scale), x2="ends:T", y=rows,
+            color=alt.Color("tone:N", scale=tones, legend=None),
+            tooltip=[alt.Tooltip("what:N", title="What"), alt.Tooltip("when:N", title="When (UTC)"),
+                     alt.Tooltip("status:N", title="Status")]))
+    layers += [
+        base.transform_filter(alt.FieldOneOfPredicate(field="shape", oneOf=["check", "start"])).mark_tick(
+            thickness=2, size=16, opacity=0.95),
+        base.transform_filter(alt.datum.shape == "publish").mark_point(shape="diamond", filled=True, size=90,
+                                                                         opacity=1),
+        base.transform_filter(alt.datum.shape == "build").mark_point(shape="square", filled=True, size=70,
+                                                                       opacity=1),
+        base.transform_filter(alt.datum.shape == "due").mark_point(filled=False, size=70, strokeWidth=2,
+                                                                     opacity=1),
+        alt.Chart(pd.DataFrame({"at": [now]})).mark_rule(color=ACCENT, strokeWidth=1.5).encode(
+            x=alt.X("at:T", scale=scale)),
+    ]
+    return alt.layer(*layers).properties(height=26 * len(HEARTBEAT_ROWS), background="transparent")
 
 
 def counts_over_time(frame: pd.DataFrame, kind: str, grain: str) -> alt.Chart:
@@ -134,9 +205,10 @@ def forecast(frame: pd.DataFrame, kind: str) -> alt.LayerChart:
 
 
 def district_heatmap(frame: pd.DataFrame, measure: str, title: str) -> alt.Chart:
-    """One measure per district and year (columns district, year and the mart's measures)."""
-    return alt.Chart(frame).mark_rect(cornerRadius=2).encode(
-        x=alt.X("year:O", title=None),
+    """One measure per district and year (columns district, year and the mart's measures); cells parted by the
+    surface's color."""
+    return alt.Chart(frame).mark_rect(cornerRadius=2, stroke=SURFACE, strokeWidth=2).encode(
+        x=alt.X("year:O", title=None, axis=alt.Axis(labelAngle=0)),
         y=alt.Y("district:N", axis=_every_label("District")),
         color=alt.Color(f"{measure}:Q", title=title, scale=alt.Scale(range=list(SEQUENTIAL)),
                         legend=alt.Legend(orient="top", gradientLength=180)),
