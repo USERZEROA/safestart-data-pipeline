@@ -8,10 +8,11 @@ and protego. `ssp lake` holds the data root's writer lock, as the batch and mode
 (crawl/backfill.py), under the site's crawl lock; the objects are only read, from --objects-from when given.
 `ssp official run [--site SOURCE ...] [--until WHEN] [--budget N]` runs the daily update of the official files now,
 without Prefect (official/run.py), then publishes the feed's next manifest, and exits 1 when a source or the feed
-failed; `ssp official status` shows the latest run, what waits, how far the re-check has come and the feed, reading
-the stores only. `ssp official manifest` publishes the feed's next manifest now (official/feed.py) and exits 1 unless
-it published one; `ssp official keygen --out FILE` writes a new signing key pair to FILE, which must not exist yet,
-and prints only the public key.
+failed; `ssp official status` shows the latest run, what waits, how far the re-check has come, the feed and the latest
+purge, reading the stores only. `ssp official manifest` publishes the feed's next manifest now (official/feed.py) and
+exits 1 unless it published one; `ssp official purge [--delete]` reports, or with --delete deletes, the originals of
+URLs retired more than 30 days ago (official/purge.py); `ssp official keygen --out FILE` writes a new signing key pair
+to FILE, which must not exist yet, and prints only the public key.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from .crawl.crawler import Crawler, make_client, utc_now
 from .crawl.locks import SiteLock
 from .crawl.sites import SITES
 from .official import feed as official_feed
+from .official import purge as official_purge
 from .official import run as official_run
 from .verify import Polite, verify_bulk, verify_crawl
 
@@ -137,7 +139,7 @@ def keygen(path: Path) -> int:
 
 
 def official(root: Path, args: argparse.Namespace) -> int:
-    """`ssp official run|status|manifest|keygen|backfill-hashes`."""
+    """`ssp official run|status|manifest|purge|keygen|backfill-hashes`."""
     if args.task == "backfill-hashes":
         print(json.dumps(backfill(root, args.site, args.objects_from), indent=2, sort_keys=True))
         return 0
@@ -155,6 +157,14 @@ def official(root: Path, args: argparse.Namespace) -> int:
             raise SystemExit(f"the feed was not published: {type(problem).__name__}: {problem}") from None
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
         return int(result["outcome"] != "published")
+    if args.task == "purge":
+        setup_logging(root / "logs" / "official.log")
+        try:
+            result = official_purge.purge(root, delete=args.delete)
+        except RuntimeError as problem:
+            raise SystemExit(str(problem)) from None
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        return 0
     try:
         until = official_run.parse_until(args.until, now) if args.until else official_run.deadline(now)
     except ValueError as problem:
@@ -206,8 +216,11 @@ def main(argv: list[str] | None = None) -> int:
                                                       " HH:MM UTC; by default the next 04:30 UTC, or 15 minutes before"
                                                       " the batch or the model flow if one starts first")
     daily.add_argument("--budget", type=int, metavar="N", help="the most requests each crawled site may take")
-    tasks.add_parser("status", help="the latest run, what waits, how far the re-check has come and the feed")
+    tasks.add_parser("status", help="the latest run, what waits, how far the re-check has come, the feed and the purge")
     tasks.add_parser("manifest", help="publish the signed feed's next manifest now (exports/official/)")
+    purging = tasks.add_parser("purge", help="the originals of URLs retired more than 30 days ago: reported, or"
+                                             " deleted with --delete (this host's copies only)")
+    purging.add_argument("--delete", action="store_true", help="delete them, as the official flow does every day")
     keys = tasks.add_parser("keygen", help="write a new signing key pair to a new file; print only the public key")
     keys.add_argument("--out", type=Path, required=True, metavar="FILE",
                       help="the file for the key pair, which must not exist yet")

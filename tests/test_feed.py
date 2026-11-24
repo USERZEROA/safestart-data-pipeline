@@ -440,6 +440,7 @@ def test_ssp_official_manifest_keygen_and_status(feeds, monkeypatch, capsys, tmp
     assert cli.main(["official", "status"]) == 0
     status = json.loads(capsys.readouterr().out)
     assert status["feed"]["latest"]["sequence"] == 1 and status["feed"]["last_attempt"]["outcome"] == "published"
+    assert status["purge"] == {}
 
 
 def test_a_manifest_holds_only_the_feeds_types_and_counts_the_others(feeds, signing):

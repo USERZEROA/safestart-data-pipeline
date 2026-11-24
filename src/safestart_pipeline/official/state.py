@@ -12,6 +12,8 @@
 - marks: how far each hint source has been read, so the next run starts there.
 - publishes: every attempt to publish the feed (feed.py): when, by what, its outcome ("published", "unsigned" when no
   signing key is set and nothing was written, "error"), the manifests it wrote, their window and counts, and a note.
+- purges: every purge of a site's originals (purge.py): when, its outcome ("done", "dry_run", "skipped", "error"), how
+  many files and bytes it deleted (or would have, in a dry run), and the details as JSON.
 The crawl sites' own findings (new, changed, gone, restored, moved and rejected URLs) stay in their crawl stores; the
 feed's manifests are files in exports/official/, which alone say what was published.
 """
@@ -27,6 +29,7 @@ STATUSES = ("ok", "partial", "refused", "unavailable", "error", "skipped")
 HOSTS = {"msha": "www.msha.gov", "ecfr": "www.govinfo.gov", "federal_register": "www.federalregister.gov",
          "arlweb": "arlweb.msha.gov", "osha": "www.osha.gov"}
 PUBLISH_OUTCOMES = ("published", "unsigned", "error")
+PURGE_OUTCOMES = ("done", "dry_run", "skipped", "error")
 
 SCHEMA = """
 create table if not exists runs (
@@ -79,6 +82,16 @@ create table if not exists publishes (
   window_start text,
   window_end text,
   counts text,
+  note text
+);
+create table if not exists purges (
+  id integer primary key,
+  purged_at text not null,
+  site text not null,
+  outcome text not null check (outcome in ('done', 'dry_run', 'skipped', 'error')),
+  deleted integer not null default 0,
+  deleted_bytes integer not null default 0,
+  details text,
   note text
 );
 """
@@ -147,7 +160,7 @@ class OfficialState:
     def commit(self) -> None:
         self.db.commit()
 
-    # The feed ---------------------------------------------------------------------------------------------------------
+    # The feed and the purge -------------------------------------------------------------------------------------------
 
     def add_publish(self, *, attempted_at: str, trigger: str, outcome: str, note: str, run_id: str | None = None,
                     first_sequence: int | None = None, last_sequence: int | None = None,
@@ -160,4 +173,14 @@ class OfficialState:
             " window_start, window_end, counts, note) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (attempted_at, trigger, run_id, outcome, first_sequence, last_sequence, window_start, window_end,
              None if counts is None else json.dumps(counts, sort_keys=True), note[:2000]))
+        self.db.commit()
+
+    def add_purge(self, *, purged_at: str, site: str, outcome: str, note: str, deleted: int = 0,
+                  deleted_bytes: int = 0, details: dict | None = None) -> None:
+        if outcome not in PURGE_OUTCOMES:
+            raise ValueError(f"outcome must be one of {PURGE_OUTCOMES}, not {outcome!r}")
+        self.db.execute(
+            "insert into purges (purged_at, site, outcome, deleted, deleted_bytes, details, note)"
+            " values (?, ?, ?, ?, ?, ?, ?)",
+            (purged_at, site, outcome, deleted, deleted_bytes, json.dumps(details or {}, sort_keys=True), note[:2000]))
         self.db.commit()

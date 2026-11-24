@@ -6,10 +6,11 @@ signed daily feed that SafeStart reads.
 - sources.py: www.msha.gov's probe, the eCFR editions and the Federal Register's final rules.
 - state.py: the run's record, state/official.sqlite.
 - feed.py: the signed manifests in exports/official/ (`ssp official manifest|keygen`); docs/OFFICIAL_FILES.md.
+- purge.py: deleting the originals of URLs retired more than 30 days ago (`ssp official purge`).
 
 What a run finds is kept where the feed is built from: each crawl site's new, changed, gone, restored, moved and
 rejected URLs in the changes table of its crawl store (named by the store's run), the held URLs it confirmed unchanged
 in their last_checked_at, each source's status and counts in state/official.sqlite's sources table, and the eCFR and
 Federal Register hints in its hints table. The manifests alone say what was published; official.sqlite records each
-attempt to publish.
+attempt to publish and each purge.
 """

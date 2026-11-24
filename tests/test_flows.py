@@ -246,22 +246,34 @@ def test_a_failing_source_is_retried_once_the_others_still_run_and_the_flow_fail
     assert (run.until, run.budget, run.closed) == (datetime(2026, 11, 22, 1, 0, tzinfo=UTC), 40, "errors")
 
 
-def test_the_feed_follows_the_run_and_a_failing_feed_fails_it(official_runs, root, monkeypatch):
+def test_the_feed_and_the_purge_follow_the_run_and_a_failing_feed_fails_it(official_runs, root, monkeypatch):
     steps = []
 
     def publish(data_root, *, trigger, run_id):
         steps.append(("feed", data_root, trigger, run_id, official_runs[-1].closed))
-        if len(steps) > 1:
+        if len(steps) > 2:
             raise OSError("the disk is full")
         return {"outcome": "published", "sequences": [7], "note": "manifest 7"}
 
+    def purge(data_root, *, delete):
+        steps.append(("purge", data_root, delete))
+        return {"osha": {"outcome": "done", "note": "deleted 0 objects"}}
+
     monkeypatch.setattr(official_flow.feed, "publish", publish)
+    monkeypatch.setattr(official_flow.purge, "purge", purge)
+    monkeypatch.setenv(official_flow.feed.KEY_VARIABLE, "the server's key")
     summary = official_flow.official(sources=["osha"])
-    assert steps == [("feed", root, "flow", "official-test", "done")]  # once the run is closed
-    assert summary["feed"]["sequences"] == [7]
+    # The feed comes once the run is closed, then the purge, which deletes on the server (the host with the key).
+    assert steps == [("feed", root, "flow", "official-test", "done"), ("purge", root, True)]
+    assert summary["feed"]["sequences"] == [7] and summary["purge"]["osha"]["outcome"] == "done"
     with pytest.raises(RuntimeError, match="feed: .*the disk is full"):
         official_flow.official(sources=["osha"])
-    assert len(steps) == 2
+    assert steps[-1] == ("purge", root, True)  # the purge still ran
+    # Without the key (a workstation that runs the orchestrator on its own archive) the purge only reports.
+    monkeypatch.delenv(official_flow.feed.KEY_VARIABLE)
+    with pytest.raises(RuntimeError, match="feed: .*the disk is full"):
+        official_flow.official(sources=["osha"])
+    assert steps[-1] == ("purge", root, False)
 
 
 # One writer of the data root ------------------------------------------------------------------------------------------

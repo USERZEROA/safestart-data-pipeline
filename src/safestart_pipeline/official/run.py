@@ -6,7 +6,8 @@ www.msha.gov's probe, the eCFR editions, the Federal Register's rules, arlweb (a
 OSHA until the deadline. Each source's outcome is recorded in state/official.sqlite (state.py) as it ends; one that
 raises is recorded as "error" and raised again, and the others still run (the caller decides: the command line goes on,
 the flow's task fails and the flow fails at the end). A run that was not interrupted then publishes the feed's next
-manifest (feed.py), a heartbeat when it found nothing.
+manifest (feed.py), a heartbeat when it found nothing; the official flow also purges the originals of URLs retired
+more than 30 days ago (purge.py).
 
 A crawl site is asked only under its crawl lock, state/crawl-<site>.lock, never under the data root's pipeline.lock,
 so the run never waits for, or holds up, the batch and model flows, which write other files. The lock is waited for
@@ -41,7 +42,7 @@ from ..crawl.locks import SiteLock
 from ..crawl.sites import SITES, Site
 from ..crawl.store import HELD_SQL
 from ..verify import read_only
-from . import feed
+from . import feed, purge
 from .daily import NEEDED_SQL, PLANS, DailyCrawl, Plan, cycle, queue_counts
 from .sources import ecfr_hints, federal_register_hints, outcome, probe_msha
 from .state import HOSTS, OfficialState
@@ -210,8 +211,10 @@ def lock_state(root: Path, name: str) -> str:
 def status(root: Path, now: datetime) -> dict:
     """The latest run, each source's latest outcome, for each crawl site what waits, how far the re-check has come, how
     many held copies the project does not need (kept, never asked about) and what was found in the last day and week,
-    and the feed (its newest manifest and the latest attempt to publish one). Every store is only read."""
-    report: dict[str, object] = {"latest_run": None, "sources": {}, "feed": feed.feed_status(root, now)}
+    the feed (its newest manifest and the latest attempt to publish one) and the latest purge of each site. Every
+    store is only read."""
+    report: dict[str, object] = {"latest_run": None, "sources": {}, "feed": feed.feed_status(root, now),
+                                 "purge": purge.latest_purges(root)}
     path = root / "state" / "official.sqlite"
     latest: dict[str, dict] = {}
     hints: dict[str, int] = {}
