@@ -464,9 +464,9 @@ In three runs from the workstation against the real sites on 2026-11-24 (263 req
 found two real page edits, confirmed 63 OSHA hub pages unchanged (42 of them in new bytes with the same text), refused
 3 broken Federal Register files, and published 4 manifests whose signatures, chain and counts verified. Its limits:
 
-- OSHA's 10-second `Crawl-delay` allows about 8,300 requests a day against the 27,263 held copies the project needs,
-  so the re-check is rolling: a change is found when its URL next comes round (files about weekly, pages about
-  monthly), unless a hub page or the sitemap points to it sooner.
+- OSHA's 10-second `Crawl-delay` leaves the daily update about 4,000 requests in its 12-hour window, against the 27,263
+  held copies the project needs, so the re-check is rolling: a change is found when its URL next comes round (files
+  about weekly, pages about monthly), unless a hub page or the sitemap points to it sooner.
 - `www.msha.gov` refuses the cloud server (it serves an HTML page in place of its sitemap, as the watcher found): every
   run records the refusal and never works around it, and that site's pages are not updated.
 - A page that keeps navigation inside its main content changes when the navigation does: in that run, 1 of 66 OSHA

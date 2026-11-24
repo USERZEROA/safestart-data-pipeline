@@ -62,9 +62,9 @@ after a sustained block. A refusal (401, 403, 429, 451, a challenge page) is rec
 - **Gone.** A 404 or 410 for a held URL retires it at once (`gone`, `goneSince`); its original is deleted from this
   server 30 days later unless it comes back. A refusal, a 5xx or no answer retires nothing. A redirect is `moved`, and
   its target is asked as a new URL. A gone URL that answers with usable content again is `restored`.
-- **Re-check.** OSHA asks for 10 seconds between requests, about 8,300 a day at most, against 27,263 held copies the
-  project needs, so not everything can be asked every day: a file is due a week after its last confirmation and a page
-  a month after, and each manifest's `cycle` says how far the re-check has come.
+- **Re-check.** OSHA asks for 10 seconds between requests, which leaves a run about 4,000 in its 12-hour window,
+  against 27,263 held copies the project needs, so not everything can be asked every day: a file is due a week after
+  its last confirmation and a page a month after, and each manifest's `cycle` says how far the re-check has come.
 - **Not needed.** The crawl's not-needed rules (README, "Crawls") hold for the daily run too: a new URL, or one due to
   be asked for its return, that they name is skipped (`not_needed`) and never asked; a held copy they name, downloaded
   before the rule (on OSHA 13,855 of 41,118: paragraph-level interlinking pages, OSHA's copy of CFR text, alliance and
@@ -262,9 +262,9 @@ from the next manifest on; since SafeStart pins the public key, a new key goes w
 
 ## Limits
 
-- OSHA's 10-second `Crawl-delay` allows about 8,300 requests a day, so the daily run cannot ask every held URL every
-  day: pages come round about monthly and files about weekly. A change is found when its URL is next asked, or sooner
-  when a hub page or the sitemap points to it.
+- OSHA's 10-second `Crawl-delay` leaves the daily run about 4,000 requests in its 12-hour window, so it cannot ask
+  every held URL every day: pages come round about monthly and files about weekly. A change is found when its URL is
+  next asked, or sooner when a hub page or the sitemap points to it.
 - `www.msha.gov` refuses the server, and its pages are not updated by this run; the feed says so every day. A
   workstation is served its sitemap, so a run there records `msha` as `skipped`, never `refused`.
 - A page that keeps navigation inside its main content changes when the navigation does: in the acceptance run of

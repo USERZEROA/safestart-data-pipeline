@@ -26,7 +26,8 @@ from .store import Store
 
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 # How long a confirmed copy is taken to stay current before it is due to be asked about again: pages about monthly,
-# files about weekly (OSHA's 10 s Crawl-delay allows about 8,300 requests a day for some 41,000 held URLs).
+# files about weekly (OSHA's 10 s Crawl-delay leaves the daily run about 4,000 requests in its 12-hour window for the
+# 27,263 held copies the project needs).
 RECHECK_PAGE = timedelta(days=30)
 RECHECK_FILE = timedelta(days=7)
 BATCH = 500
