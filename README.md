@@ -42,12 +42,12 @@ typed Parquet lake (Polars), a DuckDB warehouse with marts and documented SQL qu
 with an anomaly forecaster, an accident-risk model, a Streamlit dashboard and flat exports for SafeStart, orchestrated
 by Prefect, packaged with Docker Compose, tested in GitHub Actions and deployed on Google Cloud.
 
-| Part | What it is |
+| Part | What it is (as of the 2026-11-23 build) |
 |---|---|
 | Sources | MSHA and OSHA websites, MSHA's legacy host, eCFR titles 29 and 30, MSHA's 20 open enforcement datasets, and the Federal Register API (live) |
 | Raw archive | 84,602 content-addressed files, 44.6 GB, every version kept |
 | Lake | 20 datasets, every downloaded version as typed Parquet (40 versions), 18,057,074 current rows |
-| Warehouse | DuckDB: 8 tables, 5 marts, 10 named SQL questions; 3.1 million violations, 1.2 million inspections, 276,013 accidents |
+| Warehouse | DuckDB: 8 model tables (plus 4 build-check tables), 5 marts, 10 named SQL questions; 3.1 million violations, 1.2 million inspections, 276,013 accidents |
 | Stream | Kafka (2 topics) into PostgreSQL: a replay of 374,400 events from 2024 on, plus live watchers |
 | Model | Serious-accident risk per mine and quarter: test ROC AUC 0.909; its riskiest 5% are ten times the base rate |
 | Delivery | Streamlit dashboard (5 pages), SafeStart exports, Prefect flows on a schedule, Google Cloud VM behind HTTPS |
@@ -62,12 +62,13 @@ reference appendices with the full detail of each part: [ARCHITECTURE](docs/ARCH
 
 ## Contents
 
-[Team](#team) · [Architecture](#architecture) · [Quick start](#quick-start) ·
-[Sources and ingestion](#sources-and-ingestion) · [Storage](#storage) · [Querying](#querying) ·
-[Transformation and analysis](#transformation-and-analysis) · [Streaming](#streaming) · [Orchestration](#orchestration)
-· [Dashboard](#dashboard) · [Deployment](#deployment) · [Testing and CI](#testing-and-ci) ·
-[Undercurrents of data engineering](#undercurrents-of-data-engineering) ·
-[How it feeds SafeStart](#how-it-feeds-safestart) · [Limits](#limits) · [Repository layout](#repository-layout)
+- **Overview:** [Team](#team) · [Architecture](#architecture) · [Quick start](#quick-start)
+- **Key components and their implementation:** [Sources and ingestion](#sources-and-ingestion) ·
+  [Storage](#storage) · [Querying](#querying) · [Transformation and analysis](#transformation-and-analysis) ·
+  [Streaming](#streaming) · [Orchestration](#orchestration) · [Dashboard](#dashboard) · [Deployment](#deployment) ·
+  [Testing and CI](#testing-and-ci)
+- **Reflection:** [Undercurrents of data engineering](#undercurrents-of-data-engineering) ·
+  [How it feeds SafeStart](#how-it-feeds-safestart) · [Limits](#limits) · [Repository layout](#repository-layout)
 
 ## Team
 
@@ -137,11 +138,13 @@ uv run --extra stream python scripts/smoke_test.py                      # events
 The dashboard is then at <http://localhost:8501> (`DASHBOARD_HOST_PORT` in `.env` moves it). `--with-orchestrator`
 also starts the Prefect orchestrator, which runs the batch flows on their schedules and writes the data root.
 
-Without the 4.5 GB data root, try it on a small synthetic one, the root CI runs the whole stack on
+Without the real data root (the stack reads about 4.5 GB of it: the bulk files, the crawl state, the lake and the
+warehouse), try it on a small synthetic one, the root CI runs the whole stack on
 ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#without-the-data-the-sample-data-root)):
 
 ```bash
 uv run python -m safestart_pipeline.sample sample-data   # about 300 KB: two versions of five datasets, eCFR, a catalog
+sudo chown -R 10001:10001 sample-data                     # Linux only: the orchestrator writes as uid 10001
 python scripts/start.py --data-root sample-data --with-orchestrator
 docker compose exec orchestrator python -m safestart_pipeline.flows run batch --no-download   # warehouse and exports
 ```
@@ -365,6 +368,10 @@ the copy already held), and the run is marked failed at the end. `python -m safe
 flows as Prefect Cloud deployments when `PREFECT_API_URL` and `PREFECT_API_KEY` are set, and otherwise keeps the same
 schedule in its own process; `ssp pipeline` runs them once.
 
+The crawls stay outside Prefect on purpose: they run for days on a workstation, resumable and paced by each site's crawl
+delay, and feed the raw archive the flows read. Delivery is manual by design: CI tests every push, and the cloud server
+takes a new `main` when it is stopped and started (docs/DEPLOYMENT.md).
+
 ## Dashboard
 
 `src/safestart_pipeline/dashboard/` is a Streamlit app over the warehouse (read-only) and the stream store, usable on a
@@ -385,7 +392,8 @@ The mine brief of one of the largest underground coal mines, as the live dashboa
 </tr></table>
 
 The Enforcement page while the replay streams 2024: one district's violations each day against the one-step-ahead
-forecast, which has learned the weekly rhythm of inspections (the days it flags are marked in red):
+forecast, which has learned the weekly rhythm of inspections (days it flags, when the window has any, are marked in
+red):
 
 <img src="docs/images/dashboard-forecast.png" alt="Observed violations per day in district C04 against the one-step-ahead forecast" width="640">
 

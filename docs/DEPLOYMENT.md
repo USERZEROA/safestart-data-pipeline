@@ -108,7 +108,7 @@ Then:
 
 ### Without the data: the sample data root
 
-The real data root is 4.5 GB gathered over days of polite crawling and downloading. To see the whole system without
+The part of the real data root the stack reads is 4.5 GB, gathered over days of polite crawling and downloading. To see the whole system without
 it, write the sample data root, a few hundred kilobytes of invented records in MSHA's own formats
 (`src/safestart_pipeline/sample.py`), and start the stack on it:
 
