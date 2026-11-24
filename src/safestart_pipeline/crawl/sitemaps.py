@@ -2,10 +2,16 @@
 
 Anything that is not a sitemap raises ValueError, a damaged gzip file included (gzip raises EOFError, OSError or
 zlib.error for one), so a reader that skips a bad sitemap and goes on catches one exception for all of them.
+
+A host that answers a sitemap's URL with HTTP 401, 403, 429 or 451, or with an HTML page in the sitemap's place (an
+answer that is not a sitemap and is served as HTML or starts with `<!doctype html` or `<html`), has refused it. The
+watchers (watch/sitemaps.py) and the daily run of the official files (official/daily.py) both judge answers this way,
+record the refusal and never work around it.
 """
 
 from __future__ import annotations
 
+import codecs
 import gzip
 import zlib
 from dataclasses import dataclass
@@ -13,6 +19,15 @@ from dataclasses import dataclass
 from lxml import etree
 
 GZIP_MAGIC = bytes([0x1F, 0x8B])
+REFUSED_STATUSES = frozenset({401, 403, 429, 451})
+HTML_STARTS = (b"<!doctype html", b"<html")  # an HTML page's first bytes, after any byte order mark and white space
+HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+
+
+def served_as_html(content: bytes, content_type: str | None) -> bool:
+    """Whether an answer is an HTML page, by its Content-Type or by its first bytes."""
+    start = content[:1024].removeprefix(codecs.BOM_UTF8).lstrip().lower()
+    return (content_type or "").split(";", 1)[0].strip().lower() in HTML_TYPES or start.startswith(HTML_STARTS)
 
 
 @dataclass(frozen=True)

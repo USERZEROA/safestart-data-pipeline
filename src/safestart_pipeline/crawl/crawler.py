@@ -20,6 +20,11 @@ except as follows:
 A URL's first download keeps its retry rules. Each crawl or fetch_now call is a run (the runs table), and every change
 names its run. Each answer is committed whole, its row, edition and change together: an interrupted run rolls back the
 answer it was recording, and that URL is asked again.
+
+`ask` makes one request under all of these rules, and the crawl's loop and the daily run of the official files
+(official/daily.py) both ask through it, so robots.txt, the pause, Retry-After and the stop on a sustained block are the
+same for both. While a daily run listens (`unlinked`), a page asked again has its links stored as they stand today, and
+the daily run is told the targets the page no longer links to; a crawl only ever adds links.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -42,7 +48,7 @@ from .content import HASH_FORMAT, Verdict, examine
 from .fetcher import FetchResult, ObjectStore, fetch
 from .links import extract_links
 from .robots import Robots
-from .sitemaps import parse_sitemap
+from .sitemaps import REFUSED_STATUSES, parse_sitemap, served_as_html
 from .sites import Site
 from .store import Store, holds, unexamined
 from .urls import is_asset, is_page, normalize
@@ -102,6 +108,26 @@ class RobotsUnreachable(Exception):
     """robots.txt could still not be read when the crawl's time limit came."""
 
 
+@dataclass
+class SitemapRead:
+    """One reading of a site's sitemaps: every in-scope URL they list (with its lastmod), the URLs recorded for the
+    first time, how many sitemaps were asked for, the URL-set entries in scope (repeats included) and off the site, and
+    the sitemaps the host refused or that could not be read otherwise, each as "<sitemap>: <why>"."""
+
+    listed: dict[str, str | None] = field(default_factory=dict)
+    added: list[str] = field(default_factory=list)
+    sitemaps: int = 0
+    entries: int = 0
+    offsite: int = 0
+    refused: list[str] = field(default_factory=list)
+    unread: list[str] = field(default_factory=list)
+
+    @property
+    def complete(self) -> bool:
+        """Whether every sitemap was read: only then does a URL they do not list tell anything."""
+        return not self.refused and not self.unread
+
+
 class Crawler:
     @staticmethod
     def open_store(site: Site, data_root: Path) -> Store:
@@ -130,6 +156,10 @@ class Crawler:
         self.discovered = self.store.discovered_count()
         self.run_id: str | None = None
         self.run_requests = 0
+        self.blocked_in_a_row = self.block_pauses = 0
+        self.asked_for: str | None = None  # why the URL being asked is asked, noted on the change it makes
+        # Set by a daily run: a page asked again keeps today's links only, and this is told the targets it dropped.
+        self.unlinked: Callable[[str, set[str]], None] | None = None
         recorded = self.store.get_meta("content_hash_format")
         if recorded is None:
             self.store.set_meta("content_hash_format", HASH_FORMAT)
@@ -239,7 +269,8 @@ class Crawler:
         discovered_from: str | None = None,
         in_sitemap: bool = False,
         lastmod: str | None = None,
-    ) -> None:
+    ) -> bool:
+        """Record a URL the crawl learned of, queued or skipped by the site's rules; True when it was not known."""
         existing = self.store.get(url)
         if existing is not None:
             if in_sitemap:
@@ -247,7 +278,7 @@ class Crawler:
             # A file skipped because only unneeded pages linked to it is wanted once a needed page links to it.
             if existing["skip_reason"] == "not_needed" and not self.why_unneeded(url):
                 self.store.update(url, state="pending", skip_reason=None, attempts=0, error=None, next_attempt_at=None)
-            return
+            return False
         state, reason = "pending", None
         if self.robots is not None and not self.robots.allowed(url):
             state, reason = "skipped", "robots"
@@ -273,20 +304,40 @@ class Crawler:
         )
         if not in_sitemap:
             self.discovered += 1
+        return True
 
     # Inventory ---------------------------------------------------------------------------------------------------------
 
     def seed_from_sitemaps(self) -> dict[str, int]:
         """Read robots.txt and every sitemap (following indexes) and record each listed URL."""
-        robots = self.ensure_robots()
+        read = self.read_sitemaps()
+        self.store.set_meta("inventory_at", iso(self.now()))
+        self.store.commit()
+        return {"sitemaps": read.sitemaps, "listed": read.entries, "offsite_entries": read.offsite,
+                **self.store.counts()}
+
+    def read_sitemaps(self, until: datetime | None = None, *, keep: bool = True,
+                      max_requests: int | None = None) -> SitemapRead:
+        """Read robots.txt and every sitemap (following indexes and redirects), record each listed URL (add_known) and
+        each sitemap's answer (the sitemaps table), and return what was read. A sitemap is refused when the host
+        answers 401, 403, 429 or 451 or serves an HTML page in its place (crawl/sitemaps.py). The sitemaps left when
+        `until` comes, or once the crawler has sent `max_requests`, are not asked. With keep=False a sitemap's body is
+        not kept in the object store (the daily run reads OSHA's every day), only its SHA-256 in the sitemaps table."""
+        robots = self.ensure_robots(until)
         queue: list[tuple[str, str | None]] = [(url, None) for url in self.site.sitemaps]
         queue += [(url, "robots.txt") for url in robots.sitemaps() if self.site.in_scope(normalize(url))]
         seen: set[str] = set()
-        listed = offsite = 0
+        read = SitemapRead()
         while queue:
             url, parent = queue.pop(0)
             if url in seen:
                 continue
+            late = until is not None and self.now() >= until
+            if late or (max_requests is not None and self.requests >= max_requests):
+                why = "not asked before the time limit" if late else "not asked within the request budget"
+                left = dict.fromkeys(other for other, _ in [(url, parent), *queue] if other not in seen)
+                read.unread += [f"{other}: {why}" for other in left]
+                break
             seen.add(url)
             fetched_at = iso(self.now())
             if not robots.allowed(url):
@@ -294,43 +345,60 @@ class Crawler:
                     url, parent=parent, fetched_at=fetched_at, status=None, kind=None, entries=None, sha256=None,
                     error="disallowed by robots.txt",
                 )
+                read.unread.append(f"{url}: disallowed by robots.txt")
                 continue
-            result = fetch(self.client, url, self.objects, max_bytes=MAX_SITEMAP_BYTES)
+            result = fetch(self.client, url, self.objects, max_bytes=MAX_SITEMAP_BYTES, keep=keep)
             self.requests += 1
             kind = entries = error = None
-            if result.path is not None:
-                try:
-                    sitemap = parse_sitemap(result.path.read_bytes())
-                    kind, entries = sitemap.kind, len(sitemap.entries)
-                    for entry in sitemap.entries:
-                        target = self.site.in_scope(normalize(entry.loc, url))
-                        if target is None:
-                            offsite += 1
-                        elif sitemap.kind == "index":
-                            queue.append((target, url))
+            try:
+                if result.path is not None:
+                    content = result.path.read_bytes()
+                    try:
+                        sitemap = parse_sitemap(content)
+                    except ValueError as problem:
+                        error = str(problem)[:500]
+                        if served_as_html(content, result.content_type):
+                            read.refused.append(f"{url}: refused, the host served an HTML page instead of the sitemap")
                         else:
-                            listed += 1
-                            self.add_known(target, source="sitemap", in_sitemap=True, lastmod=entry.lastmod,
-                                           discovered_from=url)
-                except ValueError as problem:
-                    error = str(problem)[:500]
-            elif result.status is not None and 300 <= result.status < 400:
-                target = self.site.in_scope(normalize(result.location or "", url))
-                error = f"redirect to {result.location}"
-                if target:
-                    queue.append((target, url))
-            else:
-                error = result.error or f"HTTP {result.status}" + (" (over size cap)" if result.too_large else "")
+                            read.unread.append(f"{url}: {error}"[:300])
+                    else:
+                        kind, entries = sitemap.kind, len(sitemap.entries)
+                        for entry in sitemap.entries:
+                            target = self.site.in_scope(normalize(entry.loc, url))
+                            if target is None:
+                                read.offsite += 1
+                            elif sitemap.kind == "index":
+                                queue.append((target, url))
+                            else:
+                                read.entries += 1
+                                read.listed[target] = entry.lastmod
+                                if self.add_known(target, source="sitemap", in_sitemap=True, lastmod=entry.lastmod,
+                                                  discovered_from=url):
+                                    read.added.append(target)
+                elif result.status is not None and 300 <= result.status < 400:
+                    target = self.site.in_scope(normalize(result.location or "", url))
+                    error = f"redirect to {result.location}"
+                    if target:
+                        queue.append((target, url))
+                    else:
+                        read.unread.append(f"{url}: {error}, off the site"[:300])
+                else:
+                    error = result.error or f"HTTP {result.status}" + (" (over size cap)" if result.too_large else "")
+                    if result.status in REFUSED_STATUSES:
+                        read.refused.append(f"{url}: refused, the host answered HTTP {result.status}")
+                    else:
+                        read.unread.append(f"{url}: {error}"[:300])
+            finally:
+                self.objects.drop(result)  # a body read without keeping it (keep=False); a kept one stays
             self.store.record_sitemap(
                 url, parent=parent, fetched_at=fetched_at, status=result.status, kind=kind, entries=entries,
                 sha256=result.sha256, error=error,
             )
             self.store.commit()
             self.log.info("sitemap %s -> %s %s entries %s", url, result.status, kind or error, entries)
-            self.pause(result.retry_after)
-        self.store.set_meta("inventory_at", iso(self.now()))
-        self.store.commit()
-        return {"sitemaps": len(seen), "listed": listed, "offsite_entries": offsite, **self.store.counts()}
+            self.pause(result.retry_after, until=until)
+        read.sitemaps = len(seen)
+        return read
 
     def seed_from_links(self, data_root: Path) -> dict[str, int]:
         """Record the links other crawls found to this site's hosts: the inventory of a host without sitemaps. Each
@@ -486,16 +554,8 @@ class Crawler:
     def work(self, max_requests: int | None, until: datetime | None) -> str:
         """The crawl's queue worked through; returns why it stopped."""
         self.ensure_robots(until)
-        folded = self.fold_aliases()
-        if any(folded.values()):
-            self.log.info("waiting URLs recorded under an alias, folded into their canonical URL: %s", folded)
-        unneeded = self.skip_unneeded()
-        if any(unneeded.values()):
-            self.log.info("waiting URLs the project does not need, skipped: %s", unneeded)
-        requeued = self.requeue_policy_skips()
-        if any(requeued.values()):
-            self.log.info("queued again under the current download rules: %s", requeued)
-        blocked_in_a_row = block_pauses = 0
+        self.tidy_queue()
+        self.blocked_in_a_row = self.block_pauses = 0
         while True:
             if max_requests is not None and self.requests >= max_requests:
                 return "request limit"
@@ -509,38 +569,67 @@ class Crawler:
                     return "done"
                 self.wait(min(max((parse_iso(earliest) - self.now()).total_seconds(), 1.0), 600.0), until)
                 continue
-            if not robots.allowed(row["url"]):
-                self.disallowed(row)
-                self.store.commit()
-                continue
-            if unexamined(row) and self.objects.path_for(row["sha256"]).exists():
-                # A copy recorded before content hashes, examined before it is asked about, so that only a verified
-                # copy sends validators. One whose object is not kept (the VM) is asked for whole, and examined from
-                # the answer when that is the same bytes (see apply).
-                examine_held(self.store, self.objects.root, row)
-                row = self.store.get(row["url"])
-            conditional = row["content_sha256"] is not None
-            result = fetch(
-                self.client, row["url"], self.objects, etag=row["etag"] if conditional else None,
-                last_modified=row["last_modified"] if conditional else None, max_bytes=self.site.max_bytes,
-                max_seconds=self.site.max_seconds, keep=False,
-            )
-            self.requests += 1
-            self.apply(row, result)
+            _, stopped = self.ask(row, robots, until)
+            if stopped:
+                return stopped
+
+    def tidy_queue(self) -> None:
+        """The waiting URLs brought in line with the site's current rules (aliases, not needed, size limits)."""
+        folded = self.fold_aliases()
+        if any(folded.values()):
+            self.log.info("waiting URLs recorded under an alias, folded into their canonical URL: %s", folded)
+        unneeded = self.skip_unneeded()
+        if any(unneeded.values()):
+            self.log.info("waiting URLs the project does not need, skipped: %s", unneeded)
+        requeued = self.requeue_policy_skips()
+        if any(requeued.values()):
+            self.log.info("queued again under the current download rules: %s", requeued)
+
+    def ask(self, row: sqlite3.Row, robots: Robots, until: datetime | None = None, *,
+            why: str | None = None) -> tuple[FetchResult | None, str | None]:
+        """One request for the URL of `row`, under every rule the crawl keeps: not asked when robots.txt disallows it
+        (recorded as such), the validators of a verified copy sent, the answer recorded and committed whole, then a
+        stop at the byte budget or on a sustained block, or the pause before the next request (the crawl delay, or a
+        longer Retry-After, never past `until`). `why`, when given, is noted on the change the answer records. Returns
+        the answer (None when the URL was not asked) and the reason to stop, if there is one."""
+        if not robots.allowed(row["url"]):
+            self.disallowed(row)
             self.store.commit()
-            if self.requests % PROGRESS_EVERY == 0:
-                self.log.info("requests %d states %s", self.requests, self.store.counts())
-                if self.store.fetched_bytes() >= self.site.byte_budget:
-                    return "byte budget"
-            blocked_in_a_row = blocked_in_a_row + 1 if looks_blocked(result) else 0
-            if blocked_in_a_row >= BLOCK_THRESHOLD:
-                block_pauses += 1
-                if block_pauses > MAX_BLOCK_PAUSES:
-                    return "possible block"
-                self.log.warning("%d blocked responses in a row; pausing %.0f s", blocked_in_a_row, BLOCK_PAUSE_SECONDS)
-                self.wait(BLOCK_PAUSE_SECONDS, until)
-                blocked_in_a_row = 0
-            self.pause(result.retry_after, until=until)
+            return None, None
+        if unexamined(row) and self.objects.path_for(row["sha256"]).exists():
+            # A copy recorded before content hashes, examined before it is asked about, so that only a verified copy
+            # sends validators. One whose object is not kept (the VM) is asked for whole, and examined from the answer
+            # when that is the same bytes (see apply).
+            examine_held(self.store, self.objects.root, row)
+            row = self.store.get(row["url"])
+        conditional = row["content_sha256"] is not None
+        result = fetch(
+            self.client, row["url"], self.objects, etag=row["etag"] if conditional else None,
+            last_modified=row["last_modified"] if conditional else None, max_bytes=self.site.max_bytes,
+            max_seconds=self.site.max_seconds, keep=False,
+        )
+        self.requests += 1
+        self.asked_for = why
+        try:
+            self.apply(row, result)
+        finally:
+            self.asked_for = None
+        self.store.commit()
+        if self.requests % PROGRESS_EVERY == 0:
+            self.log.info("requests %d states %s", self.requests, self.store.counts())
+            if self.store.fetched_bytes() >= self.site.byte_budget:
+                return result, "byte budget"
+        self.blocked_in_a_row = self.blocked_in_a_row + 1 if looks_blocked(result) else 0
+        if self.blocked_in_a_row >= BLOCK_THRESHOLD:
+            self.block_pauses += 1
+            if self.block_pauses > MAX_BLOCK_PAUSES:
+                return result, "possible block"
+            self.log.warning("%d blocked responses in a row; pausing %.0f s", self.blocked_in_a_row,
+                             BLOCK_PAUSE_SECONDS)
+            self.wait(BLOCK_PAUSE_SECONDS, until)
+            self.blocked_in_a_row = 0
+        self.pause(result.retry_after, until=until)
+        return result, None
 
     def disallowed(self, row: sqlite3.Row) -> str:
         """A URL that robots.txt disallows, recorded without asking: skipped "robots", or, when the store holds a copy,
@@ -689,7 +778,7 @@ class Crawler:
             self.new_edition(url, result, verdict, now, "restored" if gone else "changed",
                              previous=row["content_sha256"])
         if content is not None:
-            self.discover(url, content)
+            self.discover(url, content, replace=self.unlinked is not None)
 
     def check_failed(self, row: sqlite3.Row, moment: datetime, why: str) -> None:
         """A held URL whose answer gave nothing usable: its copy stays current and its record as it was, the reason is
@@ -758,6 +847,8 @@ class Crawler:
                     note=verdict.note)
 
     def record(self, url: str, change: str, now: str, **fields: object) -> None:
+        if self.asked_for:
+            fields["note"] = "; ".join(filter(None, (fields.get("note"), self.asked_for)))
         self.store.add_change(url, change, observed_at=now, run_id=self.run_id, **fields)
 
     def retry_or_fail(self, url: str, attempts: int, status: int | None, error: str, *, final: str = "error") -> bool:
@@ -771,10 +862,18 @@ class Crawler:
                           next_attempt_at=None, fetched_at=iso(now))
         return True
 
-    def discover(self, page_url: str, content: bytes) -> None:
+    def discover(self, page_url: str, content: bytes, *, replace: bool = False) -> None:
+        """Record a page's links and queue the targets on this site it is the first to name. With `replace` (a page
+        asked again by a daily run) the page keeps today's links only, and the daily run is told the ones it dropped."""
         found = [(self.site.in_scope(link), link) for link in extract_links(content, page_url)]
+        targets = [canonical or link for canonical, link in found]
         # The edges go in first, so that a target's needs are judged with this page's link already known.
-        self.store.add_links(page_url, [canonical or link for canonical, link in found])
+        if replace:
+            dropped = self.store.replace_links(page_url, targets)
+            if dropped and self.unlinked is not None:
+                self.unlinked(page_url, dropped)
+        else:
+            self.store.add_links(page_url, targets)
         for canonical, _ in found:
             if canonical and canonical != page_url:
                 self.add_known(canonical, source="discovered", discovered_from=page_url)

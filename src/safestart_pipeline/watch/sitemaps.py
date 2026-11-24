@@ -8,11 +8,10 @@ could be read, since an unread sitemap would seem to drop all of its pages. Each
 keyed by the URL, the change and the lastmod, so a change is reported once while a later edit of the same page is
 reported again.
 
-A host that answers a sitemap's URL with HTTP 401, 403, 429 or 451, or with an HTML page in the sitemap's place (an
-answer that is not a sitemap and is served as HTML or starts with `<!doctype html` or `<html`), has refused it: MSHA's
-site serves the cloud VM such a page, and a workstation the sitemap. A refusal is recorded, never worked around: the
-check is "refused" and its note says which sitemaps were refused and why. The check is an "error" instead when any
-sitemap could not be read for another reason (no answer, another HTTP status, malformed XML).
+A host that refuses a sitemap (crawl/sitemaps.py: HTTP 401, 403, 429 or 451, or an HTML page in the sitemap's place)
+is recorded, never worked around: MSHA's site serves the cloud VM such a page, and a workstation the sitemap. The check
+is "refused" and its note says which sitemaps were refused and why. The check is an "error" instead when any sitemap
+could not be read for another reason (no answer, another HTTP status, malformed XML).
 
 The watcher asks the way the crawl does: robots.txt through crawl/robots.py, the site's own delay or its Crawl-delay if
 longer, and not while that site's crawl runs. Where it can write the data root's state folder, it holds the crawl's
@@ -26,7 +25,6 @@ day whatever the schedule; OSHA's sitemap gives no lastmod, so only added and dr
 
 from __future__ import annotations
 
-import codecs
 import os
 import time
 from collections import Counter
@@ -39,9 +37,8 @@ from typing import Any
 
 import httpx
 
-from ..crawl.crawler import is_html
 from ..crawl.locks import SiteLock
-from ..crawl.sitemaps import Sitemap, parse_sitemap
+from ..crawl.sitemaps import REFUSED_STATUSES, Sitemap, parse_sitemap, served_as_html
 from ..crawl.sites import Site
 from ..crawl.urls import normalize
 from ..stream.events import Event, as_utc
@@ -53,9 +50,6 @@ from .state import WatchState
 
 # The least time between two reads of a site's sitemaps, whatever the schedule or a forced check asks.
 MIN_INTERVAL = {"msha": timedelta(0), "osha": timedelta(days=1)}
-# The answers by which a host refuses a sitemap to the watcher (as does an HTML page served in its place).
-REFUSED_STATUSES = frozenset({401, 403, 429, 451})
-HTML_STARTS = (b"<!doctype html", b"<html")  # an HTML page's first bytes, after any byte order mark and white space
 # Where the crawl's lock cannot be seen, a crawl is taken to run until what it writes has been still this long. A crawl
 # commits its inventory after every request and a long download grows its file all the while; only the crawl's own
 # pauses are longer (a Retry-After or a suspected block, while it sends nothing).
@@ -121,8 +115,7 @@ class Refused(Exception):
 
 def html_page(answer: Answer, content_type: str | None) -> bool:
     """Whether an answer is an HTML page, by its Content-Type or by its first bytes."""
-    start = answer.content[:1024].removeprefix(codecs.BOM_UTF8).lstrip().lower()
-    return is_html(content_type) or start.startswith(HTML_STARTS)
+    return served_as_html(answer.content, content_type)
 
 
 def read_sitemap(polite: SitemapClient, url: str) -> tuple[Answer, Sitemap]:

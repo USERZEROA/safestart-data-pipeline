@@ -275,6 +275,16 @@ class Store:
             "insert or ignore into links (from_url, to_url) values (?, ?)", [(from_url, to) for to in to_urls]
         )
 
+    def links_from(self, url: str) -> set[str]:
+        return {row[0] for row in self.db.execute("select to_url from links where from_url = ?", (url,))}
+
+    def replace_links(self, from_url: str, to_urls: list[str]) -> set[str]:
+        """Make the page's links exactly these; returns the targets it no longer links to."""
+        dropped = self.links_from(from_url) - set(to_urls)
+        self.db.executemany("delete from links where from_url = ? and to_url = ?", [(from_url, to) for to in dropped])
+        self.add_links(from_url, to_urls)
+        return dropped
+
     def add_fetch(
         self,
         url: str,
