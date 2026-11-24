@@ -1,5 +1,10 @@
 # SafeStart data pipeline
 
+> [!IMPORTANT]
+> **License: all rights reserved.** Copyright (c) 2026 Haiwei Yu. Course staff may view, download and run this
+> repository to evaluate it; any other copying, redistribution, modification or commercial use needs the author's
+> written permission. See [LICENSE](LICENSE).
+
 [![CI](https://github.com/USERZEROA/safestart-data-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/USERZEROA/safestart-data-pipeline/actions/workflows/ci.yml)
 
 <a href="https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@dbbe7820da447be395bf9fc096c7f91e5a6f76c3/docs/SafeStart-data-pipeline-video.mp4"><img
@@ -640,9 +645,3 @@ deploy/                   Caddyfile and the Google Cloud scripts
 scripts/                  start.py (Compose launcher), smoke_test.py,
                           crawl start/stop for Windows
 ```
-
-## License
-
-Copyright (c) 2026 Haiwei Yu. All rights reserved. Course staff may view, download and run this repository
-to evaluate it; any other copying, redistribution, modification or commercial use needs the author's written
-permission. See [LICENSE](LICENSE).
