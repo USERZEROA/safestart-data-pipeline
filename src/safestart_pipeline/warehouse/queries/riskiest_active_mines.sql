@@ -1,7 +1,7 @@
 -- Which active mines had the most S&S violations in the last 12 months, and what are their serious accidents and
 -- injury rates?
--- Why it matters: this is the scorecard SafeStart shows before a shift; where S&S citations and injuries are both high,
--- a thorough pre-shift assessment matters most.
+-- Why it matters: this is the scorecard SafeStart's pre-shift check could open with; where S&S citations and injuries
+-- are both high, a thorough pre-shift assessment matters most.
 SELECT
     mine_id, mine_name, state, coal_metal, mine_type,
     inspections_12m, violations_12m, ss_violations_12m, serious_accidents_12m,

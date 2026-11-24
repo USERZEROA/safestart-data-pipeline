@@ -1,6 +1,7 @@
 -- Which cited section numbers have no text in today's Title 30, and how often and how recently are they cited?
--- Why it matters: SafeStart links each citation to the regulation's text; a number missing from the current CFR (a
--- standard since removed or renumbered, or a typing error) needs another source or a correction before it can link.
+-- Why it matters: SafeStart could link each citation to the regulation's text; a number missing from the current CFR
+-- (a standard since removed or renumbered, or a typing error) would need another source or a correction before it
+-- could link.
 SELECT
     t.cfr_section,
     t.citations,

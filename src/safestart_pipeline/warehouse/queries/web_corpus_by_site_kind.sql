@@ -1,5 +1,5 @@
 -- What does the web corpus collected from the OSHA and MSHA websites consist of, by site and kind of document?
--- Why it matters: SafeStart's library is built from these pages and files; how much is HTML, PDF, office files or data
+-- Why it matters: SafeStart's library draws on the same sites; how much is HTML, PDF, office files or data
 -- decides which parsers and how much indexing the library needs, and the skipped count shows what was left out.
 SELECT
     site,

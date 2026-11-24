@@ -45,9 +45,9 @@ employment report (50.30) is cited often and almost never S&S (6 of 47,111 citat
 
 ## Which cited section numbers have no text in today's Title 30, and how often and how recently are they cited?
 
-`queries/cited_sections_missing_from_ecfr.sql`. SafeStart links each citation to the regulation's text; a number missing
-from the current CFR (a standard since removed or renumbered, or a typing error) needs another source or a correction
-before it can link.
+`queries/cited_sections_missing_from_ecfr.sql`. SafeStart could link each citation to the regulation's text; a number
+missing from the current CFR (a standard since removed or renumbered, or a typing error) would need another source or a
+correction before it could link.
 
 90 of the 103 numbers without text were last cited before 2025, as expected of standards since removed or renumbered
 (75.383, 75.1101-23, 56.5050). Five are still cited in 2026, among them 70.206 and 70.207, which today's Title 30 holds
@@ -244,8 +244,8 @@ C07. Every median is far below its mean: a few large penalties raise the average
 
 ## Which active mines had the most S&S violations in the last 12 months, and what are their serious accidents and injury rates?
 
-`queries/riskiest_active_mines.sql`. This is the scorecard SafeStart shows before a shift; where S&S citations and
-injuries are both high, a thorough pre-shift assessment matters most.
+`queries/riskiest_active_mines.sql`. This is the scorecard SafeStart's pre-shift check could open with; where S&S
+citations and injuries are both high, a thorough pre-shift assessment matters most.
 
 All fifteen are underground coal mines. Marshall County Mine (WV) combines 154 S&S violations with 147 serious accidents
 and an injury rate of 13.85, more than four times the coal average of about 3; No 7 Mine (AL) has the most S&S
@@ -297,12 +297,13 @@ from 13 to 112.
 
 ## What does the web corpus collected from the OSHA and MSHA websites consist of, by site and kind of document?
 
-`queries/web_corpus_by_site_kind.sql`. SafeStart's library is built from these pages and files; how much is HTML, PDF,
-office files or data decides which parsers and how much indexing the library needs, and the skipped count shows what was
-left out.
+`queries/web_corpus_by_site_kind.sql`. SafeStart's library draws on the same sites; how much is HTML, PDF, office files
+or data decides which parsers and how much indexing a library of these pages and files needs, and the skipped count
+shows what was left out.
 
 MSHA's legacy host is mostly PDF by size (8,384 files, 25.8 GB). OSHA's skipped URLs (9,806 pages, 783 PDFs) are what
-its crawl rules leave out on purpose (README, Crawling rules); its pages are 59% in the sitemap, MSHA's 73%.
+its crawl rules leave out on purpose (README, [Sources and ingestion](../README.md#sources-and-ingestion)); its pages
+are 59% in the sitemap, MSHA's 73%.
 
 | site | kind | urls | downloaded | downloaded_gb | skipped | sitemap_share |
 |---|---|---:|---:|---:|---:|---:|
