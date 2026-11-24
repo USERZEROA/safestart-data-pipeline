@@ -1,11 +1,13 @@
 """Changed pages on the MSHA and OSHA websites, found by reading each site's sitemaps against its crawl's inventory.
 
-A page is "added" when today's sitemaps list a URL the crawl never recorded, "changed" when its sitemap lastmod is after
-the crawl last fetched it, and "dropped" when the crawl's inventory has it from a sitemap and today's sitemaps no longer
-list it. The inventory is only read, so a page the crawl never recorded stays unknown to it: once the watcher has
-announced such a page as added, a later lastmod of it is a change. Dropped pages are judged only when every sitemap
-could be read, since an unread sitemap would seem to drop all of its pages. Each finding becomes a page_change event
-keyed by the URL, the change and the lastmod, so a change is reported once while a later edit of the same page is
+A page is "added" when today's sitemaps list a URL the crawl never recorded, or one the crawl's inventory first
+recorded after the watcher's previous read of the site (the daily run of the official files, official/daily.py, reads
+OSHA's sitemap too and records its new URLs, often before the watcher sees them). It is "changed" when its sitemap
+lastmod is after the crawl last fetched it, and "dropped" when the crawl's inventory has it from a sitemap and today's
+sitemaps no longer list it. The inventory is only read, so a page the crawl never recorded stays unknown to it: once the
+watcher has announced such a page as added, a later lastmod of it is a change. Dropped pages are judged only when every
+sitemap could be read, since an unread sitemap would seem to drop all of its pages. Each finding becomes a page_change
+event keyed by the URL, the change and the lastmod, so a change is reported once while a later edit of the same page is
 reported again.
 
 A host that refuses a sitemap (crawl/sitemaps.py: HTTP 401, 403, 429 or 451, or an HTML page in the sitemap's place)
@@ -14,13 +16,16 @@ is "refused" and its note says which sitemaps were refused and why. The check is
 could not be read for another reason (no answer, another HTTP status, malformed XML).
 
 The watcher asks the way the crawl does: robots.txt through crawl/robots.py, the site's own delay or its Crawl-delay if
-longer, and not while that site's crawl runs. Where it can write the data root's state folder, it holds the crawl's
-lock while it asks. Where it cannot, as the containers mount the data root read-only, a crawl may still run outside
-them: the workstation's crawls run on the host, into the folder the stack mounts, and their file locks do not reach
-into a container. There the site is skipped while anything its crawl writes changed within CRAWL_QUIET: the inventory
-or its -wal (a commit after every request) or a download in progress (`raw/<site>/objects/tmp`). A crawl that has
-just stopped is waited for as long. OSHA asks for 10 seconds between requests, so its sitemaps are read at most once a
-day whatever the schedule; OSHA's sitemap gives no lastmod, so only added and dropped pages are found there.
+longer, and not while that site's crawl or daily run writes its inventory. Where it can write the data root's state
+folder, it holds the crawl's lock while it asks. Where it cannot, as the containers mount the data root read-only, a
+crawl may still run outside them: the workstation's crawls run on the host, into the folder the stack mounts, and their
+file locks do not reach into a container. There the site is skipped while anything its crawl writes changed within
+CRAWL_QUIET: the inventory or its -wal (a commit after every request) or a download in progress
+(`raw/<site>/objects/tmp`). A crawl that has just stopped is waited for as long. A check skipped this way is due again
+BUSY_RETRY later rather than a whole interval later, so a daily run that writes OSHA's inventory from 16:30 to 04:30 UTC
+cannot push OSHA's check into its window day after day: the check comes once the run has ended, and its next time falls
+outside the window. OSHA asks for 10 seconds between requests, so its sitemaps are read at most once a day whatever
+the schedule; OSHA's sitemap gives no lastmod, so only added and dropped pages are found there.
 """
 
 from __future__ import annotations
@@ -54,7 +59,9 @@ MIN_INTERVAL = {"msha": timedelta(0), "osha": timedelta(days=1)}
 # commits its inventory after every request and a long download grows its file all the while; only the crawl's own
 # pauses are longer (a Retry-After or a suspected block, while it sends nothing).
 CRAWL_QUIET = timedelta(minutes=15)
+BUSY_RETRY = timedelta(hours=1)  # a site skipped while its crawl runs is due again this soon
 PARAMETERS = 500  # URLs per inventory query
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # the crawl inventory's times
 CHANGES = ("added", "changed", "dropped")
 
 Listed = dict[str, tuple[str | None, str]]  # URL -> (lastmod, the sitemap listing it)
@@ -166,22 +173,25 @@ def read_sitemaps(site: Site, polite: SitemapClient) -> tuple[Listed, list[str],
     return listed, refused, problems
 
 
-def compare(inventory: Path, listed: Listed, *, judge_dropped: bool) -> list[Change]:
-    """Today's sitemaps against the crawl's inventory, which is only read."""
+def compare(inventory: Path, listed: Listed, *, judge_dropped: bool, since: datetime | None = None) -> list[Change]:
+    """Today's sitemaps against the crawl's inventory, which is only read. `since` is the watcher's previous read of
+    these sitemaps: a URL the inventory first recorded after it is added too."""
     changes: list[Change] = []
+    recorded_after = since.astimezone(UTC).strftime(TIME_FORMAT) if since else None
     db = read_only(inventory)
     try:
         urls = list(listed)
         for start in range(0, len(urls), PARAMETERS):
             chunk = urls[start:start + PARAMETERS]
             marks = ", ".join("?" for _ in chunk)
-            fetched = {row["url"]: row["fetched_at"] for row in
-                       db.execute(f"select url, fetched_at from urls where url in ({marks})", chunk)}
+            known = {row["url"]: row for row in
+                     db.execute(f"select url, fetched_at, first_seen_at from urls where url in ({marks})", chunk)}
             for url in chunk:
                 lastmod, sitemap = listed[url]
-                if url not in fetched:
+                row = known.get(url)
+                if row is None or (recorded_after and row["first_seen_at"] > recorded_after):
                     changes.append(Change(url, "added", lastmod, sitemap))
-                elif modified_after(lastmod, fetched[url]):
+                elif modified_after(lastmod, row["fetched_at"]):
                     changes.append(Change(url, "changed", lastmod, sitemap))
         if judge_dropped:
             for row in db.execute("select url, sitemap_lastmod from urls where in_sitemap = 1"):
@@ -259,13 +269,13 @@ def check_sitemaps(site: Site, data_root: Path, state: WatchState, publisher: Pu
             stack.enter_context(crawl_lock(data_root, site, started))
         except RuntimeError as busy:
             return Check(source, "skipped", note=f"the {site.name} crawl is running ({busy}), so its host was not"
-                                                 " asked")
+                                                 f" asked; asked again in {BUSY_RETRY}", retry_in=BUSY_RETRY)
         state.set_time(f"{source}:read_at", started)
         state.commit()
         polite = SitemapClient(client, min_delay=site.min_delay, sleep=sleep, clock=clock)
         listed, refused, problems = read_sitemaps(site, polite)
     judged = not (refused or problems)  # dropped pages need every sitemap
-    changes = announced(compare(inventory, listed, judge_dropped=judged), state)
+    changes = announced(compare(inventory, listed, judge_dropped=judged, since=last_read), state)
     found = publish_new((page_event(site, change, started) for change in changes), publisher, state)
     counts = Counter(change.change for change in changes)
     note = f"{len(listed):,} URLs listed; " + ", ".join(f"{counts[name]:,} {name}" for name in CHANGES

@@ -105,3 +105,6 @@ class WatchState:
 
     def set_time(self, name: str, moment: datetime) -> None:
         self.db.execute("insert or replace into times (name, value) values (?, ?)", (name, moment.isoformat()))
+
+    def clear_time(self, name: str) -> None:
+        self.db.execute("delete from times where name = ?", (name,))

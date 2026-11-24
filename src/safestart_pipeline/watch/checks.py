@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..config import postgres_url
@@ -26,13 +26,16 @@ log = logging.getLogger("watch")
 @dataclass(frozen=True)
 class Check:
     """One check of one source, as stream.source_checks holds it: ok (new events found), unchanged, refused (the host
-    would not serve the watcher, which records a refusal and never works around it), error or skipped."""
+    would not serve the watcher, which records a refusal and never works around it), error or skipped. `retry_in`,
+    which is not stored, brings the next check forward: a source skipped because its crawl was running is due again
+    that much later instead of a whole interval later."""
 
     source: str
     status: str
     found: int = 0
     note: str = ""
     checked_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    retry_in: timedelta | None = None
 
     def __post_init__(self) -> None:
         if self.status not in STATUSES:

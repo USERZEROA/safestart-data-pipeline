@@ -2,9 +2,11 @@
 
 Dataset versions every 6 hours (MSHA publishes weekly, and the lake takes each new version when the acquire flow runs),
 MSHA's sitemaps every 6 hours, OSHA's once a day (it asks for 10 seconds between requests), and the Federal Register
-every hour. `once` runs the checks that are due (all of them the first time) and exits; `loop` keeps running them as
-they come due. `--only` picks checks and `--force` runs them now, though OSHA's sitemaps are still read at most once a
-day.
+every hour. A check skipped because its site's crawl was running is due again sooner, as the check says (`retry_in`,
+an hour for the sitemaps), so it is not put off a whole interval at a time while the crawl or the daily run of the
+official files writes. `once` runs the checks that are due (all of them the first time) and exits; `loop` keeps running
+them as they come due. `--only` picks checks and `--force` runs them now, though OSHA's sitemaps are still read at most
+once a day.
 Events go to Kafka; every check is logged, and stored in stream.source_checks when PostgreSQL is reachable.
 
 The log goes to standard error and to `<data root>/logs/watch.log`, or to the file SAFESTART_WATCH_LOG (`watch_log` in
@@ -72,20 +74,29 @@ def run_check(name: str, *, root: Path, state: WatchState, publisher: Publisher,
     return check_sitemaps(SITES[name.removeprefix("sitemaps-")], root, state, publisher, client)
 
 
+def next_time(state: WatchState, name: str) -> datetime | None:
+    """When a check is next due: an interval after its last run, or sooner when that run asked to be retried; None for
+    a check that never ran."""
+    last = state.time(f"{name}:checked_at")
+    if last is None:
+        return None
+    retry = state.time(f"{name}:retry_at")
+    return min(last + SCHEDULE[name], retry) if retry else last + SCHEDULE[name]
+
+
 def due(state: WatchState, names: Iterable[str], now: datetime) -> list[str]:
-    return [name for name in names
-            if (last := state.time(f"{name}:checked_at")) is None or now - last >= SCHEDULE[name]]
+    return [name for name in names if (at := next_time(state, name)) is None or now >= at]
 
 
 def seconds_to_next(state: WatchState, names: Iterable[str], now: datetime) -> float:
-    waits = [(last + SCHEDULE[name] - now).total_seconds() if (last := state.time(f"{name}:checked_at")) else 0.0
-             for name in names]
+    waits = [(at - now).total_seconds() if (at := next_time(state, name)) else 0.0 for name in names]
     return max(min(waits, default=MAX_SLEEP_SECONDS), 0.0)
 
 
 def run_checks(names: Iterable[str], state: WatchState, run: Callable[[str], Check], *,
                now: Callable[[], datetime] = utc_now, record: Callable[[Check], bool] = record_check) -> list[Check]:
-    """Run each check, stamped with its start; a check that fails is recorded as an error and the others still run."""
+    """Run each check, stamped with its start; a check that fails is recorded as an error and the others still run. A
+    check that asks to be retried (`retry_in`) is due again that much after its start."""
     checks = []
     for name in names:
         started = now()
@@ -96,6 +107,10 @@ def run_checks(names: Iterable[str], state: WatchState, run: Callable[[str], Che
             check = Check(name, "error", note=f"{type(problem).__name__}: {problem}"[:500])
         check = replace(check, checked_at=started)
         state.set_time(f"{name}:checked_at", started)
+        if check.retry_in is not None:
+            state.set_time(f"{name}:retry_at", started + check.retry_in)
+        else:
+            state.clear_time(f"{name}:retry_at")
         state.commit()
         record(check)
         checks.append(check)

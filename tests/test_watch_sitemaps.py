@@ -256,10 +256,25 @@ def test_a_site_is_not_asked_while_its_crawl_runs_or_without_an_inventory(bench)
     with SiteLock(bench.root / "state" / "crawl-example.lock"):
         result = bench.check()
     assert result.status == "skipped" and "crawl is running" in result.note and bench.fake.requests == []
+    assert result.retry_in == sitemaps.BUSY_RETRY  # asked again in an hour, not a whole interval later
     assert bench.check().status == "ok"  # the skipped check did not count as a read
 
     (bench.root / "state" / "crawl-example.sqlite").unlink()
     assert bench.check(now=NOW + timedelta(hours=6)).note == "no example crawl inventory to compare with"
+
+
+def test_a_page_the_inventory_recorded_after_the_last_read_is_added_all_the_same(bench):
+    """The daily run of the official files reads the sitemap too, and records a new page before the watcher sees it."""
+    publisher = ListPublisher()
+    assert bench.check(publisher).status == "ok"  # the first read, at NOW
+    inventory = Store(bench.root / "state" / "crawl-example.sqlite")
+    inventory.insert_url(f"{HOST}/fresh", source="sitemap", state="fetched", now="2026-11-24T17:00:00Z",
+                         in_sitemap=True)
+    inventory.close()
+    bench.fake.bodies["/pages-2.xml"] = PAGES_2.replace("</urlset>", f"<url><loc>{HOST}/fresh</loc></url></urlset>")
+    assert bench.check(publisher, now=NOW + timedelta(days=1)).found == 1
+    assert publisher.events[-1].event_id == f"page_change:{HOST}/fresh|added|"
+    assert not any(event.event_id.startswith(f"page_change:{HOST}/linked|") for event in publisher.events)
 
 
 def touch(path: Path, moment: datetime) -> None:
