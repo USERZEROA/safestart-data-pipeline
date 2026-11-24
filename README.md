@@ -439,9 +439,9 @@ and the feed's contract.
 - **What it asks.** A probe of `www.msha.gov`, the eCFR titles the batch found new and the Federal Register's final
   rules for titles 29 and 30 (as hints), the MSHA legacy host's held documents for at most two hours, then OSHA until
   the deadline: its sitemap, the 500 hub pages whose links reach 98.8% of the files the project's pages link to, new
-  URLs, and a rolling re-check of the held copies, the one due longest first. Every request keeps the crawler's rules
-  (robots.txt, the `Crawl-delay`, conditional requests, the stop on a sustained block), under the site's own crawl
-  lock, never the batch's.
+  URLs, and a rolling re-check of the held copies, the one due longest first. Every request to OSHA and the legacy
+  host keeps the crawler's rules (robots.txt, the `Crawl-delay`, conditional requests, the stop on a sustained block),
+  under that site's own crawl lock, never the batch's.
 - **What it checks.** Every body is checked by its bytes before it is kept (above). A page has changed when the
   SHA-256 of its main text has, so the values Drupal changes on every request never count; a file when its SHA-256
   has. A 404 or 410 retires a URL at once, and its original is deleted from the server 30 days later unless it comes
@@ -461,16 +461,17 @@ and the feed's contract.
   (docs/DEPLOYMENT.md).
 
 In three runs from the workstation against the real sites on 2026-11-24 (263 requests in 23 minutes), the daily update
-found two real page edits, confirmed 63 OSHA hub pages unchanged (42 of them in new bytes with the same text), refused
-3 broken Federal Register files, and published 4 manifests whose signatures, chain and counts verified. Its limits:
+found two real page edits, confirmed 63 OSHA hub pages unchanged (42 of them in new bytes with the same text) and
+refused 3 broken Federal Register files; with a heartbeat after them, it published 4 manifests whose signatures, chain
+and counts verified. Its limits:
 
 - OSHA's 10-second `Crawl-delay` leaves the daily update about 4,000 requests in its 12-hour window, against the 27,263
   held copies the project needs, so the re-check is rolling: a change is found when its URL next comes round (files
   about weekly, pages about monthly), unless a hub page or the sitemap points to it sooner.
 - `www.msha.gov` refuses the cloud server (it serves an HTML page in place of its sitemap, as the watcher found): every
   run records the refusal and never works around it, and that site's pages are not updated.
-- A page that keeps navigation inside its main content changes when the navigation does: in that run, 1 of 66 OSHA
-  hub pages was listed as changed only because its section menu shrank.
+- A page that keeps navigation inside its main content changes when the navigation does: in the first of those runs,
+  1 of the 66 OSHA hub pages it asked was listed as changed only because its section menu shrank.
 
 ## Dashboard
 
