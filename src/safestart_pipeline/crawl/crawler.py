@@ -12,7 +12,8 @@ and ends "rejected". A URL the store holds (store.py) is asked again conditional
 except as follows:
 - a usable body whose content hash differs from the held copy's is a new edition ("changed"; "restored" for a URL that
   was gone); one with the same content hash stores nothing new, and only last_checked_at and next_check_at move;
-- 404 or 410 retires it at once ("gone": gone_since, purge_after 30 days on), the copy kept until then;
+- 404 or 410 retires it at once ("gone": gone_since, purge_after 30 days on), the copy kept until then, unless the
+  answer looks like a block (a challenge page served with the status), which is a refusal;
 - 3xx is "moved", the target queued;
 - 401, 403, 429, 451, 5xx, another error, no answer, a refused body, one over the size limit, or a robots.txt that now
   disallows the URL (it is then not asked) leave the held copy current: no retry state, no demotion, the reason in
@@ -731,12 +732,12 @@ class Crawler:
                               **answered)
             if not moved_before:
                 self.record(url, "moved", now, **self.held_fields(row), http_status=status, target=target)
-        elif status in (404, 410):
+        elif status in (404, 410) and not looks_blocked(result):
             if not gone:
                 answered |= {"gone_since": now, "purge_after": iso(moment + PURGE_AFTER)}
                 self.record(url, "gone", now, **self.held_fields(row), http_status=status)
             self.store.update(url, state="not_found", next_check_at=iso(moment + RECHECK_GONE), **answered)
-        else:  # a refusal, an error: nothing retired
+        else:  # a refusal (a challenge page with a 404 among them), an error: nothing retired
             self.check_failed(row, moment, f"HTTP {status}")
 
     def check_body(self, row: sqlite3.Row, result: FetchResult, moment: datetime) -> None:

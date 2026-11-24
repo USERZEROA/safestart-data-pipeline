@@ -1,4 +1,7 @@
-"""One crawl process per site: an OS file lock that is released automatically if the process dies."""
+"""One crawl process per site: an OS file lock that is released automatically if the process dies.
+
+`lock_state` says whether another process holds a lock now.
+"""
 
 from __future__ import annotations
 
@@ -53,3 +56,17 @@ class SiteLock:
             import fcntl
 
             fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+
+
+def lock_state(path: Path) -> str:
+    """"free" or "held" (another process holds the lock now); "unknown" where it cannot be tried. No lock file is made:
+    a holder makes its own."""
+    if not path.exists():
+        return "free"
+    try:
+        with SiteLock(path):
+            return "free"
+    except RuntimeError:
+        return "held"
+    except OSError:
+        return "unknown"

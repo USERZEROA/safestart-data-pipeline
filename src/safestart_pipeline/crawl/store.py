@@ -5,9 +5,11 @@ A URL is held when the store keeps a verified copy of it: its row then has a con
 normalized hash for a page, the SHA-256 for a file, see content.py) and its sha256, content_type, content_length,
 detected_type, etag and last_modified describe that copy. A held URL stays held when later answers fail: only a 404 or
 410 retires it (gone_since, and purge_after 30 days on), and a later usable answer restores it. Rows recorded before
-content hashes existed have a sha256 but no content hash until their copy is examined. last_checked_at and
-next_check_at keep the rolling re-check of held URLs, and dropped_from_sitemap_at marks a URL a complete sitemap read
-no longer lists.
+content hashes existed have a sha256 but no content hash until `ssp official backfill-hashes` (or the crawler, when it
+next asks for the URL) examines the copy. The daily run (official/daily.py) keeps its rolling re-check in
+last_checked_at and next_check_at, marks a URL a complete sitemap read no longer lists with dropped_from_sitemap_at,
+and queues a held URL it must ask about before its time in confirm_reason (why: dropped from the sitemap, no longer
+linked), which the request that asks clears.
 
 editions holds every distinct content a URL has had (url, content hash), the object holding it and when it was first
 seen; changes holds every new, changed, gone, restored, moved and rejected answer, with the run that saw it. A store of
@@ -51,7 +53,8 @@ create table if not exists urls (
   last_checked_at text,
   gone_since text,
   purge_after text,
-  dropped_from_sitemap_at text
+  dropped_from_sitemap_at text,
+  confirm_reason text
 );
 create index if not exists urls_by_state on urls (state, next_attempt_at);
 create table if not exists links (
@@ -122,7 +125,10 @@ create table if not exists runs (
 """
 # Columns urls gained after the first version, added in place to a store that lacks them.
 ADDED_URL_COLUMNS = ("content_sha256", "detected_type", "next_check_at", "last_checked_at", "gone_since",
-                     "purge_after", "dropped_from_sitemap_at")
+                     "purge_after", "dropped_from_sitemap_at", "confirm_reason")
+# `holds` as a condition on a row of urls.
+HELD_SQL = ("(content_sha256 is not null or (sha256 is not null and content_sha256 is null and detected_type is null"
+            " and state != 'rejected'))")
 
 UPDATABLE = frozenset(
     "state skip_reason http_status content_type content_length sha256 location etag last_modified fetched_at attempts "

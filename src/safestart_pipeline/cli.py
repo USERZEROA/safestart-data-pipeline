@@ -6,6 +6,9 @@ import Prefect, DuckDB, Polars or scikit-learn only when they run: the crawler's
 and protego. `ssp lake` holds the data root's writer lock, as the batch and model flows do (flows/__init__.py).
 `ssp official backfill-hashes <site>` records content hashes for the copies a crawl held before it kept them
 (crawl/backfill.py), under the site's crawl lock; the objects are only read, from --objects-from when given.
+`ssp official run [--site SOURCE ...] [--until WHEN] [--budget N]` runs the daily update of the official files now,
+without Prefect (official/run.py), and exits 1 when a source failed; `ssp official status` shows the latest run, what
+waits and how far the re-check has come, reading the stores only.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from .crawl.backfill import backfill_hashes
 from .crawl.crawler import Crawler, make_client, utc_now
 from .crawl.locks import SiteLock
 from .crawl.sites import SITES
+from .official import run as official_run
 from .verify import Polite, verify_bulk, verify_crawl
 
 
@@ -115,9 +119,24 @@ def backfill(root: Path, site: str, objects: Path | None) -> dict:
 
 
 def official(root: Path, args: argparse.Namespace) -> int:
-    """`ssp official backfill-hashes`."""
-    print(json.dumps(backfill(root, args.site, args.objects_from), indent=2, sort_keys=True))
-    return 0
+    """`ssp official run|status|backfill-hashes`."""
+    if args.task == "backfill-hashes":
+        print(json.dumps(backfill(root, args.site, args.objects_from), indent=2, sort_keys=True))
+        return 0
+    now = utc_now()
+    if args.task == "status":
+        print(json.dumps(official_run.status(root, now), indent=2, sort_keys=True, default=str))
+        return 0
+    try:
+        until = official_run.parse_until(args.until, now) if args.until else official_run.deadline(now)
+    except ValueError as problem:
+        raise SystemExit(f"--until {args.until}: {problem}") from problem
+    setup_logging(root / "logs" / "official.log")
+    with make_client() as client:
+        result = official_run.run_official(root, client, sources=args.site, until=until, budget=args.budget)
+    print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    failed = any(source["status"] == "error" for source in result["sources"].values())
+    return int(failed)
 
 
 def warehouse(argv: list[str]) -> int:
@@ -152,6 +171,14 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--live", action="store_true", help="also compare with the source as it is today")
     updates = commands.add_parser("official", help="the daily update of the official files")
     tasks = updates.add_subparsers(dest="task", required=True)
+    daily = tasks.add_parser("run", help="ask the official sites what changed since the last run (resumable)")
+    daily.add_argument("--site", action="append", choices=official_run.SOURCES, metavar="SOURCE",
+                       help=f"only this source (repeatable): {', '.join(official_run.SOURCES)}")
+    daily.add_argument("--until", metavar="WHEN", help="stop at this time: ISO 8601 (UTC unless it says otherwise) or"
+                                                      " HH:MM UTC; by default the next 04:30 UTC, or 15 minutes before"
+                                                      " the batch or the model flow if one starts first")
+    daily.add_argument("--budget", type=int, metavar="N", help="the most requests each crawled site may take")
+    tasks.add_parser("status", help="the latest run, what waits and how far the re-check has come")
     hashes = tasks.add_parser("backfill-hashes", help="content hashes and types for the copies a crawl held before it"
                                                       " recorded them (resumable; objects are only read)")
     hashes.add_argument("site", choices=sorted(SITES))
