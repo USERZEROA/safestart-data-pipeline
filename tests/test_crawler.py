@@ -39,6 +39,12 @@ HOME = """<html><body>
 HTML = {"content-type": "text/html; charset=utf-8"}
 
 
+def pdf_bytes(size: int) -> bytes:
+    """A PDF of `size` bytes as the type check sees one: the header, filler and the end-of-file marker."""
+    head, tail = b"%PDF-1.4\n", b"\n%%EOF\n"
+    return head + b"0" * (size - len(head) - len(tail)) + tail
+
+
 class FakeSite:
     def __init__(self):
         self.requests: list[httpx.Request] = []

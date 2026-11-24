@@ -1,9 +1,11 @@
-"""Command line: `ssp inventory|crawl|status|recheck|fetch|verify|lake|pipeline|warehouse|ml`.
+"""Command line: `ssp inventory|crawl|status|recheck|fetch|verify|official|lake|pipeline|warehouse|ml`.
 
 `ssp pipeline` runs the batch flow once (and the model flow after it with --model); `ssp warehouse` and `ssp ml` pass
 their arguments to `python -m safestart_pipeline.warehouse` and `python -m safestart_pipeline.ml`. These commands
 import Prefect, DuckDB, Polars or scikit-learn only when they run: the crawler's own environment has only httpx, lxml
 and protego. `ssp lake` holds the data root's writer lock, as the batch and model flows do (flows/__init__.py).
+`ssp official backfill-hashes <site>` records content hashes for the copies a crawl held before it kept them
+(crawl/backfill.py), under the site's crawl lock; the objects are only read, from --objects-from when given.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from .config import data_root
+from .crawl.backfill import backfill_hashes
 from .crawl.crawler import Crawler, make_client, utc_now
 from .crawl.locks import SiteLock
 from .crawl.sites import SITES
@@ -97,6 +100,26 @@ def verify(root: Path, target: str, *, rehash: bool, live: bool) -> dict:
     return summary(report, path)
 
 
+def backfill(root: Path, site: str, objects: Path | None) -> dict:
+    """`ssp official backfill-hashes`: the site's held copies examined, under its crawl lock."""
+    folder = objects or root / "raw" / site / "objects"
+    if not folder.is_dir():
+        raise SystemExit(f"no object folder at {folder}")
+    setup_logging(root / "logs" / f"{site}.log")
+    with lock_for(root, site):
+        store = Crawler.open_store(SITES[site], root)
+        try:
+            return {"site": site, "objects": str(folder), **backfill_hashes(store, folder)}
+        finally:
+            store.close()
+
+
+def official(root: Path, args: argparse.Namespace) -> int:
+    """`ssp official backfill-hashes`."""
+    print(json.dumps(backfill(root, args.site, args.objects_from), indent=2, sort_keys=True))
+    return 0
+
+
 def warehouse(argv: list[str]) -> int:
     """`python -m safestart_pipeline.warehouse` with these arguments (its build and export hold the warehouse lock)."""
     from .warehouse.__main__ import main as warehouse_main
@@ -127,6 +150,13 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("target", choices=[*sorted(SITES), "bulk"])
     check.add_argument("--rehash", action="store_true", help="recompute every stored file's SHA-256 (slow for a crawl)")
     check.add_argument("--live", action="store_true", help="also compare with the source as it is today")
+    updates = commands.add_parser("official", help="the daily update of the official files")
+    tasks = updates.add_subparsers(dest="task", required=True)
+    hashes = tasks.add_parser("backfill-hashes", help="content hashes and types for the copies a crawl held before it"
+                                                      " recorded them (resumable; objects are only read)")
+    hashes.add_argument("site", choices=sorted(SITES))
+    hashes.add_argument("--objects-from", type=Path, metavar="FOLDER",
+                        help="read the stored objects from this folder instead of <data root>/raw/<site>/objects")
     lake = commands.add_parser("lake", help="bring the typed Parquet lake up to date with the current downloads")
     lake.add_argument("--only", nargs="+", metavar="DATASET", help="build only these MSHA datasets")
     pipeline = commands.add_parser("pipeline", help="run the batch flow once: downloads, lake, warehouse, exports")
@@ -167,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "verify":
         print(json.dumps(verify(root, args.target, rehash=args.rehash, live=args.live), indent=2, sort_keys=True))
         return 0
+    if args.command == "official":
+        return official(root, args)
     if args.command == "status":
         crawler_store = Crawler.open_store(SITES[args.site], root)
         try:
@@ -175,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
                 "skipped": crawler_store.skip_reasons(),
                 "fetched_bytes": crawler_store.fetched_bytes(),
                 "last_stop": crawler_store.get_meta("last_stop"),
+                "copies_without_content_hash": crawler_store.unexamined_count(),
             }
         finally:
             crawler_store.close()
