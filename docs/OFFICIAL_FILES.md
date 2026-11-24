@@ -77,12 +77,12 @@ after a sustained block. A refusal (401, 403, 429, 451, a challenge page) is rec
   text, alliance and grant pages and the files only they link to), is kept but marked when a run starts, so that it is
   never re-checked, confirmed or a hub, never in a manifest, and not in `cycle`. A copy the rules no longer name is
   asked about again.
-- **Not backfilled.** A crawled site whose inventory still holds copies without a content hash (recorded before
-  content hashes existed; `ssp status <site>` counts them as `copies_without_content_hash`) is not asked at all: the
-  source is `skipped`, with the stop reason `not backfilled` and a note that says how many. The server keeps no
-  originals, so such a copy cannot be compared with an answer in other bytes, and every page that came back so would
-  be listed as `changed`. The inventory is backfilled where its originals are (`ssp official backfill-hashes <site>`)
-  and then placed on the server (docs/DEPLOYMENT.md, "Placing a crawl inventory on the server").
+- **Not backfilled.** A crawled site whose inventory still holds copies without a content hash (recorded before content
+  hashes existed; `ssp status <site>` counts them as `copies_without_content_hash`) is not asked at all: the source is
+  `skipped`, with the stop reason `not backfilled` and a note that says how many. The server holds none of the crawls'
+  originals, so such a copy cannot be compared with an answer in other bytes, and every page that came back so would be
+  listed as `changed`. The inventory is backfilled where its originals are (`ssp official backfill-hashes <site>`) and
+  then placed on the server (docs/DEPLOYMENT.md, "Placing a crawl inventory on the server").
 
 ## The feed
 

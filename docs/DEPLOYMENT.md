@@ -315,8 +315,8 @@ Once its daily update runs, the server owns its OSHA and legacy-host inventories
 put a newer inventory in their place without SSH (the first time: the workstation's OSHA inventory, once its content
 hashes are recorded), upload it to the bucket's `state-replace/` and restart the server. Until then the daily update
 leaves a site whose inventory still holds copies without a content hash alone: it records the site as `skipped` ("not
-backfilled", with how many such copies there are), since the server keeps no originals to compare an answer with, and
-every page that came back in other bytes would otherwise be reported as changed.
+backfilled", with how many such copies there are), since the server holds none of the crawls' originals to compare an
+answer with, and every page that came back in other bytes would otherwise be reported as changed.
 
 1. On the workstation, finish the inventory and close it: `uv run ssp official backfill-hashes osha` (resumable; the
    originals are only read) until `uv run ssp status osha` shows `"copies_without_content_hash": 0`, with no crawl of

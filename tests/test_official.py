@@ -811,10 +811,10 @@ def test_arlweb_takes_at_most_its_share_of_the_window(whole):
 
 
 def test_a_site_whose_inventory_was_not_backfilled_is_not_asked_until_it_is(tmp_path):
-    """The server keeps no originals, so a copy recorded before content hashes cannot be compared with an answer in
-    other bytes, and every such page would be reported as changed. A run leaves a site whose inventory (here of the
-    first version, as the boot copies it) still holds such copies alone and says why; once the inventory is backfilled
-    where its originals are, the site is asked as on any other day."""
+    """The server holds none of the crawls' originals, so a copy recorded before content hashes cannot be compared
+    with an answer in other bytes, and every such page would be reported as changed. A run leaves a site whose
+    inventory (here of the first version, as the boot copies it) still holds such copies alone and says why; once the
+    inventory is backfilled where its originals are, the site is asked as on any other day."""
     site, clock, archive = site_answers(), Clock(), tmp_path / "archive"
     clock.now = START
     inventory = tmp_path / "state" / "crawl-osha.sqlite"
