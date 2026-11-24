@@ -3,7 +3,7 @@
 Five pages: Live (events as they arrive), Enforcement (counts per day with forecasts and anomalies, and each
 district's history), Standards (the most cited 30 CFR sections, their text and the S&S trend), Mine brief (one mine
 as a crew sees it before a shift) and Sources (what the pipeline holds and how fresh it is, the daily update of the
-official files and the feed SafeStart reads among it). Pages read only through `data`, which turns a missing store into
+official files and the feed for SafeStart among it). Pages read only through `data`, which turns a missing store into
 a sentence, so a panel shows either its data or what is missing.
 
 The tabs run lazily and follow the URL (`?page=Mine+brief&mine=4609612`): only the open page queries its stores, and
@@ -475,7 +475,7 @@ def sources_page() -> None:
 
 def official_files() -> None:
     """The daily update of the official files: when it last ran, what it found, the hosts that refused it, and the feed
-    SafeStart reads, with a warning when its newest manifest is older than STALE_HOURS or the last publish failed."""
+    for SafeStart, with a warning when its newest manifest is older than STALE_HOURS or the last publish failed."""
     st.subheader("Official files", anchor=False)
     now = datetime.now(UTC)
     run = files(data.official_run)

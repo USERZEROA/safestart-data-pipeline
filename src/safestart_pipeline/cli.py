@@ -133,8 +133,8 @@ def keygen(path: Path) -> int:
     except ModuleNotFoundError as problem:
         raise SystemExit(f"{problem.name} is needed: uv sync --extra orchestration") from None
     print(public)
-    print(f"The private key is in {path}: put its {official_feed.KEY_VARIABLE} line into the server's .env, pin the"
-          " public key above in SafeStart, then delete the file.", file=sys.stderr)
+    print(f"The private key is in {path}: put its {official_feed.KEY_VARIABLE} line into the server's .env, keep the"
+          " public key above for SafeStart, then delete the file.", file=sys.stderr)
     return 0
 
 

@@ -20,7 +20,7 @@ services, the stores, the orchestration, the entry points, the deployment and th
 | `ml/` | Features from the lake with Polars and a mine accident-risk model (`docs/ML.md`) |
 | `dashboard/` | Streamlit app over the warehouse and the streaming store |
 | `flows/` | Prefect flows that run and schedule the batch, the model and the official files (`python -m safestart_pipeline.flows`) |
-| `official/` | The daily update of the official files (`run.py`, `daily.py`, `sources.py`), its record (`state.py`), the signed feed SafeStart reads (`feed.py`, docs/OFFICIAL_FILES.md) and the purge of retired originals (`purge.py`) |
+| `official/` | The daily update of the official files (`run.py`, `daily.py`, `sources.py`), its record (`state.py`), the signed feed for SafeStart (`feed.py`, docs/OFFICIAL_FILES.md) and the purge of retired originals (`purge.py`) |
 | `verify.py` | Completeness reports of the crawls and the bulk downloads (`ssp verify`) |
 | `sample.py` | A small synthetic data root the whole stack runs on, for CI and for readers without the data (`python -m safestart_pipeline.sample`) |
 

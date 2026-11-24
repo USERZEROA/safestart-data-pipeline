@@ -1,4 +1,4 @@
-"""The signed daily feed of the official files that SafeStart reads: `<data root>/exports/official/`, served
+"""The signed daily feed of the official files for SafeStart: `<data root>/exports/official/`, served
 read-only at https://<host>/feed/official/ (deploy/Caddyfile). docs/OFFICIAL_FILES.md is the contract, format FORMAT.
 
 The files:
@@ -68,13 +68,14 @@ CHANGES = ("new", "changed", "gone", "restored", "moved")
 COUNTED = (*CHANGES, "checked", "rejected", "hints", "otherTypes")
 MAX_ENTRIES = 5_000
 MAX_CHECKED = 20_000
-MAX_BYTES = 2_000_000  # under the 2 MiB SafeStart reads of one file
+MAX_BYTES = 2_000_000  # under the 2 MiB per file SafeStart's planned importer is to read
 # What MAX_BYTES keeps for all but the lists: the header, the counts and the five sources, whose notes are cut to
 # NOTE_CHARACTERS (at most 6 bytes each once escaped), so the lists' budget always holds.
 HEADER_BYTES = 64 * 1024
 NOTE_CHARACTERS = 1_000
 KEEP = timedelta(days=45)
-STALE_AFTER = timedelta(hours=36)  # SafeStart's and the dashboard's warning: no manifest for a day and a half
+# The dashboard's warning, and SafeStart's planned one: no manifest for a day and a half.
+STALE_AFTER = timedelta(hours=36)
 LOCK_WAIT = timedelta(minutes=10)
 NUMBER = re.compile(r"[1-9][0-9]*")
 GENERATED_AT = re.compile(rb'"generatedAt":"([^"]+)"')
@@ -167,7 +168,7 @@ def keygen(path: Path, now: datetime) -> str:
     seed = base64.b64encode(key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())).decode("ascii")
     public = public_key(key)
     text = (f"# The signing key of the official-files feed, made {iso(now)}. It belongs in the server's .env and\n"
-            f"# nowhere else. Its public key (public-key.txt; SafeStart pins it): {public}\n"
+            f"# nowhere else. Its public key (public-key.txt, for SafeStart): {public}\n"
             f"{KEY_VARIABLE}={seed}\n")
     handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as file:

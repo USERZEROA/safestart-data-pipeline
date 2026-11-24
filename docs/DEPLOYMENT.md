@@ -345,7 +345,7 @@ the daily update skips the legacy host as well.
 
 ### The official-files feed
 
-The orchestrator's daily update publishes the signed feed SafeStart reads at `https://<address>/feed/official/`
+The orchestrator's daily update publishes the signed feed for SafeStart at `https://<address>/feed/official/`
 ([OFFICIAL_FILES.md](OFFICIAL_FILES.md) is the contract). It signs with a key in the server's `.env`:
 
 1. On the workstation: `uv run ssp official keygen --out <file outside the repository>`. It writes the key pair to that

@@ -1,12 +1,12 @@
-# Official files: the daily update and the feed SafeStart reads
+# Official files: the daily update and the feed for SafeStart
 
 The official files are the MSHA and OSHA web pages and documents the crawls downloaded, the eCFR titles and the
 Federal Register's rules. Every day the server asks the sites what changed since the day before, politely, and
-publishes a signed list of what it found: the feed. SafeStart's importer, built separately in SafeStart's own
-repository, is designed to treat that list as a hint only: to download every file it acts on again itself, from
-the official host, so that its own record of where its bytes came from never depends on this server. A forged or
-broken list can then at most cost SafeStart some wasted checks; it cannot put content into SafeStart, and only
-SafeStart's own 404 or 410 withdraws a document there.
+publishes a signed list of what it found: the feed. SafeStart's importer, planned in SafeStart's own repository and
+not built yet, is to treat that list as a hint only: to download every file it acts on again itself, from the
+official host, so that its own record of where its bytes came from never depends on this server. A forged or broken
+list can then at most cost SafeStart some wasted checks; it cannot put content into SafeStart, and only SafeStart's
+own 404 or 410 withdraws a document there.
 
 This document is the contract for the feed, format `safestart-official-updates/1`, and describes the daily run that
 fills it. The code is `src/safestart_pipeline/official/` (`feed.py` writes the feed, `purge.py` deletes retired
@@ -90,8 +90,8 @@ after a sustained block. A refusal (401, 403, 429, 451, a challenge page) is rec
 | `public-key.txt` | the Ed25519 public key: base64 of its 32 raw bytes, nothing else | 5 minutes |
 
 **Signature.** Ed25519 over the exact bytes of the JSON file; the `.sig` file holds the 64-byte signature in base64,
-without a line break. SafeStart pins the public key in its own configuration, so it trusts the feed by the key, not by
-the server it fetched it from.
+without a line break. SafeStart's planned importer is to pin the public key in its own configuration, so that it trusts
+the feed by the key, not by the server it fetched it from.
 
 **Writing.** Each file is written as `<name>.partial` and moved into place in one step, under `state/official.lock`, in
 this order: each new manifest and its signature, then `public-key.txt` when it changed, then `latest.json` and
@@ -155,13 +155,13 @@ which it was found.
 `counts`: an object per source and `all`, each with `new`, `changed`, `gone`, `restored`, `moved`, `checked`,
 `rejected`, `hints` and `otherTypes`, every one present (zero when none).
 
-**Size.** At most 5,000 entries, 20,000 checked URLs and 2,000,000 bytes a manifest, under the 2 MiB SafeStart reads
-of one file. A window with more is split by time into several manifests, published together in sequence; one second's
-findings are never split. An OSHA entry is about 494 bytes (measured over the 41,118 held copies), so about 3,900
-entries fit a manifest: the byte limit splits a large window before the entry limit does. On a copy of the OSHA
-inventory, a backlog of 41,108 confirmed URLs became three manifests (20,000, 20,000 and 1,108 URLs; 1.44 MB at
-most, 72 bytes a URL) in 0.6 seconds. A day's run asks at most about 4,000 OSHA URLs in its 12-hour window, so its
-manifest is about 300 KB of checked URLs at most, plus its entries: one manifest a day.
+**Size.** At most 5,000 entries, 20,000 checked URLs and 2,000,000 bytes a manifest, under the 2 MiB per file that
+SafeStart's planned importer is to read. A window with more is split by time into several manifests, published together
+in sequence; one second's findings are never split. An OSHA entry is about 494 bytes (measured over the 41,118 held
+copies), so about 3,900 entries fit a manifest: the byte limit splits a large window before the entry limit does. On a
+copy of the OSHA inventory, a backlog of 41,108 confirmed URLs became three manifests (20,000, 20,000 and 1,108 URLs;
+1.44 MB at most, 72 bytes a URL) in 0.6 seconds. A day's run asks at most about 4,000 OSHA URLs in its 12-hour window,
+so its manifest is about 300 KB of checked URLs at most, plus its entries: one manifest a day.
 
 A heartbeat: the manifest of a day on which nothing changed lists no entries, only the URLs confirmed, the sources'
 statuses and the counts. A missed day is no gap: the next run's manifest has the next sequence and a window that starts
@@ -214,7 +214,7 @@ else; Compose passes it to the orchestrator alone. It is never logged, and a key
 error whose message does not quote it. Without the key a run still records everything it finds and writes the warning
 "OFFICIAL_FEED_SIGNING_KEY is not set" (the log, `ssp official status`, the dashboard) but publishes nothing, and its
 purge deletes nothing (below); the first signed manifest then covers everything since the first run. A new key signs
-from the next manifest on; since SafeStart pins the public key, a new key goes with a SafeStart change.
+from the next manifest on; since SafeStart's importer is to pin the public key, a new key will need a SafeStart change.
 
 ## Retention and the purge of originals
 
@@ -243,8 +243,8 @@ from the next manifest on; since SafeStart pins the public key, a new key goes w
 - `uv run ssp official status`: the same as JSON, with each crawl site's queue and re-check cycle.
 - Prefect Cloud: the flow's run, a task per source, the feed and the purge, each with its log; a failed source, feed or
   purge fails the run, and Prefect can notify.
-- SafeStart's import, built in SafeStart's own repository, is designed to warn its administrators when the feed is
-  more than 36 hours old, its signature or chain fails, or its decisions wait.
+- SafeStart's planned import, in SafeStart's own repository, is to warn its administrators when the feed is more than
+  36 hours old, its signature or chain fails, or its decisions wait.
 
 ## When something fails
 
@@ -257,7 +257,7 @@ from the next manifest on; since SafeStart pins the public key, a new key goes w
 | No signing key | `unsigned` in `ssp official status` and on the dashboard; the purge a dry run | install the key; the next manifest covers everything waiting |
 | An original cannot be deleted | the purge `error`, with what it deleted and what it could not; the run fails | look at the file's permissions; the next purge tries again |
 | A file in `exports/official/manifests/` is not a manifest | `error` on every publish, nothing more published | look at it; remove or restore the file by hand |
-| The feed is older than 36 hours | the dashboard's warning (and SafeStart's, by its design) | look at the orchestrator's official runs |
+| The feed is older than 36 hours | the dashboard's warning (and, once built, SafeStart's) | look at the orchestrator's official runs |
 | A crawl holds a site's lock | the site `skipped` (after 10 minutes), its purge skipped | nothing, or stop that crawl |
 | A site's inventory was not backfilled | the site `skipped` (`not backfilled`), with how many copies lack a content hash | backfill it where its originals are and place it on the server (docs/DEPLOYMENT.md) |
 
@@ -275,9 +275,9 @@ from the next manifest on; since SafeStart pins the public key, a new key goes w
 - OSHA serves 9 Federal Register PDFs cut off inside an incremental update (the first revision is whole, the
   signature that follows is not); they are refused as `unreadable` and never offered as editions.
 - A Federal Register hint names the CFR title, not the part: a Wage and Hour rule (29 CFR 500, 795, 825) is a hint as
-  much as an OSHA rule is. It only starts SafeStart's own eCFR check.
-- `checked` names URLs without a time: SafeStart knows that each was confirmed within the manifest's window, normally
-  a day.
-- A new server starts a new chain at sequence 1; SafeStart sees that as a broken chain and needs to be told.
-- A key change needs a SafeStart change, since SafeStart pins the public key.
+  much as an OSHA rule is. It is only to start SafeStart's own eCFR check.
+- `checked` names URLs without a time: a reader knows only that each was confirmed within the manifest's window,
+  normally a day.
+- A new server starts a new chain at sequence 1; SafeStart's importer is to treat that as a broken chain until told.
+- A key change will need a SafeStart change, since SafeStart's importer is to pin the public key.
 - The purge deletes only the server's copies; the bucket and the workstation keep everything.

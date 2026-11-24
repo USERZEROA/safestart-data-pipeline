@@ -24,10 +24,10 @@ once the backfilled inventory is in place (`ssp official backfill-hashes <site>`
 docs/DEPLOYMENT.md).
 
 The deadline is the first 04:30 UTC after the run's scheduled start (its start when run by hand), so the day's findings
-exist before SafeStart's 06:00 UTC import, but never later than 15 minutes before the next start of another flow (the
-daily 14:00 batch, the Sunday 15:00 model), which a flow run would otherwise hold up, since the flows run one at a time:
-a run started by hand at 05:00 stops at 13:45, one started on a Sunday at 14:30 at 14:45. A run that starts after its
-deadline asks nothing and records every source as skipped.
+exist before SafeStart's planned 06:00 UTC import, but never later than 15 minutes before the next start of another flow
+(the daily 14:00 batch, the Sunday 15:00 model), which a flow run would otherwise hold up, since the flows run one at a
+time: a run started by hand at 05:00 stops at 13:45, one started on a Sunday at 14:30 at 14:45. A run that starts after
+its deadline asks nothing and records every source as skipped.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ from .state import HOSTS, OfficialState
 
 SOURCES = ("msha", "ecfr", "federal_register", "arlweb", "osha")  # the order of a run
 CRAWLED = ("arlweb", "osha")
-FINISH_BY = clock_time(4, 30)  # UTC: before SafeStart's daily import at 06:00 UTC
+FINISH_BY = clock_time(4, 30)  # UTC: before SafeStart's planned daily import at 06:00 UTC
 # The other flows' starts (flows/__main__.py), as (weekday, Monday 0, or None for every day; time of day UTC).
 KEEP_CLEAR = ((None, clock_time(14, 0)), (6, clock_time(15, 0)))
 CLEAR_MARGIN = timedelta(minutes=15)

@@ -519,7 +519,7 @@ def official_run() -> Table:
 
 
 def official_feed() -> Table:
-    """The feed SafeStart reads, in one row: the newest manifest (exports/official/latest.json: its sequence, when it
+    """The feed for SafeStart, in one row: the newest manifest (exports/official/latest.json: its sequence, when it
     was generated and its age in hours, whether that is too old, its window, or why it cannot be read) and the latest
     attempt to publish one (its time, outcome and note)."""
     try:
