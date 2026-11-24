@@ -42,8 +42,9 @@ inspections, and the analysis tables below equal the warehouse's marts.
 
 ## The panel and its features
 
-One row per mine and calendar quarter `t` (`features.py`, a lazy Polars plan from the Parquet files). Every feature
-covers only the four quarters before `t`, the window `t-4` to `t-1`:
+One row per mine and calendar quarter `t` (`features.py`, a lazy Polars plan from the Parquet files). Every count and
+amount covers only the four quarters before `t`, the window `t-4` to `t-1`; the year and season are `t`'s own, known in
+advance, and the attributes are the mine's current values (Limits):
 
 | Feature | Meaning |
 |---|---|

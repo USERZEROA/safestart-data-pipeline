@@ -24,7 +24,7 @@ The tables give the counts of the newest report of each, all of 2026-11-23, then
 | waiting | 0 | 0 | 0 | 0 |
 | listed in the site's sitemap | 31,669 | 20,911 | no sitemap | |
 | not in the site's sitemap | 24,435 | 11,596 | 13,859 | 49,890 |
-| distinct files of the fetched URLs | 41,085 | 32,165 | 11,255 | 84,505 |
+| distinct files of the fetched URLs | 41,085 | 32,165 | 11,255 | 84,505 by site, 84,481 across the sites (below) |
 | files missing, of the wrong size, of the wrong SHA-256 | 0, 0, 0 | 0, 0, 0 | 0, 0, not recomputed | |
 | verdict | complete | complete | complete | |
 
@@ -81,5 +81,13 @@ and the earlier copies of 9 MSHA pages that changed after their download (9). Th
 bulk store records (two of each dataset zip, one of each definition file and eCFR title) and the open-data page as last
 read.
 
-These are the README's figures: 102,470 URLs recorded, 84,539 crawl files (10.9, 5.9 and 26.5 GB) and 63 bulk files (1.3
-GB), 84,602 files and 44.6 GB in all.
+The reports count distinct files per site, and each folder belongs to one site, so a file that two sites served is
+stored in both. The two MSHA hosts served 24 of the same files, kept in both `raw/msha` and `raw/arlweb` (207,863,042
+bytes); no file of `raw/osha` is in another folder. Across the three sites the fetched URLs therefore lead to 84,481
+distinct files (84,505 - 24) of 43,100,291,284 bytes (43.1 GB), the figure the dashboard's Sources page shows, since it
+counts each SHA-256 once whichever site served it. These come from a read-only listing, on 2026-11-24, of the folders
+and of each crawl store's fetched URLs, which also found the folder counts above and the reports' distinct files per
+site unchanged.
+
+These are the README's figures: 102,470 URLs recorded, 85,756 downloaded, which lead to 84,481 distinct files (43.1 GB),
+84,539 crawl files (10.9, 5.9 and 26.5 GB) and 63 bulk files (1.3 GB), 84,602 files and 44.6 GB in all.

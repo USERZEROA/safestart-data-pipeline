@@ -2,12 +2,8 @@
 
 [![CI](https://github.com/USERZEROA/safestart-data-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/USERZEROA/safestart-data-pipeline/actions/workflows/ci.yml)
 
-<table>
-<tr>
-<td width="44%" valign="top">
-<a href="https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@dbbe7820da447be395bf9fc096c7f91e5a6f76c3/docs/SafeStart-data-pipeline-video.mp4"><img src="docs/images/video-thumbnail.png" alt="Video walkthrough, 8 min 6 s: click to watch" width="100%"></a>
-</td>
-<td valign="top">
+<a href="https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@dbbe7820da447be395bf9fc096c7f91e5a6f76c3/docs/SafeStart-data-pipeline-video.mp4"><img
+src="docs/images/video-thumbnail.png" alt="Video walkthrough, 8 min 6 s: click to watch" width="480"></a>
 
 **Video walkthrough** (8 min 6 s): it opens on a crew's pre-shift check in SafeStart, then follows the
 pipeline's main flow: a real Prefect run, the lake, the warehouse, the model, the live stream and a mine's brief.
@@ -18,10 +14,6 @@ or [download the file](https://github.com/USERZEROA/safestart-data-pipeline/raw/
 implementation. [Open the PDF](docs/SafeStart-data-pipeline-documentation.pdf).
 
 **Live deployment**: the dashboard at <https://35.254.13.119>, on Google Cloud and fed by the Kafka stream.
-
-</td>
-</tr>
-</table>
 
 ## Executive summary
 
@@ -37,15 +29,17 @@ appear, and turns it into what a crew and an analyst need before a shift: which 
 what its recent accidents were, how its record compares, and which mines are most likely to have a serious accident
 next quarter.
 
-It runs end to end on one small host: polite crawlers and bulk downloads feed a content-addressed raw archive, a
-typed Parquet lake (Polars), a DuckDB warehouse with marts and documented SQL questions, a Kafka stream into PostgreSQL
-with an anomaly forecaster, an accident-risk model, a Streamlit dashboard and flat exports for SafeStart, orchestrated
-by Prefect, packaged with Docker Compose, tested in GitHub Actions and deployed on Google Cloud.
+Everything but the crawls runs on one small host, a 4 GB e2-medium on Google Cloud: bulk downloads feed a
+content-addressed raw archive, a typed Parquet lake (Polars), a DuckDB warehouse with marts and documented SQL
+questions, a Kafka stream into PostgreSQL with an anomaly forecaster, an accident-risk model, a Streamlit dashboard and
+flat exports for SafeStart, orchestrated by Prefect and packaged with Docker Compose; GitHub Actions tests every push.
+The polite crawlers run for days on a workstation, which keeps their 43 GB of crawled files; the server receives only
+their catalogs (in `state/`), through a private Cloud Storage bucket.
 
 | Part | What it is (as of the 2026-11-23 build) |
 |---|---|
 | Sources | MSHA and OSHA websites, MSHA's legacy host, eCFR titles 29 and 30, MSHA's 20 open enforcement datasets, and the Federal Register API (live) |
-| Raw archive | 84,602 content-addressed files, 44.6 GB, every version kept |
+| Raw archive | 84,602 content-addressed files, 44.6 GB on the workstation, every version kept |
 | Lake | 20 datasets, every downloaded version as typed Parquet (40 versions), 18,057,074 current rows |
 | Warehouse | DuckDB: 8 model tables (plus 4 build-check tables), 5 marts, 10 named SQL questions; 3.1 million violations, 1.2 million inspections, 276,013 accidents |
 | Stream | Kafka (2 topics) into PostgreSQL: a replay of 374,400 events from 2024 on, plus live watchers |
@@ -58,13 +52,13 @@ by Prefect, packaged with Docker Compose, tested in GitHub Actions and deployed 
 from, without local paths or ids: a real Prefect Cloud batch run, the newest completeness reports of the crawls and
 the bulk downloads, a count of the raw archive and the 20 lake manifests.
 
+## Contents
+
 **Documentation.** This README is the project documentation: the summary above, then the architecture, the key
 components and their implementation; the PDF above is the same document, printed. The files in [docs/](docs/) are
 reference appendices with the full detail of each part: [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md),
 [QUERIES](docs/QUERIES.md), [ML](docs/ML.md), [SAFESTART_EXPORTS](docs/SAFESTART_EXPORTS.md) and
 [DEPLOYMENT](docs/DEPLOYMENT.md).
-
-## Contents
 
 - **Overview:** [Team](#team) · [Architecture](#architecture) · [Quick start](#quick-start)
 - **Key components and their implementation:** [Sources and ingestion](#sources-and-ingestion) ·
@@ -128,15 +122,19 @@ contract, the settings and the stores.
 Requirements: Python 3.12 or later with [uv](https://docs.astral.sh/uv/), and Docker for the stack.
 
 ```bash
-uv sync --all-extras          # the environment, from uv.lock
-uv run pytest                 # the tests (TEST_DATABASE_URL=postgresql://... adds the PostgreSQL ones)
+# the environment, from uv.lock
+uv sync --all-extras
+# the tests (TEST_DATABASE_URL=postgresql://... adds the PostgreSQL ones)
+uv run pytest
 ```
 
 Run the whole system (Kafka, PostgreSQL, the consumers, the replay, the watchers and the dashboard) with Docker Compose:
 
 ```bash
-python scripts/start.py --data-root <folder with lake/ and warehouse/>   # writes .env, builds, starts, waits
-uv run --extra stream python scripts/smoke_test.py                      # events through Kafka into PostgreSQL
+# writes .env, builds, starts, waits
+python scripts/start.py --data-root <folder with lake/ and warehouse/>
+# events through Kafka into PostgreSQL
+uv run --extra stream python scripts/smoke_test.py
 ```
 
 The dashboard then runs on your own machine at `http://localhost:8501` (`DASHBOARD_HOST_PORT` in `.env` moves it;
@@ -148,19 +146,27 @@ warehouse), try it on a small synthetic one, the root CI runs the whole stack on
 ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#without-the-data-the-sample-data-root)):
 
 ```bash
-uv run python -m safestart_pipeline.sample sample-data   # about 300 KB: two versions of five datasets, eCFR, a catalog
-sudo chown -R 10001:10001 sample-data                     # Linux only: the orchestrator writes as uid 10001
+# about 300 KB: two versions of five datasets, eCFR, a catalog
+uv run python -m safestart_pipeline.sample sample-data
+# Linux only: the orchestrator writes as uid 10001
+sudo chown -R 10001:10001 sample-data
 python scripts/start.py --data-root sample-data --with-orchestrator
-docker compose exec orchestrator python -m safestart_pipeline.flows run batch --no-download   # warehouse and exports
+# warehouse and exports
+docker compose exec orchestrator \
+  python -m safestart_pipeline.flows run batch --no-download
 ```
 
 Build the data yourself (each step is resumable and polite to the sources):
 
 ```bash
-uv run ssp inventory msha && uv run ssp crawl msha     # a website (also osha, then arlweb); state in <data root>/state
-uv run ssp verify msha --live                          # is the copy complete and current?
-uv run ssp pipeline --model    # bulk downloads, lake, warehouse, SafeStart exports, then the model (Prefect flows)
-uv run ssp warehouse query top_cited_sections          # one of the documented SQL questions
+# a website (also osha, then arlweb); state in <data root>/state
+uv run ssp inventory msha && uv run ssp crawl msha
+# is the copy complete and current?
+uv run ssp verify msha --live
+# bulk downloads, lake, warehouse, SafeStart exports, then the model (Prefect flows)
+uv run ssp pipeline --model
+# one of the documented SQL questions
+uv run ssp warehouse query top_cited_sections
 ```
 
 The data root defaults to `./data`; `SAFESTART_DATA_ROOT` or `data_root` in `pipeline.local.toml` moves it.
@@ -170,16 +176,19 @@ The data root defaults to `./data`; `SAFESTART_DATA_ROOT` or `data_root` in `pip
 
 | Source | How it is acquired | Inventory |
 |---|---|---|
-| MSHA website (`www.msha.gov`) | crawl | sitemaps, then links |
-| MSHA legacy host (`arlweb.msha.gov`) | crawl | the links the MSHA crawl recorded to it (the host has no home page, sitemap or directory listings) |
-| OSHA website (`www.osha.gov`) | crawl | sitemaps, then links |
+| MSHA website | crawl | sitemaps, then links |
+| MSHA legacy host | crawl | the links the MSHA crawl recorded to it (the host has no home page, sitemap or directory listings) |
+| OSHA website | crawl | sitemaps, then links |
 | eCFR titles 29 and 30 | bulk download of the govinfo XML (eCFR's own full-text API is closed to robots) | fixed list |
 | MSHA open enforcement datasets | bulk download, every version kept | the open-data page's links |
 | Federal Register | its public API, MSHA and OSHA documents (live watcher) | newest first |
 
-The crawls recorded 56,104 OSHA, 32,507 MSHA and 13,859 legacy-host URLs and downloaded 41,157, 32,205 and 12,394
-of them; the raw archive holds their 84,539 distinct files (10.9, 5.9 and 26.5 GB) and the 63 bulk files (1.3 GB),
-44.6 GB in all. Every request follows the host's rules:
+The crawls of `www.osha.gov`, `www.msha.gov` and MSHA's legacy host `arlweb.msha.gov` recorded 56,104, 32,507 and
+13,859 URLs and downloaded 41,157, 32,205 and 12,394 of them: 85,756 URLs that lead to 84,481 distinct files (43.1 GB,
+as the dashboard's Sources page counts them). The raw archive keeps a folder per site, so it holds 84,539 crawl files
+(10.9, 5.9 and 26.5 GB): those files, a second copy of the 24 files that both MSHA hosts served, and 34 sitemaps and
+earlier copies of changed pages; with the 63 bulk files (1.3 GB), 44.6 GB in all. Every request follows the host's
+rules:
 
 - `robots.txt` (RFC 9309), its `Allow`/`Disallow` patterns and its `Crawl-delay`: OSHA asks for 10 seconds between
   requests and excludes every URL with a query string; MSHA sets no delay, so the crawler waits 1 second. Redirect hops
@@ -210,13 +219,17 @@ writes its report to `<data root>/reports/`.
 
 ## Storage
 
-| Store | Holds | Why this store |
-|---|---|---|
-| Raw archive (`raw/<site>/objects/ab/cd/<sha256>`) | every downloaded file, named by its SHA-256 | a file reached under many URLs is stored once; a file's name proves its content |
-| Crawl and bulk state (SQLite, `state/`) | one row per URL or bulk file and version, with its outcome | resumable runs, provenance, completeness checks |
-| Lake (Parquet, `lake/msha_ogd/`) | every version of the 20 MSHA datasets, typed, one file per source version | columnar, compressed, versioned history for Polars and DuckDB |
-| Warehouse (DuckDB, `warehouse/safestart.duckdb`) | the analytical model: 8 tables and 5 marts | fast SQL scans of millions of rows without a server on a 4 GB host |
-| Stream store (PostgreSQL, schema `stream`) | events, exactly-once counts, forecasts, source checks ([its ERD](docs/ERD.md#stream-store-postgresql)) | concurrent writers (the consumers and the watchers) and transactional upserts |
+| Store | Holds, and why this store |
+|---|---|
+| Raw archive | every downloaded file, named by its SHA-256: a file reached under many URLs of one site is stored once in that site's folder, and a file's name proves its content |
+| Crawl and bulk state (SQLite) | one row per URL or bulk file and version, with its outcome: resumable runs, provenance, completeness checks |
+| Lake (Parquet) | every version of the 20 MSHA datasets, typed, one file per source version: columnar, compressed, versioned history for Polars and DuckDB |
+| Warehouse (DuckDB) | the analytical model, 8 tables and 5 marts: fast SQL scans of millions of rows without a server on a 4 GB host |
+| Stream store (PostgreSQL) | events, exactly-once counts, forecasts and source checks ([its ERD](docs/ERD.md#stream-store-postgresql)): concurrent writers (the consumers and the watchers) and transactional upserts |
+
+Under the data root the raw archive stores each file as `raw/<folder>/objects/ab/cd/<sha256>`, with a folder per
+website and `raw/bulk/` for the bulk downloads, and `state/` holds a SQLite file per crawl and one for the bulk
+downloads; the stream store is the PostgreSQL schema `stream`.
 
 **Lake.** `ssp lake` turns every downloaded version of each MSHA dataset into typed Parquet under
 `<data root>/lake/msha_ogd/<dataset>/`, one file per source version named after the zip's SHA-256, so a rebuild of an
@@ -235,19 +248,23 @@ compared; the newest is the dataset's `current` one in its `manifest.json`.
   definition file or a type override changes.
 
 **Warehouse.** `ssp warehouse build` loads the current lake versions, the eCFR text of titles 29 and 30 and the three
-crawl catalogs into `mine`, `inspection`, `violation`, `accident`, `production_quarter`, `cfr_section`, `document` and
-`dataset_version`, with primary keys, and builds the marts as views. It builds into a new file and swaps it in, so
-readers never see a half-built warehouse, and it records what it found in `build_check` (repeated keys, rows without a
-key, dangling references, citations of sections no longer in Title 30) rather than hiding it. The ERD and every table
-are in [docs/ERD.md](docs/ERD.md).
+crawl catalogs into one DuckDB file, `<data root>/warehouse/safestart.duckdb`: the tables `mine`, `inspection`,
+`violation`, `accident`, `production_quarter`, `cfr_section`, `document` and `dataset_version`, with primary keys, and
+the marts as views. It builds into a new file and swaps it in, so readers never see a half-built warehouse, and it
+records what it found in `build_check` (repeated keys, rows without a key, dangling references, citations of sections
+no longer in Title 30) rather than hiding it.
+
+The diagrams show the eight tables with their keys and the columns this README relies on, in three parts so each stays
+legible: a mine's enforcement record and the regulations it cites, a mine's accidents and hours, and the two tables
+that link to no other, `document` (the crawled corpus) and `dataset_version` (the lake versions the warehouse was built
+from). The build checks every reference it does not declare; every column, the marts and the build's checks are in
+[docs/ERD.md](docs/ERD.md).
 
 ```mermaid
 erDiagram
     mine ||--o{ inspection : "is inspected in"
     mine ||--o{ violation : "is cited in"
     inspection |o--o{ violation : "issues"
-    mine ||--o{ accident : "reports"
-    mine ||--o{ production_quarter : "reports hours in"
     cfr_section |o--o{ violation : "is the title 30 text of"
     mine {
         VARCHAR mine_id PK
@@ -268,6 +285,20 @@ erDiagram
         BOOLEAN sig_sub
         DOUBLE proposed_penalty
     }
+    cfr_section {
+        INTEGER title PK
+        VARCHAR section PK
+        VARCHAR heading
+    }
+```
+
+```mermaid
+erDiagram
+    mine ||--o{ accident : "reports"
+    mine ||--o{ production_quarter : "reports hours in"
+    mine {
+        VARCHAR mine_id PK
+    }
     accident {
         VARCHAR document_no PK
         VARCHAR mine_id FK
@@ -275,18 +306,16 @@ erDiagram
         BOOLEAN serious
     }
     production_quarter {
-        VARCHAR mine_id PK
+        VARCHAR mine_id PK, FK
         INTEGER cal_yr PK
         INTEGER cal_qtr PK
         VARCHAR subunit_cd PK
         DOUBLE hours_worked
     }
-    cfr_section {
-        INTEGER title PK
-        VARCHAR section PK
-        VARCHAR heading
-        DATE amended_on
-    }
+```
+
+```mermaid
+erDiagram
     document {
         VARCHAR url PK
         VARCHAR site
@@ -300,10 +329,6 @@ erDiagram
         BOOLEAN is_current
     }
 ```
-
-The core tables and their keys (the build checks every reference it does not declare; every column, the marts and the
-build's checks are in [docs/ERD.md](docs/ERD.md)). `document` and `dataset_version` describe the crawled corpus and
-the lake versions the warehouse was built from.
 
 **Shared definitions.** One module, [`definitions.py`](src/safestart_pipeline/definitions.py), states the rules every
 component counts by: a serious accident is degree of injury 01 to 05 by its code, an injury 01 to 06, a violation's
@@ -333,11 +358,14 @@ The lake build is a Polars pipeline; the analysis and the model read it with Pol
 
 - `ssp ml analyze` writes three tables from the lake: S&S share by year and commodity, the injury rate per 200,000
   hours, and the most cited sections.
-- `ssp ml train` builds a mine-quarter panel (1,434,710 rows, 2001 to 2026) whose features come only from the four
-  quarters before each quarter (inspections, violations, S&S violations, penalties, distinct cited sections, accidents,
-  serious accidents, hours worked, employees, commodity, mine type, state, district) and whose target is a serious
-  accident in the quarter itself. It splits by time (train to 2021, validate 2022, test 2023 and 2024), compares a
-  logistic-regression baseline with histogram gradient boosting, and scores every mine for the open quarter.
+- `ssp ml train` builds a mine-quarter panel (1,434,710 rows, 2001 to 2026) whose counts and amounts come only from
+  the four quarters before each quarter (inspections, violations, S&S violations, penalties, distinct cited sections,
+  accidents, serious accidents, hours worked, employees), plus the quarter's own year and season, known in advance, and
+  the mine's attributes as MSHA lists them today (coal/metal flag, commodity, mine type, state, district), and whose
+  target is a serious accident in the quarter itself. It splits by time (train to 2021, validate 2022, test 2023 and
+  2024), compares a logistic-regression baseline with histogram gradient boosting, and scores the open quarter (2026Q4)
+  for every mine that reported hours worked in at least one of the four quarters before it, 12,722 mines (a mine
+  without hours in those quarters, new or reopened, gets no score).
 
 On the test quarters the selected gradient boosting reaches ROC AUC 0.909 and PR AUC 0.478; of the 5% of mine-quarters
 it ranks riskiest, 43% had a serious accident, ten times the 4.2% base rate. [docs/ML.md](docs/ML.md) has the leakage
@@ -389,16 +417,15 @@ phone:
 - **Live**: counters by kind and the newest events, refreshed every five seconds;
 - **Enforcement**: daily counts by kind and district, observed against forecast, with the flagged anomalies;
 - **Standards**: the most cited sections with their text, and the S&S trend;
-- **Mine brief**: SafeStart's view of one mine (search by name or MSHA ID): its 12-month record against the national
-  injury rate, the standards cited most there with their text, and its recent accidents;
+- **Mine brief**: one mine's brief for a crew before a shift (search by name or MSHA ID): its 12-month record against
+  the national injury rate, the standards cited most there with their text, and its recent accidents;
 - **Sources**: every dataset's versions, the downloaded corpus by site and kind, and the freshness of each live check.
 
 The mine brief of one of the largest underground coal mines, as the live dashboard serves it (desktop and phone):
 
-<table><tr>
-<td><img src="docs/images/dashboard-mine-brief.png" alt="Mine brief of Marshall County Mine: its 12-month record and the standards cited most there, with their text" width="520"></td>
-<td><img src="docs/images/dashboard-mine-brief-phone.png" alt="The same mine brief at phone width" width="150"></td>
-</tr></table>
+<img src="docs/images/dashboard-mine-brief.png" width="520"
+alt="Mine brief of Marshall County Mine: its 12-month record and the standards cited most there, with their text">
+<img src="docs/images/dashboard-mine-brief-phone.png" width="240" alt="The same mine brief at phone width">
 
 The Enforcement page while the replay streams 2024: one district's violations each day against the one-step-ahead
 forecast, which has learned the weekly rhythm of inspections (days it flags, when the window has any, are marked in
@@ -492,8 +519,8 @@ escapes what it displays.
 
 ## How it feeds SafeStart
 
-SafeStart is a separate application and stays unchanged: the pipeline hands it two flat Parquet files and a manifest
-(`ssp warehouse export`, [docs/SAFESTART_EXPORTS.md](docs/SAFESTART_EXPORTS.md)):
+SafeStart is a separate application and stays unchanged (it does not import these files yet): the pipeline hands it
+two flat Parquet files and a manifest (`ssp warehouse export`, [docs/SAFESTART_EXPORTS.md](docs/SAFESTART_EXPORTS.md)):
 
 - `mine_profiles.parquet` (92,129 mines): each mine's 12-month record and its most cited sections with their headings,
   so a crew's pre-shift assessment can open with the hazards inspectors find most at that mine;
@@ -521,13 +548,15 @@ SafeStart is a separate application and stays unchanged: the pipeline hands it t
 ## Repository layout
 
 ```
-src/safestart_pipeline/   crawl, acquire, lake, warehouse, stream, watch, ml, dashboard, flows,
-                          definitions, sample, cli
+src/safestart_pipeline/   crawl, acquire, lake, warehouse, stream, watch, ml,
+                          dashboard, flows, definitions, sample, cli
 tests/                    pytest suite (fixtures only; never the real data root)
-docs/                     ARCHITECTURE, ERD, QUERIES, ML, SAFESTART_EXPORTS, DEPLOYMENT; ml/ (the published
-                          model metrics), evidence/ (the records behind the summary figures)
+docs/                     ARCHITECTURE, ERD, QUERIES, ML, SAFESTART_EXPORTS,
+                          DEPLOYMENT; ml/ (the published model metrics),
+                          evidence/ (the records behind the summary figures)
 deploy/                   Caddyfile and the Google Cloud scripts
-scripts/                  start.py (Compose launcher), smoke_test.py, crawl start/stop for Windows
+scripts/                  start.py (Compose launcher), smoke_test.py,
+                          crawl start/stop for Windows
 ```
 
 ## License
