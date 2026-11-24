@@ -245,10 +245,26 @@ from the next manifest on; since SafeStart's importer is to pin the public key, 
   `raw/<site>/` to the server, so nothing purged comes back; on the server most originals were never there (it holds
   only what its own runs downloaded), and the purge counts those as not on this host.
 
+## How the pipeline reads its own feed
+
+The hourly `feed-official` watcher reads the published folder locally. It verifies each new numbered manifest with
+the published Ed25519 key and checks its sequence and the SHA-256 link to the previous file when present. Each new,
+changed, gone, restored or moved entry becomes a live `page_change` on `safety.sources`, dated by its observation.
+The watcher records its sequence after flushing the events. A failed check stops at the affected manifest and retries
+on the next check. Missing retained history is reported. A rebuilt feed whose sequence drops below the saved mark is
+read again with the same event IDs. If a sitemap and a manifest both discover a URL, the watcher announces it once.
+
+Confirmed URLs, refused files, eCFR or Federal Register hints, and other file types are counted in the check note.
+A quiet manifest advances the feed sequence and can leave the Page changes total unchanged.
+
 ## Where to see it
 
-- The dashboard's Sources page, under "Official files": when the latest run started and ended, what it found (new,
-  changed, gone, restored, moved, refused files, unchanged), each source's status and note, the hosts that refused,
+- Live shows the 16:30–04:30 UTC run window, recorded requests and changes, the feed sequence, its age and the
+  watcher's last and estimated next checks. The elapsed-window meter measures time. The heartbeat records publish
+  attempts, including quiet publishes and failures.
+- Sources opens with the official files: when the latest run started and ended, what it found (new,
+  changed, gone, restored, moved and refused files), the newest changed URLs, the active crawl's recorded 304s and
+  the confirmed-unchanged total when a source ends. It includes each source's status and note, the hosts that refused,
   the feed's newest manifest and its age, a warning when that manifest is more than 36 hours old or the latest publish
   failed or had no key, and the latest purge.
 - `uv run ssp official status`: the same as JSON, with each crawl site's queue and re-check cycle.

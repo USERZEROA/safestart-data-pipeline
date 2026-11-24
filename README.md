@@ -411,7 +411,8 @@ changes, Federal Register documents). The `event_id` is the source's own key, so
   and OSHA's sitemaps against the crawl inventories for added, changed and dropped pages, and ask the Federal Register
   API for new MSHA and OSHA documents, each on its own schedule and under the same robots.txt rules as the crawls (and
   never while that site's crawl is writing). The replay and the version watcher share one record-to-event mapping
-  (`stream/records.py`).
+  (`stream/records.py`). An hourly check (`feed-official`) reads signed official-file manifests and publishes their
+  new, changed, gone, restored and moved entries. A page discovered by both the feed and a sitemap is announced once.
 - The storage consumer stores each event once in PostgreSQL; the analytics consumer keeps daily counts per kind and
   district exactly once (a ledger of counted events), and forecasts each day one step ahead with an exponentially
   weighted average of the same weekday over 26 weeks, flagging days more than three scales above or below it (the
@@ -482,19 +483,23 @@ and counts verified. Its limits:
 
 ## Dashboard
 
-`src/safestart_pipeline/dashboard/` is a Streamlit app over the warehouse (read-only) and the stream store, usable on a
-phone:
+The Streamlit dashboard reads the warehouse, PostgreSQL and the official-file records on this host. Its dark theme
+uses cyan for selection and keyboard focus.
 
-- **Live**: counters by kind and the newest events, refreshed every five seconds;
+- **Live** shows seven totals grouped by Kafka topic on one desktop row. On a phone the four enforcement totals form
+  two pairs and the three source totals share a row. Select All, Replay or Live for stored totals and 24-hour arrivals.
+  Bars show the last 14 UTC source days across both modes. During the 16:30–04:30 UTC official-file window, the page
+  shows recorded requests and changes, the feed sequence and age, and the last and estimated next watcher checks.
+  Activity charts separate replay and live arrivals by hour, day or minute. The newest events retain their dates, and
+  the heartbeat shows 48 hours of checks, runs and publishes alongside the next 12 hours of scheduled activity.
 - **Enforcement**: daily counts by kind and district, observed against forecast, with the flagged anomalies;
 - **Standards**: the most cited sections with their text, and the S&S trend;
 - **Mine brief**: one mine's brief for a crew before a shift (search by name or MSHA ID): its 12-month record against
   the national injury rate, the standards cited most there with their text, and its recent accidents;
-- **Sources**: every dataset's versions, the downloaded corpus by site and kind, the latest daily update of the
-  official files (what it found, the hosts that refused it, the feed's newest manifest and its age), and the freshness
-  of each live check.
+- **Sources** opens with the official run, its recent changes, feed history and publish warnings. The check table,
+  dataset versions and downloaded corpus follow.
 
-The mine brief of one of the largest underground coal mines, as the live dashboard serves it (desktop and phone):
+The screenshots below show the earlier dashboard. The mine brief is shown at desktop and phone widths.
 
 <img src="docs/images/dashboard-mine-brief.png" width="520"
 alt="Mine brief of Marshall County Mine: its 12-month record and the standards cited most there, with their text">
@@ -617,7 +622,9 @@ without taking any file from the pipeline.
   low until the next version arrives.
 - The model ranks mines by recorded history; it knows nothing a dataset does not record (conditions, staffing) and is a
   screening aid, not a prediction of any one accident.
-- OSHA's sitemap gives no modification dates, so the OSHA watcher finds added and dropped pages only.
+- OSHA's sitemap gives no modification dates, so its sitemap check detects additions and drops. The hourly
+  `feed-official` check can announce content changes after the daily run publishes a signed manifest. A quiet run
+  can advance the feed sequence with zero page changes. Stored totals grow only when a distinct event arrives.
 - From the cloud VM, MSHA's site answers the request for its sitemap (`https://www.msha.gov/sitemap.xml`) with an
   HTML page instead of the sitemap, while a workstation gets the XML, so the hosted watcher records
   `sitemaps-msha` as refused and finds no MSHA page changes there; a refusal is never worked around.

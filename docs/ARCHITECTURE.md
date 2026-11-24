@@ -17,9 +17,9 @@ services, the stores, the orchestration, the entry points, the deployment and th
 | `lake/` | Typed Parquet of every version of MSHA's 20 datasets (`ssp lake`) |
 | `warehouse/` | DuckDB warehouse built from the lake, the eCFR XML and the crawl catalogs; marts, documented queries, exports |
 | `stream/` | The event contract (`events.py`), the record-to-event mapping (`records.py`), PostgreSQL schema (`schema.sql`), Kafka clients, replay producer, storage and analytics consumers |
-| `watch/` | Live watchers: new dataset versions (record diffs), website changes (sitemaps), Federal Register documents |
+| `watch/` | Live checks of lake versions, sitemaps, signed official manifests and the Federal Register |
 | `ml/` | Features from the lake with Polars and a mine accident-risk model (`docs/ML.md`) |
-| `dashboard/` | Streamlit app over the warehouse and the streaming store |
+| `dashboard/` | Streamlit app over DuckDB, PostgreSQL, official run records and the local feed |
 | `flows/` | Prefect flows that run and schedule the batch, the model and the official files (`python -m safestart_pipeline.flows`) |
 | `official/` | The daily update of the official files (`run.py`, `daily.py`, `sources.py`), its record (`state.py`), the signed feed for SafeStart (`feed.py`, docs/OFFICIAL_FILES.md) and the purge of retired originals (`purge.py`) |
 | `verify.py` | Completeness reports of the crawls and the bulk downloads (`ssp verify`) |
@@ -91,15 +91,17 @@ record becomes the same event whichever path finds it.
 | `accident` | `document_no` | `degree_injury_cd`, `degree_injury`, `serious` (the shared rule), `classification`, `accident_type`, `no_injuries`, `days_lost` |
 | `order_107a` | the order's `violation_no` | `termination_date` |
 | `dataset_version` | `<dataset>:<version>`, the version being the lake file's stem (the first 16 hex digits of the source zip's SHA-256) | `dataset`, `version`, `previous_version`, `rows`, `new_rows` |
-| `page_change` | `<url>\|<change>\|<lastmod>` (lastmod empty when the sitemap gives none) | `site`, `url`, `lastmod`, `change` (`added`, `changed`, `dropped`) |
+| `page_change` (sitemap) | `<url>\|<change>\|<lastmod>` | `site`, `url`, `lastmod`, `change` |
+| `page_change` (feed) | `official\|<url>\|<change>\|<content hash>\|<observedAt>` | Feed entry details (below) |
 | `regulation` | Federal Register document number | `agency`, `document_number`, `type`, `html_url`, `publication_date` |
 
-A page_change key holds the change and the lastmod, so a change is reported once while a later edit of the same page is
-reported again; a page the crawl never recorded, or first recorded after the watcher's previous read (the daily
-update of the official files records new sitemap URLs too), is `added` once, and a later lastmod of it is `changed`. An
-event is serious, for the counts, when it is a violation with `sig_sub` true or an accident with `serious` true. A
-replayed event's `source` holds its dataset, the lake version it was read from and `through`, the last source day of
-its replay pass, which the analytics consumer's clock reads.
+Feed details carry the site, URL, change, hashes, type, HTTP status, bytes, redirect target, manifest sequence and
+origin. A sitemap event reports an added, changed or dropped listing. Its lastmod is empty when none was supplied.
+The change and lastmod distinguish later edits of the same page. A page the crawl never recorded, or first recorded
+after the watcher's previous read, is `added` once. This accounts for new sitemap URLs recorded by the daily update.
+A later lastmod is `changed`. An event counts as serious when it is a violation with `sig_sub` true or an accident
+with `serious` true. A replayed event's `source` holds its dataset, the lake version it was read from and `through`,
+the last source day of its replay pass, which the analytics consumer's clock reads.
 
 ## Streaming
 
@@ -137,10 +139,10 @@ its replay pass, which the analytics consumer's clock reads.
   `scripts/smoke_test.py` dates its synthetic events on the stream's first day, so they never move the clock.
 - **Watchers** (`python -m safestart_pipeline.watch once|loop`): new dataset versions every 6 hours (record diffs of
   consecutive lake versions), MSHA's sitemaps every 6 hours and OSHA's once a day (against the crawl inventories, not
-  while that site's crawl runs), the Federal Register every hour. A version in which too many records look new (its
-  keys or format changed) is refused: an error in that check, nothing announced, and the baseline of the next
-  version. Where the watcher can write the data root's state folder it holds the crawl's lock while it reads a site's
-  sitemaps; where it cannot (the containers, whose file locks do not reach a crawl on the host either), it skips a
+  while that site's crawl runs), and hourly checks of the Federal Register and local official feed. A version in which
+  too many records look new (its keys or format changed) is refused: an error in that check, nothing announced, and the
+  baseline of the next version. Where the watcher can write the data root's state folder, it holds the crawl's lock
+  while it reads a site's sitemaps. Otherwise (including containers with a read-only mount), the watcher skips a
   site while that crawl's inventory, its `-wal` or a download in progress (`raw/<site>/objects/tmp`) changed in the
   last 15 minutes. A skipped check is due again an hour later, so the daily update of the official files, which writes
   OSHA's inventory from 16:30 to 04:30 UTC, never keeps OSHA's check from running. Every request obeys robots.txt and
@@ -149,6 +151,9 @@ its replay pass, which the analytics consumer's clock reads.
   versions compared (refused ones marked) and when each source was checked; the version check spills DuckDB's
   overflow into a folder beside it. They log to standard error and to `SAFESTART_WATCH_LOG` unless it is `-`. Every
   check is recorded in `stream.source_checks`.
+  The feed check verifies each numbered manifest's Ed25519 signature, sequence and link to the previous manifest
+  when it is available. It advances its sequence mark after publishing the entries. A sitemap addition and a feed
+  discovery of the same URL share one announcement. A sitemap drop and an observed HTTP disappearance remain distinct.
 
 ## Stores
 
@@ -164,6 +169,12 @@ its replay pass, which the analytics consumer's clock reads.
   `null_key_row`. The ERD is in `docs/ERD.md`.
   The dashboard opens it read-only, with a memory limit and a spill folder of its own: DuckDB's default spill folder
   sits beside the database file, which the containers mount read-only.
+
+The dashboard reads stored totals and arrival times from `stream.events`, and its 14-day tile trends from
+`stream.daily_counts` across both modes. Live compares each viewer's successive totals per mode. It separates replay
+and live activity on independent linear scales and shows the last 48 hours of watcher checks, official runs, publish
+attempts and the latest warehouse build. Future markers use the shared UTC schedules. Sources puts the run's recorded
+progress, feed history and latest changed URLs ahead of the inventories.
 
 ## Orchestration
 

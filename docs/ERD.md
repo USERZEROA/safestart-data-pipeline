@@ -405,8 +405,9 @@ what varies by kind: `details`, the kind's own values (JSON scalars, listed per 
 `through`, the last source day of its pass). `kind` is an enforcement kind (`inspection`, `violation`, `accident`,
 `order_107a`) or a source kind (`dataset_version`, `page_change`, `regulation`); `mode` is `replay` (history sent in
 source-time order) or `live` (found by a watcher). `occurred_at` is when the record happened at the source (midnight
-UTC for a record that carries only a date; the check's start for a dropped page or a page change without a lastmod),
-`emitted_at` when the replay or a watcher made the event, and `received_at` when the storage consumer stored it.
+UTC for a record that carries only a date; the feed observation time for a manifest entry, or the check's start for a
+sitemap drop or missing lastmod), `emitted_at` when the replay or a watcher made the event, and `received_at` when
+the storage consumer stored it.
 `mine_id`, `district`, `state` and `coal_metal` are null for an event without a mine, every source event among them;
 an enforcement event has its record's `mine_id` and takes the other three from that mine in the lake's current mines
 dataset (`stream/records.py` gives the fallbacks for a mine the dataset lacks). The table is indexed by kind and source
@@ -444,9 +445,10 @@ the enforcement kinds' forecasts and anomalies.
 
 One row per check of a live source by a watcher (`python -m safestart_pipeline.watch`), stored when PostgreSQL is
 reachable; the watcher's log keeps every check either way. `source` is the check's name: `versions` and
-`sitemaps-msha` every 6 hours, `sitemaps-osha` once a day and `federal-register` every hour. `checked_at` is when the
-check started; `status` is `ok` (new events found), `unchanged`, `refused` (the host would not serve the watcher, as
-when it answers a sitemap's URL with an HTML page; the refusal is recorded, never worked around), `error` or `skipped`;
+`sitemaps-msha` every 6 hours, `sitemaps-osha` once a day, and `federal-register` and `feed-official` hourly.
+`checked_at` records the start time. Statuses include `ok` (new events found), `unchanged`, `error`, `skipped` and
+`refused` (for example, the host returned HTML for a sitemap). The watcher records refusals and respects them.
 `found` is the number of new events it published; `note` says what the check found, or why it was refused, failed or
 was skipped (such as OSHA's sitemaps read less than a day before, or a site's crawl running). The dashboard's
-Sources page shows each source's newest check and the last day's checks, errors and events found.
+Sources page shows each source's newest check, its estimated next check, and the last day's checks, errors and
+events found. Live uses these rows for the check history in the 48-hour heartbeat.

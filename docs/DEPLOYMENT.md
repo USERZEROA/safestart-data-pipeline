@@ -138,7 +138,8 @@ service sends the history at the stack's pace, 5 seconds per source day from 202
 so the command above sends it at once (the consumers keep each event once, whoever sends it); the watcher announces
 the second version's new week as live events within a minute of the start. The watcher still asks the Federal
 Register for its newest documents; the MSHA and OSHA crawl catalogs are left out, so it never compares their live
-sitemaps with a tiny inventory. CI runs the same steps and checks every count (`.github/workflows/ci.yml`).
+sitemaps with a tiny inventory. The hourly `feed-official` check reports `skipped` until this data root holds a
+published manifest. CI runs the same steps and checks every count (`.github/workflows/ci.yml`).
 
 ### The orchestrator and Prefect
 
@@ -359,7 +360,8 @@ The orchestrator's daily update publishes the signed feed for SafeStart at `http
    orchestrator alone. Delete the key file on the workstation once the line is in place.
 3. After the next run (16:30 UTC), or at once with `sudo docker compose exec orchestrator ssp official manifest`:
    `curl -fsS https://<address>/feed/official/latest.json` shows the newest manifest and `.../public-key.txt` the public
-   key; the dashboard's Sources page shows the feed's sequence and age.
+   key. Open Sources to see the sequence, age, publish history and any signing failure. On Live, the heartbeat shows
+   when the hourly feed check ran. Its verified page and file changes appear in the newest events.
 
 Without the key the daily update still records what it finds, and the dashboard warns that nothing was published; the
 first signed manifest then covers everything since the first run. Manifests are kept 45 days. After each run the purge
