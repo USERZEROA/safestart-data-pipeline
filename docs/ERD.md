@@ -21,13 +21,15 @@ without the paragraph, and the commodity (`coal_metal`) of an inspection, violat
 its mine's. The marts and the named queries are plain SQL, so the build stores the rules they apply as macros made from
 the same definitions, `is_fatal(degree)` and `is_injury(degree)`; an analyst's own SQL can call them too.
 
+The model is drawn in three diagrams, so that none is too wide to read: a mine's enforcement record and the
+regulations it cites; a mine's accidents and hours worked (`mine` appears there with its key only); and the two tables
+that link to no other.
+
 ```mermaid
 erDiagram
     mine ||--o{ inspection : "is inspected in"
     mine ||--o{ violation : "is cited in"
     inspection |o--o{ violation : "issues"
-    mine ||--o{ accident : "reports"
-    mine ||--o{ production_quarter : "reports hours in"
     cfr_section |o--o{ violation : "is the title 30 text of"
 
     mine {
@@ -76,6 +78,24 @@ erDiagram
         VARCHAR coal_metal "its mine's"
         VARCHAR mine_type
     }
+    cfr_section {
+        INTEGER title PK "29 or 30"
+        VARCHAR section PK "75.400"
+        INTEGER part
+        VARCHAR heading
+        VARCHAR text
+        DATE amended_on
+    }
+```
+
+```mermaid
+erDiagram
+    mine ||--o{ accident : "reports"
+    mine ||--o{ production_quarter : "reports hours in"
+
+    mine {
+        VARCHAR mine_id PK
+    }
     accident {
         VARCHAR document_no PK
         VARCHAR mine_id FK
@@ -103,14 +123,10 @@ erDiagram
         DOUBLE coal_production
         VARCHAR coal_metal "its mine's"
     }
-    cfr_section {
-        INTEGER title PK "29 or 30"
-        VARCHAR section PK "75.400"
-        INTEGER part
-        VARCHAR heading
-        VARCHAR text
-        DATE amended_on
-    }
+```
+
+```mermaid
+erDiagram
     document {
         VARCHAR url PK
         VARCHAR site "osha, msha, arlweb"

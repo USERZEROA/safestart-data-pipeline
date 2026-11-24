@@ -3,36 +3,9 @@
 SafeStart's data pipeline collects the public U.S. mine and workplace safety record, keeps every version of it, and
 serves two kinds of consumers: analysts (a DuckDB warehouse and its SQL marts) and a live dashboard fed by Kafka.
 
-```mermaid
-flowchart LR
-    subgraph Sources
-        MSHA[MSHA website] ; ARL[MSHA legacy host] ; OSHA[OSHA website]
-        OGD[MSHA open data: 20 datasets] ; ECFR[eCFR titles 29 and 30] ; FR[Federal Register API]
-    end
-    subgraph Workstation
-        CRAWL[Polite crawlers] --> RAW[(Raw object store<br/>content-addressed)]
-    end
-    subgraph Batch["Batch: the orchestrator (Prefect)"]
-        ACQ[Bulk acquire<br/>every version kept] --> RAW
-        RAW --> LAKE[(Parquet lake<br/>one file per version)]
-        LAKE --> WH[(DuckDB warehouse<br/>ERD + marts)]
-        WH --> EXPORT[SafeStart exports]
-        LAKE --> MODEL[Accident-risk model]
-    end
-    subgraph Streaming
-        REPLAY[Replay producer] --> K{{Kafka}}
-        WATCH[Live watchers] --> K
-        K --> STORE[Storage consumer] --> PG[(PostgreSQL<br/>stream schema)]
-        K --> ANALYTICS[Analytics consumer] --> PG
-    end
-    MSHA & ARL & OSHA --> CRAWL
-    OGD & ECFR --> ACQ
-    FR & MSHA & OSHA --> WATCH
-    LAKE --> REPLAY
-    LAKE --> WATCH
-    WH --> DASH[Streamlit dashboard]
-    PG --> DASH
-```
+The diagram of the whole system is the one in the README's [Architecture](../README.md#architecture) section; this
+page gives the detail behind it: the packages, the shared rules, the settings, the event contract, the streaming
+services, the stores, the orchestration, the entry points, the deployment and the constraints.
 
 ## Packages (`src/safestart_pipeline/`)
 
