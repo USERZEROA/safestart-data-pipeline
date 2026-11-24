@@ -380,6 +380,7 @@ def test_a_feed_older_than_36_hours_or_not_published_is_a_warning(stores, tmp_pa
     official_record(stores, manifest_age=timedelta(hours=40))
     warnings = [warning.value for warning in run_page("Sources").warning]
     assert len(warnings) == 1 and "40 hours old, more than 36" in warnings[0]
+    assert "SafeStart's planned importer is to treat the feed as stale" in warnings[0]  # planned, not yet built
 
     unsigned = tmp_path_factory.mktemp("unsigned")
     monkeypatch.setenv("SAFESTART_DATA_ROOT", str(unsigned))

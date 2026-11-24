@@ -510,8 +510,8 @@ def official_files() -> None:
                        f"generated {ago(row['generated_at'], now)}, for {row['window_start']} to {row['window_end']}.")
             if row["stale"]:
                 st.warning(f"The feed's newest manifest is {row['age_hours']:,.0f} hours old, more than {STALE_HOURS}: "
-                           "no daily run has published since. SafeStart treats the feed as stale until one does.",
-                           icon=":material/warning:")
+                           "no daily run has published since. SafeStart's planned importer is to treat the feed as "
+                           "stale until one does.", icon=":material/warning:")
         elif isinstance(row["problem"], str):
             st.warning(md(row["problem"]), icon=":material/warning:")
         if row["outcome"] in ("unsigned", "error"):
