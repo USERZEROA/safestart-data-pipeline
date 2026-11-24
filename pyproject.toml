@@ -16,7 +16,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-orchestration = ["prefect>=3.4"]
+# cryptography signs the official-files feed (official/feed.py); Prefect brings it too, but the feed needs it itself.
+orchestration = ["prefect>=3.4", "cryptography>=44"]
 analysis = [
     "duckdb>=1.1",
     "polars>=1.20",

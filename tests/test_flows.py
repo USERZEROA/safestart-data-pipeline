@@ -246,6 +246,24 @@ def test_a_failing_source_is_retried_once_the_others_still_run_and_the_flow_fail
     assert (run.until, run.budget, run.closed) == (datetime(2026, 11, 22, 1, 0, tzinfo=UTC), 40, "errors")
 
 
+def test_the_feed_follows_the_run_and_a_failing_feed_fails_it(official_runs, root, monkeypatch):
+    steps = []
+
+    def publish(data_root, *, trigger, run_id):
+        steps.append(("feed", data_root, trigger, run_id, official_runs[-1].closed))
+        if len(steps) > 1:
+            raise OSError("the disk is full")
+        return {"outcome": "published", "sequences": [7], "note": "manifest 7"}
+
+    monkeypatch.setattr(official_flow.feed, "publish", publish)
+    summary = official_flow.official(sources=["osha"])
+    assert steps == [("feed", root, "flow", "official-test", "done")]  # once the run is closed
+    assert summary["feed"]["sequences"] == [7]
+    with pytest.raises(RuntimeError, match="feed: .*the disk is full"):
+        official_flow.official(sources=["osha"])
+    assert len(steps) == 2
+
+
 # One writer of the data root ------------------------------------------------------------------------------------------
 
 

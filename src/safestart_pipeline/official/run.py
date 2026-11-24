@@ -5,7 +5,8 @@ The sources go one after another, the quick ones first so that OSHA's 10 s Crawl
 www.msha.gov's probe, the eCFR editions, the Federal Register's rules, arlweb (at most its share of the window), then
 OSHA until the deadline. Each source's outcome is recorded in state/official.sqlite (state.py) as it ends; one that
 raises is recorded as "error" and raised again, and the others still run (the caller decides: the command line goes on,
-the flow's task fails and the flow fails at the end).
+the flow's task fails and the flow fails at the end). A run that was not interrupted then publishes the feed's next
+manifest (feed.py), a heartbeat when it found nothing.
 
 A crawl site is asked only under its crawl lock, state/crawl-<site>.lock, never under the data root's pipeline.lock,
 so the run never waits for, or holds up, the batch and model flows, which write other files. The lock is waited for
@@ -40,6 +41,7 @@ from ..crawl.locks import SiteLock
 from ..crawl.sites import SITES, Site
 from ..crawl.store import HELD_SQL
 from ..verify import read_only
+from . import feed
 from .daily import NEEDED_SQL, PLANS, DailyCrawl, Plan, cycle, queue_counts
 from .sources import ecfr_hints, federal_register_hints, outcome, probe_msha
 from .state import HOSTS, OfficialState
@@ -169,8 +171,10 @@ class OfficialRun:
 
 
 def run_official(root: Path, client: httpx.Client, *, sources: Iterable[str] | None = None, until: datetime,
-                 budget: int | None = None, trigger: str = "cli", **options) -> dict:
-    """Every chosen source in turn (`ssp official run`). A source that raises is reported and the others still run."""
+                 budget: int | None = None, trigger: str = "cli", publish: bool = True, **options) -> dict:
+    """Every chosen source in turn (`ssp official run`), then, unless the run was interrupted, the feed's next
+    manifest (feed.py). A source that raises is reported and the others still run; a feed that cannot be published is
+    reported under "feed" with the outcome "error"."""
     run = OfficialRun(root, client, until=until, budget=budget, trigger=trigger, **options)
     results: dict[str, dict] = {}
     stop = "interrupted"
@@ -184,7 +188,14 @@ def run_official(root: Path, client: httpx.Client, *, sources: Iterable[str] | N
         stop = "errors" if any(result["status"] == "error" for result in results.values()) else "done"
     finally:
         run.close(stop)
-    return {"run_id": run.run_id, "until": iso(until), "sources": results}
+    report = {"run_id": run.run_id, "until": iso(until), "sources": results}
+    if publish:
+        try:
+            report["feed"] = feed.publish(root, trigger=trigger, run_id=run.run_id, now=run.now, sleep=run.sleep)
+        except Exception as problem:  # recorded by the feed as an error; the run's own record stands
+            log.exception("the feed's manifest was not published")
+            report["feed"] = {"outcome": "error", "note": f"{type(problem).__name__}: {problem}"}
+    return report
 
 
 # Status ---------------------------------------------------------------------------------------------------------------
@@ -197,10 +208,10 @@ def lock_state(root: Path, name: str) -> str:
 
 
 def status(root: Path, now: datetime) -> dict:
-    """The latest run, each source's latest outcome, and for each crawl site what waits, how far the re-check has come,
-    how many held copies the project does not need (kept, never asked about) and what was found in the last day and
-    week. Every store is only read."""
-    report: dict[str, object] = {"latest_run": None, "sources": {}}
+    """The latest run, each source's latest outcome, for each crawl site what waits, how far the re-check has come, how
+    many held copies the project does not need (kept, never asked about) and what was found in the last day and week,
+    and the feed (its newest manifest and the latest attempt to publish one). Every store is only read."""
+    report: dict[str, object] = {"latest_run": None, "sources": {}, "feed": feed.feed_status(root, now)}
     path = root / "state" / "official.sqlite"
     latest: dict[str, dict] = {}
     hints: dict[str, int] = {}

@@ -7,8 +7,11 @@ and protego. `ssp lake` holds the data root's writer lock, as the batch and mode
 `ssp official backfill-hashes <site>` records content hashes for the copies a crawl held before it kept them
 (crawl/backfill.py), under the site's crawl lock; the objects are only read, from --objects-from when given.
 `ssp official run [--site SOURCE ...] [--until WHEN] [--budget N]` runs the daily update of the official files now,
-without Prefect (official/run.py), and exits 1 when a source failed; `ssp official status` shows the latest run, what
-waits and how far the re-check has come, reading the stores only.
+without Prefect (official/run.py), then publishes the feed's next manifest, and exits 1 when a source or the feed
+failed; `ssp official status` shows the latest run, what waits, how far the re-check has come and the feed, reading
+the stores only. `ssp official manifest` publishes the feed's next manifest now (official/feed.py) and exits 1 unless
+it published one; `ssp official keygen --out FILE` writes a new signing key pair to FILE, which must not exist yet,
+and prints only the public key.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from .crawl.backfill import backfill_hashes
 from .crawl.crawler import Crawler, make_client, utc_now
 from .crawl.locks import SiteLock
 from .crawl.sites import SITES
+from .official import feed as official_feed
 from .official import run as official_run
 from .verify import Polite, verify_bulk, verify_crawl
 
@@ -118,15 +122,39 @@ def backfill(root: Path, site: str, objects: Path | None) -> dict:
             store.close()
 
 
+def keygen(path: Path) -> int:
+    """`ssp official keygen --out FILE`: the private key goes to FILE only; the public key is printed."""
+    try:
+        public = official_feed.keygen(path, utc_now())
+    except FileExistsError:
+        raise SystemExit(f"{path} exists already; a new key pair is written only to a new file") from None
+    except ModuleNotFoundError as problem:
+        raise SystemExit(f"{problem.name} is needed: uv sync --extra orchestration") from None
+    print(public)
+    print(f"The private key is in {path}: put its {official_feed.KEY_VARIABLE} line into the server's .env, pin the"
+          " public key above in SafeStart, then delete the file.", file=sys.stderr)
+    return 0
+
+
 def official(root: Path, args: argparse.Namespace) -> int:
-    """`ssp official run|status|backfill-hashes`."""
+    """`ssp official run|status|manifest|keygen|backfill-hashes`."""
     if args.task == "backfill-hashes":
         print(json.dumps(backfill(root, args.site, args.objects_from), indent=2, sort_keys=True))
         return 0
+    if args.task == "keygen":
+        return keygen(args.out)
     now = utc_now()
     if args.task == "status":
         print(json.dumps(official_run.status(root, now), indent=2, sort_keys=True, default=str))
         return 0
+    if args.task == "manifest":
+        setup_logging(root / "logs" / "official.log")
+        try:
+            result = official_feed.publish(root, trigger="cli")
+        except (official_feed.FeedError, ValueError, OSError) as problem:
+            raise SystemExit(f"the feed was not published: {type(problem).__name__}: {problem}") from None
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        return int(result["outcome"] != "published")
     try:
         until = official_run.parse_until(args.until, now) if args.until else official_run.deadline(now)
     except ValueError as problem:
@@ -136,7 +164,7 @@ def official(root: Path, args: argparse.Namespace) -> int:
         result = official_run.run_official(root, client, sources=args.site, until=until, budget=args.budget)
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
     failed = any(source["status"] == "error" for source in result["sources"].values())
-    return int(failed)
+    return int(failed or result.get("feed", {}).get("outcome") == "error")
 
 
 def warehouse(argv: list[str]) -> int:
@@ -178,7 +206,11 @@ def main(argv: list[str] | None = None) -> int:
                                                       " HH:MM UTC; by default the next 04:30 UTC, or 15 minutes before"
                                                       " the batch or the model flow if one starts first")
     daily.add_argument("--budget", type=int, metavar="N", help="the most requests each crawled site may take")
-    tasks.add_parser("status", help="the latest run, what waits and how far the re-check has come")
+    tasks.add_parser("status", help="the latest run, what waits, how far the re-check has come and the feed")
+    tasks.add_parser("manifest", help="publish the signed feed's next manifest now (exports/official/)")
+    keys = tasks.add_parser("keygen", help="write a new signing key pair to a new file; print only the public key")
+    keys.add_argument("--out", type=Path, required=True, metavar="FILE",
+                      help="the file for the key pair, which must not exist yet")
     hashes = tasks.add_parser("backfill-hashes", help="content hashes and types for the copies a crawl held before it"
                                                       " recorded them (resumable; objects are only read)")
     hashes.add_argument("site", choices=sorted(SITES))

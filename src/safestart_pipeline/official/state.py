@@ -10,7 +10,10 @@
   and the Federal Register final rules that amend title 29 or 30 (title, document number, effective date), each
   recorded once, with the run that found it.
 - marks: how far each hint source has been read, so the next run starts there.
-The crawl sites' own findings (new, changed, gone, restored, moved and rejected URLs) stay in their crawl stores.
+- publishes: every attempt to publish the feed (feed.py): when, by what, its outcome ("published", "unsigned" when no
+  signing key is set and nothing was written, "error"), the manifests it wrote, their window and counts, and a note.
+The crawl sites' own findings (new, changed, gone, restored, moved and rejected URLs) stay in their crawl stores; the
+feed's manifests are files in exports/official/, which alone say what was published.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ STATUSES = ("ok", "partial", "refused", "unavailable", "error", "skipped")
 # The host each source asks: the www.msha.gov probe, the govinfo bulk eCFR, the Federal Register API and the two crawls.
 HOSTS = {"msha": "www.msha.gov", "ecfr": "www.govinfo.gov", "federal_register": "www.federalregister.gov",
          "arlweb": "arlweb.msha.gov", "osha": "www.osha.gov"}
+PUBLISH_OUTCOMES = ("published", "unsigned", "error")
 
 SCHEMA = """
 create table if not exists runs (
@@ -64,6 +68,19 @@ create unique index if not exists hints_once on hints (source, title, coalesce(s
                                                       coalesce(document_number, ''));
 create index if not exists hints_by_time on hints (observed_at);
 create table if not exists marks (name text primary key, value text not null);
+create table if not exists publishes (
+  id integer primary key,
+  attempted_at text not null,
+  trigger text not null,
+  run_id text,
+  outcome text not null check (outcome in ('published', 'unsigned', 'error')),
+  first_sequence integer,
+  last_sequence integer,
+  window_start text,
+  window_end text,
+  counts text,
+  note text
+);
 """
 
 
@@ -128,4 +145,19 @@ class OfficialState:
         self.db.execute("insert or replace into marks (name, value) values (?, ?)", (name, value))
 
     def commit(self) -> None:
+        self.db.commit()
+
+    # The feed ---------------------------------------------------------------------------------------------------------
+
+    def add_publish(self, *, attempted_at: str, trigger: str, outcome: str, note: str, run_id: str | None = None,
+                    first_sequence: int | None = None, last_sequence: int | None = None,
+                    window_start: str | None = None, window_end: str | None = None,
+                    counts: dict | None = None) -> None:
+        if outcome not in PUBLISH_OUTCOMES:
+            raise ValueError(f"outcome must be one of {PUBLISH_OUTCOMES}, not {outcome!r}")
+        self.db.execute(
+            "insert into publishes (attempted_at, trigger, run_id, outcome, first_sequence, last_sequence,"
+            " window_start, window_end, counts, note) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (attempted_at, trigger, run_id, outcome, first_sequence, last_sequence, window_start, window_end,
+             None if counts is None else json.dumps(counts, sort_keys=True), note[:2000]))
         self.db.commit()

@@ -2651,6 +2651,7 @@ ml = [
     { name = "scikit-learn" },
 ]
 orchestration = [
+    { name = "cryptography" },
     { name = "prefect" },
 ]
 stream = [
@@ -2669,6 +2670,7 @@ dev = [
 requires-dist = [
     { name = "altair", marker = "extra == 'dashboard'", specifier = ">=5.5" },
     { name = "confluent-kafka", marker = "extra == 'stream'", specifier = ">=2.16" },
+    { name = "cryptography", marker = "extra == 'orchestration'", specifier = ">=44" },
     { name = "duckdb", marker = "extra == 'analysis'", specifier = ">=1.1" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "joblib", marker = "extra == 'ml'", specifier = ">=1.4" },
