@@ -586,8 +586,8 @@ escapes what it displays.
 
 ## How it feeds SafeStart
 
-SafeStart is a separate application and stays unchanged (it does not import these files yet): the pipeline hands it
-two flat Parquet files and a manifest (`ssp warehouse export`, [docs/SAFESTART_EXPORTS.md](docs/SAFESTART_EXPORTS.md)):
+SafeStart is a separate application and does not import these files yet: the pipeline hands it two flat Parquet
+files and a manifest (`ssp warehouse export`, [docs/SAFESTART_EXPORTS.md](docs/SAFESTART_EXPORTS.md)):
 
 - `mine_profiles.parquet` (92,129 mines): each mine's 12-month record and its most cited sections with their headings,
   so a crew's pre-shift assessment can open with the hazards inspectors find most at that mine;
