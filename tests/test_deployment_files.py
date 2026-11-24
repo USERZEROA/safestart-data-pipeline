@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from safestart_pipeline.official.feed import KEY_VARIABLE, Folder
 from safestart_pipeline.watch import __main__ as watch
 from safestart_pipeline.watch.state import default_path
 
@@ -35,6 +36,7 @@ ONE_OFF = {"init", "replay"}  # they exit once their work is done
 # with DuckDB held to 256 MB, 343.
 ORCHESTRATOR_PEAK = 1380 + 400
 WATCHER_PEAK = 343
+FEED_FOLDER = Folder(Path(".")).path  # exports/official, where the feed is written
 
 
 def services(name: str) -> dict:
@@ -73,6 +75,49 @@ def test_only_the_gateway_listens_beyond_this_host():
     for name, service in services("docker-compose.yml").items():
         assert all(port.startswith("127.0.0.1:") for port in service.get("ports", [])), name
     assert services("docker-compose.public.yml")["gateway"]["ports"] == ["80:80", "443:443"]
+
+
+def test_the_gateway_reads_the_official_feed_and_nothing_else_of_the_data_root():
+    """It serves exports/official/ (official/feed.py writes it there) from a read-only mount, and holds no other part of
+    the data root: the stores, the raw archive and the lake stay out of the public container's reach."""
+    gateway = services("docker-compose.public.yml")["gateway"]
+    data_mounts = [mount for mount in gateway["volumes"] if "DATA_ROOT" in mount]
+    assert data_mounts == ["${DATA_ROOT:-./data}/exports/official:/srv/feed/official:ro"]
+    assert PurePosixPath("exports", "official") == PurePosixPath(*FEED_FOLDER.parts)
+    caddyfile = (ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
+    assert "root * /srv/feed/official" in caddyfile
+
+
+def test_the_caddyfile_serves_the_feed_ahead_of_the_dashboard_with_only_its_files():
+    caddyfile = (ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
+    site = caddyfile[caddyfile.index("{$PUBLIC_DOMAIN} {"):]
+    assert site.index("import official_feed") < site.index("reverse_proxy dashboard:8501")
+    assert "handle {\n\t\treverse_proxy dashboard:8501" in site  # mutually exclusive with the feed's handle_path
+    feed = caddyfile[caddyfile.index("(official_feed) {"):caddyfile.index("\n}\n", caddyfile.index("(official_feed)"))]
+    assert "handle_path /feed/official/* {" in feed and "browse" not in feed
+    newest = re.search(r"@newest path (.+)", feed)[1].split()
+    numbered = re.compile(re.search(r"@numbered path_regexp (\S+)", feed)[1])
+    assert newest == ["/latest.json", "/latest.json.sig", "/public-key.txt"]
+    served = [path for path in ("/latest.json", "/latest.json.sig", "/public-key.txt", "/manifests/12.json",
+                                "/manifests/12.json.sig", "/manifests/012.json", "/manifests/12.json.partial",
+                                "/latest.json.partial", "/manifests/", "/", "/notes.txt")
+              if path in newest or numbered.fullmatch(path)]
+    assert served == ["/latest.json", "/latest.json.sig", "/public-key.txt", "/manifests/12.json",
+                      "/manifests/12.json.sig"]
+    assert re.search(r"handle @newest \{\s+header Cache-Control \"public, max-age=300\"\s+file_server", feed)
+    assert re.search(r"handle @numbered \{\s+header Cache-Control \"public, max-age=31536000, immutable\"\s+"
+                     r"file_server", feed)
+    assert re.search(r"handle \{\s+respond 404\s+\}", feed)  # anything else under /feed/official/
+    assert 'header @signature Content-Type "text/plain; charset=utf-8"' in feed
+
+
+def test_only_the_orchestrator_gets_the_feeds_signing_key_and_only_from_env():
+    stack = services("docker-compose.yml")
+    holders = [name for name, service in stack.items()
+               if isinstance(service.get("environment"), dict) and KEY_VARIABLE in service["environment"]]
+    assert holders == ["orchestrator"] and stack["orchestrator"]["environment"][KEY_VARIABLE] is None
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    assert f"# {KEY_VARIABLE}=\n" in example and f"\n{KEY_VARIABLE}=" not in example  # optional, so left out
 
 
 def test_pipeline_services_share_one_unprivileged_image_and_only_the_orchestrator_writes_the_data_root():

@@ -128,15 +128,19 @@ def orchestrator_on(env: dict[str, str]) -> bool:
     return ORCHESTRATOR in (env.get("COMPOSE_PROFILES") or "").replace(" ", "").split(",")
 
 
-def data_folder(root: Path, value: str, *, orchestrator: bool = False) -> Path:
+def data_folder(root: Path, value: str, *, orchestrator: bool = False, public: bool = False) -> Path:
     """The data root on the host. The default ./data is created empty; any other folder must exist already. On Linux
     the orchestrator writes it as the image's user, so when it runs, a folder of another owner gets a note on how to
-    hand it over (Docker Desktop, on Windows and macOS, shares a folder whatever its owner)."""
+    hand it over (Docker Desktop, on Windows and macOS, shares a folder whatever its owner). With the HTTPS gateway
+    (`public`), exports/official/, which the gateway mounts to serve the feed, is made when missing, so that Docker does
+    not make it as root, a folder the orchestrator could not write."""
     folder = Path(value) if Path(value).is_absolute() else root / value
     if not folder.is_dir():
         if value != "./data":
             raise SystemExit(f"The data root {folder} does not exist. Pass --data-root with the folder holding lake/.")
         folder.mkdir(parents=True)
+    if public:
+        (folder / "exports" / "official").mkdir(parents=True, exist_ok=True)
     for part, user in (("lake", "the replay"), ("warehouse", "the dashboard")):
         if not (folder / part).is_dir():
             print(f"Note: {folder} has no {part}/ yet, which {user} reads; the orchestrator's daily batch builds it.")
@@ -218,7 +222,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"--data-root {data_root} is not a folder")
     env = prepare_env(ROOT, data_root=data_root.as_posix() if data_root else None, public_domain=domain,
                       profiles=args.profiles)
-    data_folder(ROOT, env.get("DATA_ROOT") or "./data", orchestrator=orchestrator_on(env))
+    data_folder(ROOT, env.get("DATA_ROOT") or "./data", orchestrator=orchestrator_on(env),
+                public=bool(env.get("PUBLIC_DOMAIN")))
     return 0 if args.no_start else start(ROOT, env, args.timeout)
 
 

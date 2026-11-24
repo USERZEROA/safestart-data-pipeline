@@ -75,7 +75,9 @@ if [[ -n $bucket ]]; then
     fi
   done
 fi
-# Every service runs as the image's user, uid 10001: the orchestrator writes the data root, the others read it.
+# The feed the gateway serves read-only (docker-compose.public.yml), made before the gateway's mount would make it as
+# root. Every service runs as the image's user, uid 10001: the orchestrator writes the data root, the others read it.
+install -d "$data/exports/official"
 chown -R 10001:10001 "$data"
 
 cd "$app"

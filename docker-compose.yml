@@ -216,6 +216,8 @@ services:
   # (COMPOSE_PROFILES in .env, set by `scripts/start.py --with-orchestrator`), so a workstation's data root is never
   # written unless asked; the server's startup script turns it on. Without a Prefect API, each process starts Prefect's
   # local API server with its first run: 10 s on one CPU, 19 s on half of one, so it is given 120 s, not Prefect's 20.
+  # It also runs the daily update of the official files, which signs the feed with OFFICIAL_FEED_SIGNING_KEY from .env
+  # (docs/OFFICIAL_FILES.md); no other service gets that key.
   orchestrator:
     <<: *pipeline
     profiles: [orchestrator]
@@ -226,6 +228,7 @@ services:
       TZ: UTC
       PREFECT_API_URL:
       PREFECT_API_KEY:
+      OFFICIAL_FEED_SIGNING_KEY:
       PREFECT_SERVER_ANALYTICS_ENABLED: "false"
       PREFECT_SERVER_EPHEMERAL_STARTUP_TIMEOUT_SECONDS: "120"
       POLARS_MAX_THREADS: "2"

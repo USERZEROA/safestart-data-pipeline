@@ -150,3 +150,14 @@ def test_no_start_prepares_env_and_data_root_only(checkout, monkeypatch):
     with pytest.raises(SystemExit):
         start.main(["--no-start", "--data-root", str(checkout / "missing")])
     assert start.read_env((checkout / ".env").read_text(encoding="utf-8"))["DATA_ROOT"] == "./data"  # not saved
+
+
+def test_the_gateway_gets_its_feed_folder_before_docker_would_make_it_as_root(checkout, monkeypatch):
+    """docker-compose.public.yml mounts <data root>/exports/official; a folder Docker made for the mount would belong to
+    root, and the orchestrator, which writes the feed there, could not write it."""
+    monkeypatch.setattr(start, "ROOT", checkout)
+    monkeypatch.setattr(start, "docker_volume_exists", no_volume)
+    assert start.main(["--no-start"]) == 0
+    assert not (checkout / "data" / "exports").exists()  # no gateway, no feed folder
+    assert start.main(["--no-start", "--public-domain", "34.120.7.15"]) == 0
+    assert (checkout / "data" / "exports" / "official").is_dir()

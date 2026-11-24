@@ -1,6 +1,9 @@
 # The public entrance of a server: Caddy serves the dashboard over HTTPS on ports 80 and 443 for PUBLIC_DOMAIN, a
-# domain name or the server's public IPv4 address, with a certificate it obtains and renews itself (deploy/Caddyfile).
-# `python scripts/start.py --public-domain <host>` adds this file to docker-compose.yml.
+# domain name or the server's public IPv4 address, with a certificate it obtains and renews itself (deploy/Caddyfile),
+# and the signed feed of the official files at /feed/official/ from the data root's exports/official/, which it mounts
+# read-only and nothing else of the data root. `python scripts/start.py --public-domain <host>` adds this file to
+# docker-compose.yml and makes that folder when it is missing (on the server, deploy/gcp/startup.sh makes it for the
+# orchestrator's user, who writes the feed).
 services:
   gateway:
     image: caddy:2.11-alpine
@@ -21,6 +24,7 @@ services:
       - 443:443
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${DATA_ROOT:-./data}/exports/official:/srv/feed/official:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

@@ -10,6 +10,31 @@
 	}
 }
 
+# The signed daily feed of the official files (docs/OFFICIAL_FILES.md) at /feed/official/, from the data root's
+# exports/official/, which the gateway mounts read-only at /srv/feed/official: the manifests, their signatures and the
+# public key, nothing else (no directory listing, no file being written). latest.json changes every day, so it, its
+# signature and the public key are cached for five minutes; a numbered manifest never changes once written.
+(official_feed) {
+	handle_path /feed/official/* {
+		root * /srv/feed/official
+		@newest path /latest.json /latest.json.sig /public-key.txt
+		@numbered path_regexp ^/manifests/[1-9][0-9]*[.]json([.]sig)?$
+		@signature path *.sig
+		header @signature Content-Type "text/plain; charset=utf-8"
+		handle @newest {
+			header Cache-Control "public, max-age=300"
+			file_server
+		}
+		handle @numbered {
+			header Cache-Control "public, max-age=31536000, immutable"
+			file_server
+		}
+		handle {
+			respond 404
+		}
+	}
+}
+
 {$PUBLIC_DOMAIN} {
 	encode zstd gzip
 	tls {
@@ -24,6 +49,10 @@
 		Referrer-Policy strict-origin-when-cross-origin
 		-Server
 	}
+	# The feed first: the dashboard never sees /feed/official/.
+	import official_feed
 	# Streamlit's page and its WebSocket connection.
-	reverse_proxy dashboard:8501
+	handle {
+		reverse_proxy dashboard:8501
+	}
 }
