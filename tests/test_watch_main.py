@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import re
 import sys
 import types
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import psycopg
 import pytest
 
+from safestart_pipeline import stream
 from safestart_pipeline.stream.events import Event
 from safestart_pipeline.watch import __main__ as watch
-from safestart_pipeline.watch.checks import INSERT, Check, record_check
+from safestart_pipeline.watch.checks import INSERT, STATUSES, Check, record_check
 from safestart_pipeline.watch.publish import (
     KAFKA_MODULE,
     ListPublisher,
@@ -99,10 +102,18 @@ def test_a_check_is_stored_when_postgresql_answers_and_logged_when_it_does_not(c
 
 
 def test_a_check_has_one_of_the_stored_statuses():
+    assert Check("sitemaps-msha", "refused").status == "refused"
     with pytest.raises(ValueError, match="status"):
         Check("versions", "fine")
     with pytest.raises(ValueError, match="negative"):
         Check("versions", "ok", -1)
+
+
+def test_the_statuses_are_the_ones_stream_source_checks_allows():
+    """The schema sets its list again each time it is applied, so a store made with an older list takes this one."""
+    schema = Path(stream.__file__).with_name("schema.sql").read_text(encoding="utf-8")
+    allowed = re.search(r"CONSTRAINT source_checks_status_check CHECK \(status IN \(([^)]*)\)\)", schema)
+    assert allowed and {value.strip(" '") for value in allowed[1].split(",")} == STATUSES
 
 
 # Scheduling -----------------------------------------------------------------------------------------------------------

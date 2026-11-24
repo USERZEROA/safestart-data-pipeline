@@ -1,8 +1,9 @@
 """`python -m safestart_pipeline.stream.init`: wait until Kafka and PostgreSQL answer, create both topics, and apply
 `schema.sql`.
 
-Every step is idempotent (the topics are created only when missing and every SQL statement is `IF NOT EXISTS`), so the
-stack can start in any order and init can run before each start.
+Every step is idempotent (the topics are created only when missing, every table and index is `IF NOT EXISTS`, and the
+statuses a source check may have are set again), so the stack can start in any order and init can run before each
+start; a store made before a status was added takes it at the next start.
 """
 
 from __future__ import annotations

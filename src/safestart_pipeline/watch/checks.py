@@ -14,7 +14,7 @@ from typing import Any
 
 from ..config import postgres_url
 
-STATUSES = frozenset({"ok", "unchanged", "error", "skipped"})
+STATUSES = frozenset({"ok", "unchanged", "refused", "error", "skipped"})  # as stream/schema.sql allows them
 CONNECT_TIMEOUT_SECONDS = 5
 INSERT = (
     "insert into stream.source_checks (source, checked_at, status, found, note) values (%s, %s, %s, %s, %s)"
@@ -25,7 +25,8 @@ log = logging.getLogger("watch")
 
 @dataclass(frozen=True)
 class Check:
-    """One check of one source, as stream.source_checks holds it: ok (new events found), unchanged, error or skipped."""
+    """One check of one source, as stream.source_checks holds it: ok (new events found), unchanged, refused (the host
+    would not serve the watcher, which records a refusal and never works around it), error or skipped."""
 
     source: str
     status: str

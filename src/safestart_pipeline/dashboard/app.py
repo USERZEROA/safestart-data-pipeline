@@ -442,6 +442,11 @@ def sources_page() -> None:
         if len(failing):
             st.warning("The newest check failed for " + ", ".join(md(source) for source in failing) + ".",
                        icon=":material/warning:")
+        refused = [md(source) for source in checks.frame.loc[checks.frame["status"] == "refused", "source"]]
+        if refused:
+            st.info((f"The newest check of {refused[0]} was refused by the host" if len(refused) == 1 else
+                     f"The newest checks of {', '.join(refused)} were refused by their hosts")
+                    + "; refusals are recorded, never worked around.", icon=":material/info:")
         st.dataframe(checks.frame.assign(age=checks.frame["checked_at"].map(lambda moment: ago(moment, now))),
                      hide_index=True,
                      column_order=["source", "age", "status", "found", "checks_24h", "errors_24h", "found_24h", "note"],

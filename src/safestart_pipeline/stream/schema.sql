@@ -70,8 +70,13 @@ CREATE TABLE IF NOT EXISTS stream.forecasts (
 CREATE TABLE IF NOT EXISTS stream.source_checks (
     source text NOT NULL,
     checked_at timestamptz NOT NULL,
-    status text NOT NULL CHECK (status IN ('ok', 'unchanged', 'error', 'skipped')),
+    status text NOT NULL,
     found integer NOT NULL DEFAULT 0 CHECK (found >= 0),
     note text NOT NULL DEFAULT '',
     PRIMARY KEY (source, checked_at)
 );
+-- The outcomes a check can have (watch/checks.py), set again on every run, so a store made before an outcome was added
+-- (refused) takes it too. One statement, so no moment is left without the check.
+ALTER TABLE stream.source_checks
+    DROP CONSTRAINT IF EXISTS source_checks_status_check,
+    ADD CONSTRAINT source_checks_status_check CHECK (status IN ('ok', 'unchanged', 'refused', 'error', 'skipped'));

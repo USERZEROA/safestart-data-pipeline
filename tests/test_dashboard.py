@@ -138,9 +138,10 @@ def stream_tables(now: pd.Timestamp) -> dict[str, pd.DataFrame]:
                                           "observed": [30.0], "predicted": [10.1], "residual": [19.9],
                                           "method": ["ewma"]}),
         "source_freshness": pd.DataFrame({
-            "source": ["federal_register", "msha_ogd"], "checked_at": [now - 5 * minute, now],
-            "status": ["ok", "error"], "found": [1, 0], "note": ["", "timeout"], "checks_24h": [24, 12],
-            "errors_24h": [0, 1], "found_24h": [3, 0]}),
+            "source": ["federal_register", "msha_ogd", "sitemaps-msha"],
+            "checked_at": [now - 5 * minute, now, now - 2 * minute], "status": ["ok", "error", "refused"],
+            "found": [1, 0, 0], "note": ["", "timeout", "refused, the host served an HTML page instead of the sitemap"],
+            "checks_24h": [24, 12, 4], "errors_24h": [0, 1, 0], "found_24h": [3, 0, 0]}),
     }
 
 
@@ -360,8 +361,11 @@ def test_stream_pages_render_events_forecasts_and_checks(stream_rows):
     assert enforcement.selectbox[0].options == ["C04", "No district"]
 
     sources = run_page("Sources")
-    assert r"The newest check failed for msha\_ogd." in text_of(sources)
-    assert sources.dataframe[-1].value["age"].tolist() == ["5 minutes ago", "just now"]
+    # A failed check warns; a refused one is noted, as a refusal is the host's answer, not a fault.
+    assert [warning.value for warning in sources.warning] == [r"The newest check failed for msha\_ogd."]
+    assert ("The newest check of sitemaps-msha was refused by the host; refusals are recorded, never worked around."
+            in [info.value for info in sources.info])
+    assert sources.dataframe[-1].value["age"].tolist() == ["5 minutes ago", "just now", "2 minutes ago"]
 
 
 def test_duckdb_spills_into_a_folder_of_this_process_not_beside_the_read_only_warehouse(stores):
@@ -501,7 +505,9 @@ def test_stream_queries_run_on_postgresql(stores, stream_database, monkeypatch):
         insert into stream.source_checks (source, checked_at, status, found, note) values
           ('federal_register', now() - interval '2 hours', 'ok', 2, ''),
           ('federal_register', now() - interval '5 minutes', 'unchanged', 0, ''),
-          ('msha_ogd', now() - interval '30 hours', 'error', 0, 'timeout')""")
+          ('msha_ogd', now() - interval '30 hours', 'error', 0, 'timeout'),
+          ('sitemaps-msha', now() - interval '7 hours', 'error', 0, 'HTTP 503'),
+          ('sitemaps-msha', now() - interval '1 hour', 'refused', 0, 'refused, the host answered HTTP 403')""")
     monkeypatch.setenv("SAFESTART_POSTGRES_URL", url)
 
     assert data.event_counts().frame.set_index("kind")["events"].to_dict() == {
@@ -517,10 +523,13 @@ def test_stream_queries_run_on_postgresql(stores, stream_database, monkeypatch):
     freshness = data.source_freshness().frame.set_index("source")
     assert freshness.loc["federal_register", ["status", "checks_24h", "found_24h"]].tolist() == ["unchanged", 2, 2]
     assert freshness.loc["msha_ogd", ["status", "errors_24h"]].tolist() == ["error", 0]
+    # A refusal is the newest check's status, and not one of the day's errors.
+    assert freshness.loc["sitemaps-msha", ["status", "checks_24h", "errors_24h"]].tolist() == ["refused", 2, 1]
     read_only = data.stream_query(
         "insert into stream.source_checks (source, checked_at, status) values ('x', now(), 'ok')")
     assert "could not answer" in read_only.problem
 
     st.cache_data.clear()
-    for page in ("Live", "Enforcement", "Sources"):
-        assert "not reachable" not in text_of(run_page(page))
+    shown = {page: text_of(run_page(page)) for page in ("Live", "Enforcement", "Sources")}
+    assert not any("not reachable" in text for text in shown.values())
+    assert "The newest check of sitemaps-msha was refused by the host" in shown["Sources"]

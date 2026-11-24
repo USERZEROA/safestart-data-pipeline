@@ -4,9 +4,15 @@ A page is "added" when today's sitemaps list a URL the crawl never recorded, "ch
 the crawl last fetched it, and "dropped" when the crawl's inventory has it from a sitemap and today's sitemaps no longer
 list it. The inventory is only read, so a page the crawl never recorded stays unknown to it: once the watcher has
 announced such a page as added, a later lastmod of it is a change. Dropped pages are judged only when every sitemap
-could be read, since an unreadable sitemap would seem to drop all of its pages. Each finding becomes a page_change event
+could be read, since an unread sitemap would seem to drop all of its pages. Each finding becomes a page_change event
 keyed by the URL, the change and the lastmod, so a change is reported once while a later edit of the same page is
 reported again.
+
+A host that answers a sitemap's URL with HTTP 401, 403, 429 or 451, or with an HTML page in the sitemap's place (an
+answer that is not a sitemap and is served as HTML or starts with `<!doctype html` or `<html`), has refused it: MSHA's
+site serves the cloud VM such a page, and a workstation the sitemap. A refusal is recorded, never worked around: the
+check is "refused" and its note says which sitemaps were refused and why. The check is an "error" instead when any
+sitemap could not be read for another reason (no answer, another HTTP status, malformed XML).
 
 The watcher asks the way the crawl does: robots.txt through crawl/robots.py, the site's own delay or its Crawl-delay if
 longer, and not while that site's crawl runs. Where it can write the data root's state folder, it holds the crawl's
@@ -20,6 +26,7 @@ day whatever the schedule; OSHA's sitemap gives no lastmod, so only added and dr
 
 from __future__ import annotations
 
+import codecs
 import os
 import time
 from collections import Counter
@@ -28,22 +35,27 @@ from contextlib import AbstractContextManager, ExitStack, nullcontext, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 
+from ..crawl.crawler import is_html
 from ..crawl.locks import SiteLock
-from ..crawl.sitemaps import parse_sitemap
+from ..crawl.sitemaps import Sitemap, parse_sitemap
 from ..crawl.sites import Site
 from ..crawl.urls import normalize
 from ..stream.events import Event, as_utc
 from ..verify import read_only
 from .checks import Check
-from .polite import PoliteClient
+from .polite import Answer, PoliteClient
 from .publish import Publisher, publish_new
 from .state import WatchState
 
 # The least time between two reads of a site's sitemaps, whatever the schedule or a forced check asks.
 MIN_INTERVAL = {"msha": timedelta(0), "osha": timedelta(days=1)}
+# The answers by which a host refuses a sitemap to the watcher (as does an HTML page served in its place).
+REFUSED_STATUSES = frozenset({401, 403, 429, 451})
+HTML_STARTS = (b"<!doctype html", b"<html")  # an HTML page's first bytes, after any byte order mark and white space
 # Where the crawl's lock cannot be seen, a crawl is taken to run until what it writes has been still this long. A crawl
 # commits its inventory after every request and a long download grows its file all the while; only the crawl's own
 # pauses are longer (a Retry-After or a suspected block, while it sends nothing).
@@ -91,12 +103,53 @@ def lastmod_time(lastmod: str | None) -> str | None:
         return None
 
 
-def read_sitemaps(site: Site, polite: PoliteClient) -> tuple[Listed, list[str]]:
-    """Every in-scope URL today's sitemaps list (following indexes), and the sitemaps that could not be read."""
+class SitemapClient(PoliteClient):
+    """A PoliteClient that also keeps the Content-Type each URL answered with, which its answers leave out."""
+
+    def __init__(self, client: httpx.Client, **options: Any) -> None:
+        super().__init__(client, **options)
+        self.content_types: dict[str, str] = {}
+
+    def _read(self, response: httpx.Response, url: str) -> bytes:
+        self.content_types[url] = response.headers.get("content-type", "")
+        return super()._read(response, url)
+
+
+class Refused(Exception):
+    """The host would not serve a sitemap to the watcher; the message says how it refused."""
+
+
+def html_page(answer: Answer, content_type: str | None) -> bool:
+    """Whether an answer is an HTML page, by its Content-Type or by its first bytes."""
+    start = answer.content[:1024].removeprefix(codecs.BOM_UTF8).lstrip().lower()
+    return is_html(content_type) or start.startswith(HTML_STARTS)
+
+
+def read_sitemap(polite: SitemapClient, url: str) -> tuple[Answer, Sitemap]:
+    """One sitemap and the answer it came in. Refused when the host will not serve it; httpx.HTTPError,
+    PermissionError (robots.txt) or ValueError when it cannot be read otherwise. A readable sitemap is read whatever
+    its Content-Type."""
+    answer = polite.get(url)
+    if answer.status in REFUSED_STATUSES:
+        raise Refused(f"the host answered HTTP {answer.status} ({httpx.codes.get_reason_phrase(answer.status)})")
+    if not 200 <= answer.status < 300:
+        raise ValueError(f"HTTP {answer.status}")
+    try:
+        return answer, parse_sitemap(answer.content)
+    except ValueError as problem:
+        if html_page(answer, polite.content_types.get(answer.url)):
+            raise Refused("the host served an HTML page instead of the sitemap") from problem
+        raise
+
+
+def read_sitemaps(site: Site, polite: SitemapClient) -> tuple[Listed, list[str], list[str]]:
+    """Every in-scope URL today's sitemaps list (following indexes), then the sitemaps the host refused and those that
+    could not be read for another reason, each as "<sitemap>: <why>"."""
     robots = polite.robots(site.canonical_host)
     queue = [*site.sitemaps, *filter(None, (site.in_scope(normalize(url)) for url in robots.sitemaps()))]
     seen: set[str] = set()
     listed: Listed = {}
+    refused: list[str] = []
     problems: list[str] = []
     while queue:
         url = queue.pop(0)
@@ -104,10 +157,10 @@ def read_sitemaps(site: Site, polite: PoliteClient) -> tuple[Listed, list[str]]:
             continue
         seen.add(url)
         try:
-            answer = polite.get(url)
-            if not 200 <= answer.status < 300:
-                raise ValueError(f"HTTP {answer.status}")
-            sitemap = parse_sitemap(answer.content)
+            answer, sitemap = read_sitemap(polite, url)
+        except Refused as refusal:
+            refused.append(f"{url}: refused, {refusal}"[:300])
+            continue
         except (httpx.HTTPError, PermissionError, ValueError) as problem:
             problems.append(f"{url}: {problem}"[:300])
             continue
@@ -117,7 +170,7 @@ def read_sitemaps(site: Site, polite: PoliteClient) -> tuple[Listed, list[str]]:
                 queue.append(target)
             elif target is not None:
                 listed[target] = (entry.lastmod, url)
-    return listed, problems
+    return listed, refused, problems
 
 
 def compare(inventory: Path, listed: Listed, *, judge_dropped: bool) -> list[Change]:
@@ -216,11 +269,17 @@ def check_sitemaps(site: Site, data_root: Path, state: WatchState, publisher: Pu
                                                  " asked")
         state.set_time(f"{source}:read_at", started)
         state.commit()
-        listed, problems = read_sitemaps(site, PoliteClient(client, min_delay=site.min_delay, sleep=sleep, clock=clock))
-    changes = announced(compare(inventory, listed, judge_dropped=not problems), state)
+        polite = SitemapClient(client, min_delay=site.min_delay, sleep=sleep, clock=clock)
+        listed, refused, problems = read_sitemaps(site, polite)
+    judged = not (refused or problems)  # dropped pages need every sitemap
+    changes = announced(compare(inventory, listed, judge_dropped=judged), state)
     found = publish_new((page_event(site, change, started) for change in changes), publisher, state)
     counts = Counter(change.change for change in changes)
-    note = f"{len(listed):,} URLs listed; " + ", ".join(f"{counts[name]:,} {name}" for name in CHANGES)
-    if problems:
-        note += f"; dropped pages not judged, {len(problems)} sitemaps unreadable: " + "; ".join(problems[:3])
-    return Check(source, "error" if problems else "ok" if found else "unchanged", found, note)
+    note = f"{len(listed):,} URLs listed; " + ", ".join(f"{counts[name]:,} {name}" for name in CHANGES
+                                                       if judged or name != "dropped")
+    if not judged:
+        unread = len(problems) + len(refused)
+        note += (f", dropped pages not judged; {unread} sitemap{'' if unread == 1 else 's'} not read: "
+                 + "; ".join([*problems[:3], *refused[:3]]))
+    status = "error" if problems else "refused" if refused else "ok" if found else "unchanged"
+    return Check(source, status, found, note)

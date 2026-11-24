@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import gzip
 import os
 from dataclasses import dataclass
@@ -41,6 +42,16 @@ PAGES_2 = f"""<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>{HOST}/linked</loc></url>
   <url><loc>https://other.test/elsewhere</loc></url>
 </urlset>"""
+# A page served in a sitemap's place. Its unclosed <meta> makes it malformed XML, as is the page MSHA's site serves the
+# cloud VM ("Opening and ending tag mismatch: meta line 5 and head").
+PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>Request blocked</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body><p>This request was blocked.</p></body>
+</html>"""
 INVENTORY = {  # url -> (listed in a sitemap, sitemap lastmod then, fetched at)
     "/a": (True, "2026-11-01", "2026-11-20T06:00:00Z"),
     "/b": (True, "2026-11-01", "2026-11-20T12:00:00Z"),
@@ -67,15 +78,16 @@ class FakeSite:
     def __init__(self, clock: Clock):
         self.clock = clock
         self.requests: list[tuple[str, float]] = []
-        self.broken: set[str] = set()
+        self.statuses: dict[str, int] = {}  # path -> the status it answers with instead of its body
+        self.types: dict[str, str] = {}  # path -> the Content-Type its body is served with, when not XML
         self.bodies: dict[str, str | bytes] = {"/sitemap-index.xml": INDEX, "/pages-1.xml": PAGES_1,
                                                "/pages-2.xml": PAGES_2}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         self.requests.append((path, self.clock.now))
-        if path in self.broken:
-            return httpx.Response(500)
+        if path in self.statuses:
+            return httpx.Response(self.statuses[path])
         if path == "/robots.txt":
             return httpx.Response(200, text=ROBOTS)
         if path == "/sitemap.xml":
@@ -83,7 +95,7 @@ class FakeSite:
         if path in self.bodies:
             body = self.bodies[path]
             return httpx.Response(200, content=body.encode() if isinstance(body, str) else body,
-                                  headers={"content-type": "application/xml"})
+                                  headers={"content-type": self.types.get(path, "application/xml")})
         return httpx.Response(404)
 
     def paths(self) -> list[str]:
@@ -154,11 +166,13 @@ def test_pages_added_changed_or_dropped_since_the_crawl_are_published_once(bench
 
 
 def test_dropped_pages_are_not_judged_when_a_sitemap_cannot_be_read(bench):
-    bench.fake.broken.add("/pages-2.xml")
+    bench.fake.statuses["/pages-2.xml"] = 500
     publisher = ListPublisher()
     result = bench.check(publisher)
     assert [event.event_id for event in publisher.events] == [f"page_change:{HOST}/b|changed|2026-11-20T09:00:00-05:00"]
-    assert result.status == "error" and "dropped pages not judged" in result.note and "HTTP 500" in result.note
+    assert result.status == "error"
+    assert result.note == ("3 URLs listed; 0 added, 1 changed, dropped pages not judged; 1 sitemap not read: "
+                           f"{HOST}/pages-2.xml: HTTP 500")
 
 
 def test_a_damaged_gzip_sitemap_is_one_unreadable_sitemap_and_the_others_are_still_read(bench):
@@ -167,6 +181,59 @@ def test_a_damaged_gzip_sitemap_is_one_unreadable_sitemap_and_the_others_are_sti
     result = bench.check(publisher)
     assert [event.event_id for event in publisher.events] == [f"page_change:{HOST}/new|added|2026-11-21T10:00:00Z"]
     assert result.status == "error" and "pages-1.xml: not a readable gzip sitemap" in result.note
+
+
+def test_a_malformed_sitemap_is_an_error_not_a_refusal(bench):
+    bench.fake.bodies["/pages-1.xml"] = PAGES_1.removesuffix("</urlset>")  # cut short
+    result = bench.check()
+    assert result.status == "error" and f"{HOST}/pages-1.xml: not well-formed XML" in result.note
+    assert "refused" not in result.note
+
+
+@pytest.mark.parametrize("body, content_type", [
+    (PAGE, "text/html; charset=UTF-8"),
+    (codecs.BOM_UTF8 + b"\r\n  " + PAGE.encode(), "application/xml"),  # an HTML page by its first bytes alone
+    ("<HTML><BODY>Access denied</BODY></HTML>", "text/xml"),  # well-formed, but not a sitemap
+    ("<!-- edge -->\n<p>Request blocked.</p>", "text/html"),  # an HTML page by its type alone
+])
+def test_an_html_page_served_for_a_sitemap_is_a_refusal_and_not_asked_again(bench, body, content_type):
+    bench.fake.bodies["/sitemap-index.xml"] = body
+    bench.fake.types["/sitemap-index.xml"] = content_type
+    publisher = ListPublisher()
+    result = bench.check(publisher)
+    assert (result.status, result.found, publisher.events) == ("refused", 0, [])
+    assert result.note == ("0 URLs listed; 0 added, 0 changed, dropped pages not judged; 1 sitemap not read: "
+                           f"{HOST}/sitemap.xml: refused, the host served an HTML page instead of the sitemap")
+    assert bench.fake.paths() == ["/robots.txt", "/sitemap.xml", "/sitemap-index.xml"]
+
+
+@pytest.mark.parametrize("status, reason", [(401, "Unauthorized"), (403, "Forbidden"), (429, "Too Many Requests"),
+                                            (451, "Unavailable For Legal Reasons")])
+def test_a_refused_sitemap_beside_a_readable_one_leaves_a_partial_listing(bench, status, reason):
+    bench.fake.statuses["/pages-2.xml"] = status
+    publisher = ListPublisher()
+    result = bench.check(publisher)
+    # /b changed in the sitemap that was read; /c, which the refused one may still list, is not judged dropped.
+    assert [event.event_id for event in publisher.events] == [f"page_change:{HOST}/b|changed|2026-11-20T09:00:00-05:00"]
+    assert (result.status, result.found) == ("refused", 1)
+    assert result.note == ("3 URLs listed; 0 added, 1 changed, dropped pages not judged; 1 sitemap not read: "
+                           f"{HOST}/pages-2.xml: refused, the host answered HTTP {status} ({reason})")
+    assert bench.fake.paths().count("/pages-2.xml") == 1
+
+
+def test_a_sitemap_that_cannot_be_read_makes_an_error_of_a_check_with_refusals_too(bench):
+    bench.fake.statuses |= {"/pages-1.xml": 403, "/pages-2.xml": 503}
+    result = bench.check()
+    assert result.status == "error"
+    assert result.note == ("0 URLs listed; 0 added, 0 changed, dropped pages not judged; 2 sitemaps not read: "
+                           f"{HOST}/pages-2.xml: HTTP 503; "
+                           f"{HOST}/pages-1.xml: refused, the host answered HTTP 403 (Forbidden)")
+
+
+def test_a_sitemap_is_read_whatever_type_it_is_served_as(bench):
+    bench.fake.types["/pages-1.xml"] = "text/html"
+    result = bench.check()
+    assert (result.status, result.note) == ("ok", "5 URLs listed; 1 added, 1 changed, 1 dropped")
 
 
 def test_a_page_the_crawl_never_recorded_is_added_once_and_changed_after(bench):

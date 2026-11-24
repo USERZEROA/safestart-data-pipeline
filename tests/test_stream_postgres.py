@@ -43,6 +43,38 @@ def test_the_live_page_reads_one_modes_newest_events_from_an_index(conn):
     assert "events_mode_received" in " ".join(row[0] for row in plan)
 
 
+# source_checks as the schema first made it, before a check could be refused (the cloud VM's store was made then).
+FIRST_SOURCE_CHECKS = """
+CREATE TABLE stream.source_checks (
+    source text NOT NULL,
+    checked_at timestamptz NOT NULL,
+    status text NOT NULL CHECK (status IN ('ok', 'unchanged', 'error', 'skipped')),
+    found integer NOT NULL DEFAULT 0 CHECK (found >= 0),
+    note text NOT NULL DEFAULT '',
+    PRIMARY KEY (source, checked_at)
+)"""
+CHECK_ROW = "INSERT INTO stream.source_checks (source, checked_at, status) VALUES ('sitemaps-msha', %s, %s)"
+
+
+def test_a_store_made_before_refused_checks_takes_them_when_the_schema_is_applied(conn):
+    conn.execute("DROP SCHEMA stream CASCADE")
+    conn.execute("CREATE SCHEMA stream")
+    conn.execute(FIRST_SOURCE_CHECKS)
+    conn.execute(CHECK_ROW, (datetime(2026, 11, 22, tzinfo=UTC), "error"))
+    with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
+        conn.execute(CHECK_ROW, (datetime(2026, 11, 23, tzinfo=UTC), "refused"))
+    apply_schema(conn)
+    apply_schema(conn)  # as the initializer does before every start
+    conn.execute(CHECK_ROW, (datetime(2026, 11, 23, tzinfo=UTC), "refused"))
+    with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
+        conn.execute(CHECK_ROW, (datetime(2026, 11, 24, tzinfo=UTC), "fine"))
+    assert conn.execute("SELECT status FROM stream.source_checks ORDER BY checked_at").fetchall() == [
+        ("error",), ("refused",)]
+    assert conn.execute("SELECT conname FROM pg_constraint WHERE conrelid = 'stream.source_checks'::regclass"
+                        " AND contype = 'c' ORDER BY conname").fetchall() == [
+        ("source_checks_found_check",), ("source_checks_status_check",)]
+
+
 def violation(key, day, district="C04", sig_sub=True, mode="replay", through=None):
     """A violation event; `through` stamps a replayed one with its pass's last day, as stream/replay.py does."""
     return Event.new(kind="violation", key=key, mode=mode, occurred_at=day, title=f"Violation {key}",
