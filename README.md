@@ -5,13 +5,13 @@
 <table>
 <tr>
 <td width="44%" valign="top">
-<a href="https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@4ef40659f5233b9699fbe707d936c8ec84b0b95d/docs/SafeStart-data-pipeline-video.mp4"><img src="docs/images/video-thumbnail.png" alt="Video walkthrough, 7 min 38 s: click to watch" width="100%"></a>
+<a href="https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@dbbe7820da447be395bf9fc096c7f91e5a6f76c3/docs/SafeStart-data-pipeline-video.mp4"><img src="docs/images/video-thumbnail.png" alt="Video walkthrough, 8 min 6 s: click to watch" width="100%"></a>
 </td>
 <td valign="top">
 
-**Video walkthrough** (7 min 38 s): the pipeline told as a story, from a scattered public record to a mine brief
-served live.
-[Watch it in the browser](https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@4ef40659f5233b9699fbe707d936c8ec84b0b95d/docs/SafeStart-data-pipeline-video.mp4),
+**Video walkthrough** (8 min 6 s): it opens on a crew's pre-shift check in SafeStart, then follows the
+pipeline's main flow: a real Prefect run, the lake, the warehouse, the model, the live stream and a mine's brief.
+[Watch it in the browser](https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@dbbe7820da447be395bf9fc096c7f91e5a6f76c3/docs/SafeStart-data-pipeline-video.mp4),
 or [download the file](https://github.com/USERZEROA/safestart-data-pipeline/raw/main/docs/SafeStart-data-pipeline-video.mp4).
 
 **Project documentation** (PDF, 10 pages): the executive summary, the architecture, the key components and their
