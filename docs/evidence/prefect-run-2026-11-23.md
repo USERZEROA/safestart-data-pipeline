@@ -1,11 +1,11 @@
 # Prefect run, 2026-11-23
 
 One run of the daily batch flow, `safestart-batch`, as Prefect Cloud recorded it: the bulk downloads, the lake, the
-warehouse and the SafeStart exports, the steps of the README's Orchestration section. The run "victorious-goat" was
-started by hand, outside the flow's 14:00 UTC schedule, and executed by the orchestrator on the Google Cloud VM, whose
-container mounts the data root at `/data`. Everything below comes from an export of the Prefect Cloud API: the flow
-runs, every task run and every log line (127 for this run with its sub-flow, 127 for the next), without their ids. Times
-are UTC.
+warehouse and the SafeStart exports, the steps of [Orchestration](../DOCUMENTATION.md#orchestration). The run
+"victorious-goat" was started by hand, outside the flow's 14:00 UTC schedule, and executed by the orchestrator on the
+Google Cloud VM, whose container mounts the data root at `/data`. Everything below comes from an export of the Prefect
+Cloud API: the flow runs, every task run and every log line (127 for this run with its sub-flow, 127 for the next),
+without their ids. Times are UTC.
 
 | Flow run | Flow | Parameters | Started | Ended | Duration (min:s) | State |
 |---|---|---|---|---|---|---|
@@ -77,10 +77,10 @@ end time Prefect records for the run.
 ```
 
 The lake's 20 dataset lines name each current version and its rows; together they make 18,057,074 current rows, the
-README's figure. The VM's lake holds 42 versions, as the warehouse's `dataset_version` count shows: the two new ones on
-top of the 40 that the README and [lake.md](lake.md) count. The warehouse's rows are the README's 3.1 million
-violations, 1.2 million inspections and 276,013 accidents; its 102,470 crawl URLs and 13,216 eCFR sections (7,262 in
-title 29, 5,954 in title 30) are those of [sources.md](sources.md).
+documentation's figure. The VM's lake holds 42 versions, as the warehouse's `dataset_version` count shows: the two new
+ones on top of the 40 that the documentation and [lake.md](lake.md) count. The warehouse's rows are the
+documentation's 3.1 million violations, 1.2 million inspections and 276,013 accidents; its 102,470 crawl URLs and
+13,216 eCFR sections (7,262 in title 29, 5,954 in title 30) are those of [sources.md](sources.md).
 
 ## The next run
 

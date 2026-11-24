@@ -71,12 +71,12 @@ after a sustained block. A refusal (401, 403, 429, 451, a challenge page) is rec
 - **Re-check.** OSHA asks for 10 seconds between requests, which leaves a run about 4,000 in its 12-hour window,
   against 27,263 held copies the project needs, so not everything can be asked every day: a file is due a week after
   its last confirmation and a page a month after, and each manifest's `cycle` says how far the re-check has come.
-- **Not needed.** The crawl's not-needed rules (README, "Sources and ingestion") hold for the daily run too: a new URL,
-  or one due to be asked for its return, that they name is skipped (`not_needed`) and never asked; a held copy they
-  name, downloaded before the rule (on OSHA 13,855 of 41,118: paragraph-level interlinking pages, OSHA's copy of CFR
-  text, alliance and grant pages and the files only they link to), is kept but marked when a run starts, so that it is
-  never re-checked, confirmed or a hub, never in a manifest, and not in `cycle`. A copy the rules no longer name is
-  asked about again.
+- **Not needed.** The crawl's not-needed rules ([Sources and ingestion](DOCUMENTATION.md#sources-and-ingestion)) hold
+  for the daily run too: a new URL, or one due to be asked for its return, that they name is skipped (`not_needed`)
+  and never asked; a held copy they name, downloaded before the rule (on OSHA 13,855 of 41,118: paragraph-level
+  interlinking pages, OSHA's copy of CFR text, alliance and grant pages and the files only they link to), is kept but
+  marked when a run starts, so that it is never re-checked, confirmed or a hub, never in a manifest, and not in
+  `cycle`. A copy the rules no longer name is asked about again.
 - **Not backfilled.** A crawled site whose inventory still holds copies without a content hash (recorded before content
   hashes existed; `ssp status <site>` counts them as `copies_without_content_hash`) is not asked at all: the source is
   `skipped`, with the stop reason `not backfilled` and a note that says how many. The server holds none of the crawls'

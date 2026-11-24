@@ -288,9 +288,10 @@ names the lake's files without their folder.
 
   It reads each dataset's current version, so it gives these figures while the lake's current files are the five
   that `run.lake` names, and a later version's own figures after that. Without a lake,
-  `uv run ssp pipeline --model` downloads MSHA's current files, builds the lake and trains (README, Quick start). A
-  rerun of this code on these files (2026-11-24 00:53 UTC, workstation, two threads) wrote both files again with the
-  same values, apart from `created_at`, the timings and the peak memory.
+  `uv run ssp pipeline --model` downloads MSHA's current files, builds the lake and trains
+  ([Quick start](DOCUMENTATION.md#quick-start)). A rerun of this code on these files (2026-11-24 00:53 UTC,
+  workstation, two threads) wrote both files again with the same values, apart from `created_at`, the timings and the
+  peak memory.
 
 ## The lake in three tables (`analysis.py`)
 

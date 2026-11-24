@@ -302,7 +302,7 @@ or data decides which parsers and how much indexing a library of these pages and
 shows what was left out.
 
 MSHA's legacy host is mostly PDF by size (8,384 files, 25.8 GB). OSHA's skipped URLs (9,806 pages, 783 PDFs) are what
-its crawl rules leave out on purpose (README, [Sources and ingestion](../README.md#sources-and-ingestion)); its pages
+its crawl rules leave out on purpose ([Sources and ingestion](DOCUMENTATION.md#sources-and-ingestion)); its pages
 are 59% in the sitemap, MSHA's 73%.
 
 | site | kind | urls | downloaded | downloaded_gb | skipped | sitemap_share |

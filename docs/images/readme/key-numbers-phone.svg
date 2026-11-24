@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 748" width="640" height="748"
+     role="img" aria-labelledby="title">
+  <title id="title">Key numbers: 6 public sources (websites, eCFR, 20 datasets, an API); 84,602 files kept (44.6
+    GB raw archive, every version); 18.1 M lake rows (20 datasets, 40 versions in Parquet); 3.1
+    M violations (1.2 M inspections, 276,013 accidents); 10 SQL questions (over 8 tables and 5
+    marts in DuckDB); 374,400 events streamed (through Kafka into PostgreSQL); 0.909 test ROC
+    AUC (riskiest 5% at 10x the base rate); 556 tests (then the whole stack in CI); 5 dashboard
+    pages (live on Google Cloud over HTTPS)</title>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+    .tile { fill: #ffffff0b; stroke: #ffffff1f; stroke-width: 1.5; }
+    .num { font-size: 46px; font-weight: 700; }
+    .label { fill: #f1f5f9; font-size: 24px; font-weight: 600; }
+    .detail { fill: #94a3b8; font-size: 0px; }
+    .sweep { animation: sweep 7s ease-in-out infinite; }
+    @keyframes sweep { 0% { transform: translateX(-320px); } 45%, 100% { transform: translateX(640px); } }
+    @media (prefers-reduced-motion: reduce) { .sweep { animation: none; opacity: 0; } }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/><stop offset="1" stop-color="#16213b"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset=".5" stop-color="#ffffff" stop-opacity=".07"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="card"><rect width="640" height="748" rx="24"/></clipPath>
+  </defs>
+  <rect width="640" height="748" rx="24" fill="url(#bg)"/>
+  <g><rect class="tile" x="22" y="22" width="290" height="128" rx="16"/>
+    <rect x="22" y="40" width="4" height="92" rx="2" fill="#cbd5e1"/>
+    <text class="num" x="44" y="84" fill="#cbd5e1">6</text>
+    <text class="label" x="44" y="116">public sources</text></g>
+  <g><rect class="tile" x="328" y="22" width="290" height="128" rx="16"/>
+    <rect x="328" y="40" width="4" height="92" rx="2" fill="#60a5fa"/>
+    <text class="num" x="350" y="84" fill="#60a5fa">84,602</text>
+    <text class="label" x="350" y="116">files kept</text></g>
+  <g><rect class="tile" x="22" y="166" width="290" height="128" rx="16"/>
+    <rect x="22" y="184" width="4" height="92" rx="2" fill="#60a5fa"/>
+    <text class="num" x="44" y="228" fill="#60a5fa">18.1 M</text>
+    <text class="label" x="44" y="260">lake rows</text></g>
+  <g><rect class="tile" x="328" y="166" width="290" height="128" rx="16"/>
+    <rect x="328" y="184" width="4" height="92" rx="2" fill="#60a5fa"/>
+    <text class="num" x="350" y="228" fill="#60a5fa">3.1 M</text>
+    <text class="label" x="350" y="260">violations</text></g>
+  <g><rect class="tile" x="22" y="310" width="290" height="128" rx="16"/>
+    <rect x="22" y="328" width="4" height="92" rx="2" fill="#60a5fa"/>
+    <text class="num" x="44" y="372" fill="#60a5fa">10</text>
+    <text class="label" x="44" y="404">SQL questions</text></g>
+  <g><rect class="tile" x="328" y="310" width="290" height="128" rx="16"/>
+    <rect x="328" y="328" width="4" height="92" rx="2" fill="#fb923c"/>
+    <text class="num" x="350" y="372" fill="#fb923c">374,400</text>
+    <text class="label" x="350" y="404">events streamed</text></g>
+  <g><rect class="tile" x="22" y="454" width="290" height="128" rx="16"/>
+    <rect x="22" y="472" width="4" height="92" rx="2" fill="#60a5fa"/>
+    <text class="num" x="44" y="516" fill="#60a5fa">0.909</text>
+    <text class="label" x="44" y="548">test ROC AUC</text></g>
+  <g><rect class="tile" x="328" y="454" width="290" height="128" rx="16"/>
+    <rect x="328" y="472" width="4" height="92" rx="2" fill="#2dd4bf"/>
+    <text class="num" x="350" y="516" fill="#2dd4bf">556</text>
+    <text class="label" x="350" y="548">tests</text></g>
+  <g><rect class="tile" x="22" y="598" width="596" height="128" rx="16"/>
+    <rect x="22" y="616" width="4" height="92" rx="2" fill="#4ade80"/>
+    <text class="num" x="44" y="660" fill="#4ade80">5</text>
+    <text class="label" x="44" y="692">dashboard pages</text></g>
+
+  <g clip-path="url(#card)"><rect class="sweep" x="0" y="-40" width="213" height="828"
+    fill="url(#shine)" transform="translate(-320 0)"/></g>
+</svg>

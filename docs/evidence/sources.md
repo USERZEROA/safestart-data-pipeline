@@ -89,5 +89,5 @@ counts each SHA-256 once whichever site served it. These come from a read-only l
 and of each crawl store's fetched URLs, which also found the folder counts above and the reports' distinct files per
 site unchanged.
 
-These are the README's figures: 102,470 URLs recorded, 85,756 downloaded, which lead to 84,481 distinct files (43.1 GB),
-84,539 crawl files (10.9, 5.9 and 26.5 GB) and 63 bulk files (1.3 GB), 84,602 files and 44.6 GB in all.
+These are the documentation's figures: 102,470 URLs recorded, 85,756 downloaded, which lead to 84,481 distinct files
+(43.1 GB), 84,539 crawl files (10.9, 5.9 and 26.5 GB) and 63 bulk files (1.3 GB), 84,602 files and 44.6 GB in all.

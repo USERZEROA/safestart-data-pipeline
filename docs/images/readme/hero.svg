@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="1200" height="400" role="img"
+     aria-labelledby="title desc">
+  <title id="title">SafeStart data pipeline</title>
+  <desc id="desc">From the public mine-safety record to a crew's pre-shift check, in five stages: collect
+    (crawlers, bulk files, an API), keep (raw archive, Parquet lake), model (DuckDB, SQL, machine learning), stream
+    (Kafka into PostgreSQL) and serve (dashboard, exports, signed feed).</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+    .kicker { fill: #fb923c; font-size: 19px; font-weight: 700; letter-spacing: 3px; }
+    .tag { fill: #f8fafc; font-size: 44px; font-weight: 700; }
+    .hot { fill: #fb923c; }
+    .pill { fill: #ffffff0f; stroke: #ffffff38; stroke-width: 2; }
+    .label { fill: #f8fafc; font-size: 25px; font-weight: 700; text-anchor: middle; }
+    .sub { fill: #94a3b8; font-size: 15px; text-anchor: middle; }
+    .wire { fill: none; stroke: #fb923c; stroke-width: 3; stroke-linecap: round; stroke-dasharray: 2 9;
+            opacity: .9; }
+    .packet { fill: #fdba74; }
+    .halo { fill: #f97316; opacity: .45; }
+    /* The still picture is complete; motion only adds to it. Every 6 s a wave runs along the chain: a stage lights,
+       a packet crosses to the next stage, which lights as it arrives. The wires' dashes flow all the time. */
+    .wire { animation: flow 1.1s linear infinite; }
+    .pill { animation: lit 6s ease-in-out infinite; }
+    .move { animation: cross 6s ease-in-out infinite backwards; }
+    .p2 .pill { animation-delay: 1.2s; } .p3 .pill { animation-delay: 2.4s; }
+    .p4 .pill { animation-delay: 3.6s; } .p5 .pill { animation-delay: 4.8s; }
+    .m1 { animation-delay: .6s; } .m2 { animation-delay: 1.8s; }
+    .m3 { animation-delay: 3s; } .m4 { animation-delay: 4.2s; }
+    @keyframes flow { to { stroke-dashoffset: -22; } }
+    @keyframes lit { 0%, 30%, 100% { stroke: #ffffff38; fill: #ffffff0f; } 10% { stroke: #fb923c; fill: #f9731624; } }
+    @keyframes cross { 0% { transform: translateX(-21px); opacity: 0; } 3%, 17% { opacity: 1; }
+                       20%, 100% { transform: translateX(21px); opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .wire, .pill, .move { animation: none; } }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#16213b"/>
+    </linearGradient>
+    <radialGradient id="glow" cx=".5" cy=".72" r=".55">
+      <stop offset="0" stop-color="#f97316" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#f97316" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#ffffff" stroke-opacity=".05"/>
+    </pattern>
+    <filter id="soft" x="-1" y="-1" width="3" height="3"><feGaussianBlur stdDeviation="4"/></filter>
+  </defs>
+  <rect width="1200" height="400" rx="28" fill="url(#bg)"/>
+  <rect width="1200" height="400" rx="28" fill="url(#grid)"/>
+  <rect width="1200" height="400" rx="28" fill="url(#glow)"/>
+
+  <text class="kicker" x="60" y="72">IDS 706 · FINAL PROJECT · HAIWEI YU</text>
+  <text class="tag" x="60" y="134">From the public mine-safety record</text>
+  <text class="tag" x="60" y="188">to a crew's <tspan class="hot">pre-shift check</tspan></text>
+
+  <!-- five stages, 176 wide, 50 apart: x = 60 + 226 i -->
+  <g class="p1"><rect class="pill" x="60" y="236" width="176" height="62" rx="31"/>
+    <text class="label" x="148" y="276">Collect</text>
+    <text class="sub" x="148" y="332">crawlers · bulk files · API</text></g>
+  <g class="p2"><rect class="pill" x="286" y="236" width="176" height="62" rx="31"/>
+    <text class="label" x="374" y="276">Keep</text>
+    <text class="sub" x="374" y="332">raw archive · Parquet lake</text></g>
+  <g class="p3"><rect class="pill" x="512" y="236" width="176" height="62" rx="31"/>
+    <text class="label" x="600" y="276">Model</text>
+    <text class="sub" x="600" y="332">DuckDB · SQL · ML</text></g>
+  <g class="p4"><rect class="pill" x="738" y="236" width="176" height="62" rx="31"/>
+    <text class="label" x="826" y="276">Stream</text>
+    <text class="sub" x="826" y="332">Kafka → PostgreSQL</text></g>
+  <g class="p5"><rect class="pill" x="964" y="236" width="176" height="62" rx="31"/>
+    <text class="label" x="1052" y="276">Serve</text>
+    <text class="sub" x="1052" y="332">dashboard · exports · feed</text></g>
+
+  <!-- the gaps: a flowing wire and a packet each -->
+  <line class="wire" x1="240" y1="267" x2="282" y2="267"/>
+  <line class="wire" x1="466" y1="267" x2="508" y2="267"/>
+  <line class="wire" x1="692" y1="267" x2="734" y2="267"/>
+  <line class="wire" x1="918" y1="267" x2="960" y2="267"/>
+  <g transform="translate(261 267)"><g class="move m1"><circle class="halo" r="10" filter="url(#soft)"/>
+    <circle class="packet" r="5"/></g></g>
+  <g transform="translate(487 267)"><g class="move m2"><circle class="halo" r="10" filter="url(#soft)"/>
+    <circle class="packet" r="5"/></g></g>
+  <g transform="translate(713 267)"><g class="move m3"><circle class="halo" r="10" filter="url(#soft)"/>
+    <circle class="packet" r="5"/></g></g>
+  <g transform="translate(939 267)"><g class="move m4"><circle class="halo" r="10" filter="url(#soft)"/>
+    <circle class="packet" r="5"/></g></g>
+</svg>

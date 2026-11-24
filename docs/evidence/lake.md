@@ -34,7 +34,7 @@ field holds the separator); every version's rows equal its lines read and the ro
   2026-11-17 13:54:20 to 13:54:25 GMT, first seen on 2026-11-18 between 00:29 and 00:30 UTC; and the current one,
   Last-Modified Monday 2026-11-23 12:50:14 to 12:50:20 GMT, first seen on 2026-11-23 between 13:19 and 13:20 UTC.
 - The 40 Parquet files take 839,826,466 bytes (0.84 GB). With the 20 datasets and 18,057,074 current rows, these are the
-  README's lake figures.
+  documentation's lake figures.
 - The Google Cloud VM keeps its own copy of the data root. Its batch run of 2026-11-23 at 22:11 UTC took a third version
   of `violations` (`80be817e8f69bbb4`) and of `assessed_violations` (`75adc2715cfff6e8`), each with a new SHA-256 and as
   many rows as the current version above, so the VM's lake holds 42 versions whose current ones add up to the same

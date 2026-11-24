@@ -4,8 +4,8 @@ SafeStart's data pipeline collects the public U.S. mine and workplace safety rec
 (except the cloud server's own copies of withdrawn official files, deleted after 30 days), and serves two kinds of
 consumers: analysts (a DuckDB warehouse and its SQL marts) and a live dashboard fed by Kafka.
 
-The diagram of the whole system is the one in the README's [Architecture](../README.md#architecture) section; this
-page gives the detail behind it: the packages, the shared rules, the settings, the event contract, the streaming
+The diagram of the whole system is in the [Architecture section](DOCUMENTATION.md#architecture) of the documentation.
+This page gives the detail behind it: the packages, the shared rules, the settings, the event contract, the streaming
 services, the stores, the orchestration, the entry points, the deployment and the constraints.
 
 ## Packages (`src/safestart_pipeline/`)

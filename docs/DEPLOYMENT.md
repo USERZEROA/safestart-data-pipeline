@@ -285,7 +285,16 @@ for the orchestrator to write.
 
 Operating the server:
 
-- Update after a push to `main` by stopping and starting the server (or `sudo reboot` in a maintenance shell):
+- Update after a push to `main` by stopping and starting the VM. If `deploy/gcp/startup.sh` changed, first upload it
+  from the repository root. The VM boots from the startup script stored in instance metadata. Updating the checkout
+  alone leaves the old boot script in place.
+
+  ```bash
+  gcloud compute instances add-metadata safestart-pipeline --zone=us-central1-a \
+    --metadata-from-file=startup-script=deploy/gcp/startup.sh
+  ```
+
+  Then stop and start the VM to run the new script. For an application-only update after a push to `main`, start here.
 
   ```bash
   gcloud compute instances stop safestart-pipeline --zone=us-central1-a
