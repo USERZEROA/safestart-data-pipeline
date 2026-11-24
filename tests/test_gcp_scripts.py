@@ -1,7 +1,7 @@
 """The Google Cloud scripts, run against a stand-in gcloud that records its arguments: the server gets the machine,
 disk, address, identity and firewall the deployment promises; the upload copies the parts of the data root the server
 needs without deleting, from the data root it is given, never a guessed one, and fails when it finds nothing to copy;
-and neither side copies a database's journal or work in progress."""
+and neither side copies a database's journal or work in progress, nor the official-files feed the server publishes."""
 
 from __future__ import annotations
 
@@ -18,7 +18,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 GCP = ROOT / "deploy" / "gcp"
 EXCLUDE = ("--exclude=.*objects.tmp.*,.*[.]partial$,.*[.]sqlite-[a-z]+$,.*[.]duckdb[.-].*"
-           ",.*[.]tmp$,.*[.][0-9a-f]{16}[.]txt$")
+           ",.*[.]tmp$,.*[.][0-9a-f]{16}[.]txt$,.*official.latest.*,.*official.manifests.*"
+           ",.*official.public-key.*,.*official[.]sqlite$")
 SERVER_FOLDERS = ("raw/bulk", "state", "lake", "warehouse", "exports")
 STUB = """\
 import json, os, sys
@@ -278,6 +279,10 @@ def test_the_windows_upload_needs_a_data_root_that_holds_a_folder_to_copy(gcloud
     ("lake/msha_ogd/_dictionary.parquet.tmp", False), ("lake/msha_ogd/mines/manifest.json", True),
     ("lake/msha_ogd/_dictionary.parquet", True), ("exports/safestart/manifest.json", True),
     ("raw/bulk/objects/tmp/download", False), ("raw/bulk/objects/0a/1b/0a1b2c", True),
+    # The official-files feed and its record belong to the server that publishes the feed.
+    ("exports/official/latest.json", False), ("exports/official/latest.json.sig", False),
+    ("exports/official/manifests/12.json", False), ("exports/official/public-key.txt", False),
+    ("state/official.sqlite", False), ("state/crawl-osha.sqlite", True),
 ])
 def test_files_in_use_are_never_copied(path, copied):
     """gcloud matches each pattern (a Python regular expression) against a file's path below the folder it copies,
@@ -294,8 +299,8 @@ def test_the_server_copies_what_it_lacks_of_the_folders_it_needs():
     rsync = re.search(r'gcloud storage rsync (.+?) --exclude="\$exclude" "gs://\$bucket/\$part" "\$data/\$part"\n',
                       script)
     assert rsync and rsync[1].split() == ["--recursive", "--no-clobber"]  # never replaces nor deletes on the server
-    exclude = re.findall(r"^exclude='([^']+)'$", script, re.MULTILINE)
-    assert [f"--exclude={pattern}" for pattern in exclude] == [EXCLUDE]  # the same files left out both ways
+    exclude = "".join(re.findall(r"^exclude\+?='([^']+)'$", script, re.MULTILINE))
+    assert f"--exclude={exclude}" == EXCLUDE  # the same files left out both ways
     assert "chown -R 10001:10001 \"$data\"" in script  # the image's user, as whom the orchestrator writes
     assert re.search(r"scripts/start[.]py .*--with-orchestrator", script)  # the server runs the batch flows
 

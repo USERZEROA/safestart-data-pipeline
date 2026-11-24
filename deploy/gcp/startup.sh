@@ -60,8 +60,12 @@ echo "safestart: code at $(git -C "$app" rev-parse --short HEAD)"
 # them current (new downloads, the lake, the warehouse, the exports), so an older copy in the bucket never replaces
 # them, and nothing on the server is deleted. A database's journal files (SQLite -wal/-shm, DuckDB .wal) and work in
 # progress (partial downloads; a lake build's *.partial, *.tmp and transcoded .<16 hex digits>.txt) are never copied,
-# so a journal cannot meet another copy of its database and no work file outlives the build that wrote it.
+# so a journal cannot meet another copy of its database and no work file outlives the build that wrote it. Nor are the
+# official-files feed and its record (exports/official/, state/official.sqlite), which only the server writes: a copy
+# from elsewhere would mix another chain of manifests into its own, or bring back manifests it removed after 45 days.
+# The crawls' raw/<site>/ folders are never copied either, so an original the daily update purged stays deleted here.
 exclude='.*objects.tmp.*,.*[.]partial$,.*[.]sqlite-[a-z]+$,.*[.]duckdb[.-].*,.*[.]tmp$,.*[.][0-9a-f]{16}[.]txt$'
+exclude+=',.*official.latest.*,.*official.manifests.*,.*official.public-key.*,.*official[.]sqlite$'
 install -d -m 0755 "$data"
 if [[ -n $bucket ]]; then
   command -v gcloud >/dev/null || snap install google-cloud-cli --classic
