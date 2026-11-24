@@ -1,5 +1,6 @@
 """One GET: conditional headers, no automatic redirects, a size cap enforced while streaming, and the body stored by its
-SHA-256 so identical files are kept once."""
+SHA-256 so identical files are kept once. With keep=False a body is left staged in the object store's tmp folder
+instead, for the caller to keep (ObjectStore.keep) or drop (ObjectStore.drop) once it has looked at it."""
 
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ class FetchResult:
     too_large: bool = False
     error: str | None = None
     sample: bytes = b""
+    staged: bool = False  # the body at `path` waits in tmp/ to be kept or dropped
 
 
 class ObjectStore:
@@ -60,6 +62,17 @@ class ObjectStore:
             os.replace(temp, final)
         return final
 
+    def keep(self, result: FetchResult) -> None:
+        """Store a staged body under its SHA-256."""
+        if result.staged and result.path is not None and result.sha256:
+            result.path, result.staged = self.commit(result.path, result.sha256), False
+
+    def drop(self, result: FetchResult) -> None:
+        """Delete a staged body; a stored object is never touched."""
+        if result.staged and result.path is not None:
+            result.path.unlink(missing_ok=True)
+            result.path, result.staged = None, False
+
 
 def parse_retry_after(value: str | None, now: Callable[[], float] = time.time) -> float | None:
     """Seconds to wait from a Retry-After header (delta-seconds or HTTP date); None when absent or unreadable."""
@@ -84,6 +97,7 @@ def fetch(
     max_bytes: int = MAX_BYTES,
     max_seconds: float = MAX_SECONDS,
     clock: Callable[[], float] = time.monotonic,
+    keep: bool = True,
 ) -> FetchResult:
     headers = {}
     if etag:
@@ -133,7 +147,10 @@ def fetch(
                 temp.unlink(missing_ok=True)
                 raise
             result.sha256, result.size = digest.hexdigest(), size
-            result.path = objects.commit(temp, result.sha256)
+            if keep:
+                result.path = objects.commit(temp, result.sha256)
+            else:
+                result.path, result.staged = temp, True
             return result
     except httpx.HTTPError as problem:
         return FetchResult(status=None, error=f"{type(problem).__name__}: {problem}"[:500])

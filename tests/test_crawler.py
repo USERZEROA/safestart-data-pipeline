@@ -37,12 +37,26 @@ HOME = """<html><body>
 <a href="/search?q=1">search</a> <a href="https://other.test/x">elsewhere</a> <a href="http://example.test/c">C</a>
 </body></html>"""
 HTML = {"content-type": "text/html; charset=utf-8"}
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 100
+WAV = b"RIFF\x24\0\0\0WAVEfmt " + b"\0" * 28
 
 
 def pdf_bytes(size: int) -> bytes:
     """A PDF of `size` bytes as the type check sees one: the header, filler and the end-of-file marker."""
     head, tail = b"%PDF-1.4\n", b"\n%%EOF\n"
     return head + b"0" * (size - len(head) - len(tail)) + tail
+
+
+def file_answer(request: httpx.Request) -> httpx.Response:
+    """A body of the kind the address names: a PDF, a picture, a recording, or else a line of text."""
+    path = request.url.path
+    if path.endswith(".pdf"):
+        return httpx.Response(200, content=pdf_bytes(200), headers={"content-type": "application/pdf"})
+    if path.endswith(".png"):
+        return httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
+    if path.endswith(".wav"):
+        return httpx.Response(200, content=WAV, headers={"content-type": "audio/wav"})
+    return httpx.Response(200, text="ok", headers={"content-type": "text/plain"})
 
 
 class FakeSite:
@@ -72,7 +86,7 @@ class FakeSite:
         if path == "/c":
             return httpx.Response(200, text="plain text", headers={"content-type": "text/plain"})
         if path == "/big.pdf":
-            return httpx.Response(200, content=b"%PDF" + b"0" * 5000, headers={"content-type": "application/pdf"})
+            return httpx.Response(200, content=pdf_bytes(5004), headers={"content-type": "application/pdf"})
         if path == "/gone":
             return httpx.Response(404, text="missing")
         if path == "/flaky":
@@ -83,7 +97,7 @@ class FakeSite:
         if path == "/moved":
             return httpx.Response(301, headers={"location": "/b"})
         if path == "/logo.png":
-            return httpx.Response(200, content=b"PNG" + b"0" * 100, headers={"content-type": "image/png"})
+            return httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
         return httpx.Response(404)
 
 
@@ -317,7 +331,7 @@ def test_a_host_without_sitemaps_is_seeded_from_another_crawls_links(tmp_path):
     def handler(request):
         if request.url.path == "/robots.txt":
             return httpx.Response(404)
-        return httpx.Response(200, text="ok", headers={"content-type": "text/plain"})
+        return file_answer(request)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     legacy = Site(name="legacy", canonical_host="legacy.example.test", hosts=frozenset({"legacy.example.test"}), sitemaps=(),
@@ -454,7 +468,7 @@ def test_content_the_project_does_not_need_is_recorded_but_not_downloaded(tmp_pa
             return httpx.Response(404)
         if request.url.path == "/":
             return httpx.Response(200, text=page, headers=HTML)
-        return httpx.Response(200, text="ok", headers={"content-type": "text/plain"})
+        return file_answer(request)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     crawler = Crawler(example_site(name="needs", sitemaps=(), **UNNEEDED), tmp_path, client, sleep=clock.sleep,
