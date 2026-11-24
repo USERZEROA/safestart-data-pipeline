@@ -1,21 +1,18 @@
-MIT License
+Copyright (c) 2026 Haiwei Yu. All rights reserved.
 
-Copyright (c) 2026 Haiwei Yu
+This repository and everything in it (source code, configuration, tests, documentation, diagrams, the video, the PDF
+and the synthetic sample data) are the author's work and are not licensed for any use except the one below.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Permitted: the instructors and teaching assistants of the course this project was submitted to may view, download,
+build and run this repository to evaluate the submission.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Not permitted without the author's prior written permission: copying, reproducing, redistributing, republishing or
+mirroring this repository or any part of it; modifying it or creating works based on it; and any commercial use.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Viewing and forking on GitHub are governed by GitHub's Terms of Service; a fork grants no rights beyond those terms.
+
+The public records the pipeline downloads from MSHA, OSHA, eCFR, govinfo and the Federal Register belong to their
+publishers and are not covered by this notice.
+
+THE REPOSITORY IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT SHALL THE AUTHOR BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM OR IN CONNECTION WITH THE REPOSITORY OR ITS USE.

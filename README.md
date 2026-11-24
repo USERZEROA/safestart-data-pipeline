@@ -532,4 +532,6 @@ scripts/                  start.py (Compose launcher), smoke_test.py, crawl star
 
 ## License
 
-MIT
+Copyright (c) 2026 Haiwei Yu. All rights reserved. Course staff may view, download and run this repository
+to evaluate it; any other copying, redistribution, modification or commercial use needs the author's written
+permission. See [LICENSE](LICENSE).

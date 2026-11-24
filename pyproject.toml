@@ -3,7 +3,7 @@ name = "safestart-data-pipeline"
 version = "0.1.0"
 description = "Data pipeline for U.S. mine and workplace safety sources (MSHA, OSHA, eCFR) behind the SafeStart application"
 readme = "README.md"
-license = "MIT"
+license = "LicenseRef-Proprietary"
 license-files = ["LICENSE"]
 authors = [{ name = "Haiwei Yu" }]
 requires-python = ">=3.12"
