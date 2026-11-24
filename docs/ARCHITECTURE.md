@@ -1,7 +1,8 @@
 # Architecture
 
-SafeStart's data pipeline collects the public U.S. mine and workplace safety record, keeps every version of it, and
-serves two kinds of consumers: analysts (a DuckDB warehouse and its SQL marts) and a live dashboard fed by Kafka.
+SafeStart's data pipeline collects the public U.S. mine and workplace safety record, keeps every version it downloads
+(except the cloud server's own copies of withdrawn official files, deleted after 30 days), and serves two kinds of
+consumers: analysts (a DuckDB warehouse and its SQL marts) and a live dashboard fed by Kafka.
 
 The diagram of the whole system is the one in the README's [Architecture](../README.md#architecture) section; this
 page gives the detail behind it: the packages, the shared rules, the settings, the event contract, the streaming

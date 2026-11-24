@@ -361,7 +361,8 @@ Without the key the daily update still records what it finds, and the dashboard 
 first signed manifest then covers everything since the first run. Manifests are kept 45 days. After each run the purge
 deletes from the server's disk the originals of URLs retired more than 30 days ago, and only where the key is set:
 anywhere else, a workstation that runs the orchestrator on its archive among them, it only reports what it would
-delete. The bucket and the workstation keep their copies, since the server can only read the bucket.
+delete. The bucket and the workstation keep their copies, since the server can only read the bucket, but they never
+receive what the server downloads: an edition only the server fetched is gone once purged.
 
 ## Costs
 

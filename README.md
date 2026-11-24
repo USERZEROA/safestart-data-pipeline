@@ -24,10 +24,10 @@ SafeStart, the JSA application this pipeline serves, needs that record clean, cu
 mine.
 
 **What was built.** This repository is SafeStart's data pipeline. It collects the public U.S. mine and workplace safety
-record, keeps every version of it, models it into a warehouse, streams MSHA's enforcement events through Kafka as they
-appear, and turns it into what a crew and an analyst need before a shift: which standards inspectors cite at a mine,
-what its recent accidents were, how its record compares, and which mines are most likely to have a serious accident
-next quarter.
+record, keeps every version it downloads (except the cloud server's own copies of withdrawn official files, deleted
+after 30 days), models it into a warehouse, streams MSHA's enforcement events through Kafka as they appear, and turns
+it into what a crew and an analyst need before a shift: which standards inspectors cite at a mine, what its recent
+accidents were, how its record compares, and which mines are most likely to have a serious accident next quarter.
 
 Everything but the crawls runs on one small host, a 4 GB e2-medium on Google Cloud: bulk downloads feed a
 content-addressed raw archive, a typed Parquet lake (Polars), a DuckDB warehouse with marts and documented SQL
@@ -559,9 +559,12 @@ every flow and task run with its logs, and `scripts/smoke_test.py` proves the st
 **Data governance.** Every lake file is named after the SHA-256 of the source file it came from and its manifest names
 that file, when it was first seen and its Last-Modified date; events carry their dataset and version; the warehouse
 records its sources in `dataset_version` and `build_info`, and the exports' manifest carries the lake versions, the
-eCFR editions and file hashes. Every version of every source is kept. `_dictionary.parquet` documents every column with
-MSHA's own description, and each type override states its reason. The crawls follow each site's robots.txt and pacing,
-and what is left out is recorded with a reason. Only public data is collected, and the cloud bucket is private.
+eCFR editions and file hashes. Every version the pipeline downloads is kept, with one exception by design: the cloud
+server deletes an edition its daily update downloaded once its URL has been retired (a 404 or 410) for 30 days, and
+nothing copies the server's downloads elsewhere, so that edition is then gone; the workstation's raw archive and the
+bucket keep what they hold, since the purge never touches them. `_dictionary.parquet` documents every column with MSHA's
+own description, and each type override states its reason. The crawls follow each site's robots.txt and pacing, and what
+is left out is recorded with a reason. Only public data is collected, and the cloud bucket is private.
 
 **Reliability.** Writes are atomic (a temporary file renamed into place for every lake file, manifest, warehouse and
 export); one writer lock on the data root keeps a second batch, model or lake run out, and another keeps one warehouse

@@ -534,7 +534,7 @@ def official_files() -> None:
         else:
             st.caption(f"Latest purge of retired originals on this host ({when}): {int(frame['deleted'].sum()):,} "
                        f"files deleted, {frame['deleted_bytes'].sum() / 1e6:,.1f} MB, 30 days after every URL that "
-                       "referenced them was gone; the bucket keeps its copies.")
+                       "referenced them was gone.")
         for failed in frame.loc[frame["outcome"] == "error"].itertuples():
             st.warning(f"The latest purge of {failed.site} failed: {md(failed.note)}.", icon=":material/warning:")
 

@@ -230,9 +230,10 @@ from the next manifest on; since SafeStart's importer is to pin the public key, 
 - Only the server's copies are deleted. The flow deletes only where the feed's signing key is set, which only the
   server's `.env` holds; anywhere else, a workstation that runs the orchestrator on its archive among them, its purge
   is a dry run. The bucket and the workstation keep their copies: the server can only read the bucket, and the
-  workstation is never touched. The boot copy (`deploy/gcp/startup.sh`) never brings `raw/<site>/` to the server, so
-  nothing purged comes back; on the server most originals were never there (it holds only what its own runs
-  downloaded), and the purge counts those as not on this host.
+  workstation is never touched. They never receive what the server downloads, though, so an edition only the server
+  fetched has no other copy and is gone once purged. The boot copy (`deploy/gcp/startup.sh`) never brings
+  `raw/<site>/` to the server, so nothing purged comes back; on the server most originals were never there (it holds
+  only what its own runs downloaded), and the purge counts those as not on this host.
 
 ## Where to see it
 
@@ -280,4 +281,5 @@ from the next manifest on; since SafeStart's importer is to pin the public key, 
   normally a day.
 - A new server starts a new chain at sequence 1; SafeStart's importer is to treat that as a broken chain until told.
 - A key change will need a SafeStart change, since SafeStart's importer is to pin the public key.
-- The purge deletes only the server's copies; the bucket and the workstation keep everything.
+- The purge deletes only the server's copies, but the bucket and the workstation never receive what the server
+  downloads: an edition only the server fetched is gone once purged.
