@@ -105,7 +105,8 @@ def heartbeat(marks: pd.DataFrame, spans: pd.DataFrame, start: pd.Timestamp, now
     status and note for its tooltip; `spans` has row, begins, ends, tone, what, when and status."""
     domain = [start.isoformat(), end.isoformat()]
     rows = alt.Y("row:N", title=None, scale=alt.Scale(domain=list(HEARTBEAT_ROWS)),
-                 axis=alt.Axis(labelOverlap=False, ticks=False, domain=False, labelPadding=8, labelLimit=140))
+                 # the padding keeps a mark at the window's first instant (half outside the plot) off the label
+                 axis=alt.Axis(labelOverlap=False, ticks=False, domain=False, labelPadding=12, labelLimit=160))
     x = alt.X("at:T", scale=alt.Scale(type="utc", domain=domain), axis=_time_axis(start, end))
     tones = alt.Scale(domain=list(TONES), range=list(TONES.values()))
     tooltip = [alt.Tooltip("what:N", title="What"), alt.Tooltip("when:N", title="When (UTC)"),

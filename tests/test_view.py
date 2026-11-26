@@ -45,3 +45,20 @@ def test_event_titles_urls_and_dates_are_literal_and_new_rows_alone_move():
     assert 'title="2026-11-24 11:05:00 UTC"' in html and "ss-anim" not in html
     changed = view.event_list([replace(row, fresh=True, link="javascript:void(0)")])
     assert "fresh ss-anim" in changed and "href=" not in changed
+
+
+def test_a_status_table_escapes_every_cell_keeps_a_notes_lines_and_dots_its_status():
+    columns = (view.Column("Source"), view.Column("Status", "nowrap"), view.Column("Requests", "num"),
+               view.Column("Note", "note"))
+    note = "sitemap not read: <html> & more" + chr(10) + "the host served an HTML page"
+    html = view.table(columns, [["msha", view.Cell("refused", "warning"), "3,000", note]], label='Runs "now"',
+                      minimum=700)
+    assert 'aria-label="Runs &quot;now&quot;"' in html and "--min:700px" in html
+    assert 'class="num">Requests</th>' in html
+    # each cell carries its column's label for a phone's card, and holds its whole value in one child
+    assert '<td role="cell" class="num" data-label="Requests"><span>3,000</span></td>' in html
+    assert '<span><span class="ss-dot warning" aria-hidden="true"></span>refused</span></td>' in html
+    assert ('data-label="Note"><span>sitemap not read: &lt;html&gt; &amp; more<br>the host served an HTML page'
+            '</span></td>') in html
+    with pytest.raises(ValueError):  # a row with a missing cell is a mistake, not a shorter row
+        view.table(columns, [["msha", "ok"]], label="Runs")

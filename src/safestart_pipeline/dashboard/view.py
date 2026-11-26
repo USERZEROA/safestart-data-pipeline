@@ -215,6 +215,45 @@ def cards(items: Sequence[str], columns: int | None = None) -> str:
 
 
 @dataclass(frozen=True)
+class Column:
+    """A status table's column. `kind` sets how its cells read (theme.css): "text"; "nowrap" and "when" stay on one
+    line; "num" is right-aligned tabular digits; "note" is the wide column whose text wraps, so it is read in full."""
+
+    label: str
+    kind: str = "text"
+
+
+@dataclass(frozen=True)
+class Cell:
+    """A cell with a status dot of `tone` (a key of charts.TONES) before its text."""
+
+    text: str
+    tone: str = "muted"
+
+
+def table(columns: Sequence[Column], rows: Iterable[Sequence[object]], *, label: str, minimum: int = 640) -> str:
+    """A small status table. Every cell wraps instead of being cut, so a long note is read in full; a screen
+    narrower than `minimum` px scrolls the table sideways inside its panel, with its first column held in place, and
+    a phone shows each row as a card of labelled lines (theme.css). Texts are escaped; a note keeps its line breaks.
+    The roles keep the table's meaning for screen readers when a phone lays it out as cards."""
+    head = "".join(f'<th scope="col" role="columnheader" class="{esc(column.kind)}">{esc(column.label)}</th>'
+                   for column in columns)
+    body = []
+    for row in rows:
+        cells = []
+        for column, value in zip(columns, row, strict=True):
+            content = (f"{dot(value.tone)}{esc(value.text)}" if isinstance(value, Cell)
+                       else esc(value).replace("\n", "<br>"))
+            # one child per cell, so a phone's card puts the whole value beside its label
+            cells.append(f'<td role="cell" class="{esc(column.kind)}" data-label="{esc(column.label)}">'
+                         f"<span>{content}</span></td>")
+        body.append(f'<tr role="row">{"".join(cells)}</tr>')
+    return (f'<div class="ss-table" role="region" aria-label="{esc(label)}" tabindex="0" style="--min:{int(minimum)}px">'
+            f'<table role="table"><thead role="rowgroup"><tr role="row">{head}</tr></thead>'
+            f'<tbody role="rowgroup">{"".join(body)}</tbody></table></div>')
+
+
+@dataclass(frozen=True)
 class Line:
     """A line of a card's list: a status dot, what it is, and when (`soon` marks a time to come in the accent)."""
 

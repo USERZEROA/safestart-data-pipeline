@@ -334,6 +334,46 @@ div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="bor
 .ss-list .when.soon { color: var(--ss-accent-ink); }
 .ss-list .sep { grid-column: 1 / -1; border-top: 1px solid var(--ss-line); margin: 2px 0; }
 
+/* Small status tables (view.table): cells wrap instead of being cut. Narrower than the table's --min, it scrolls
+   inside its panel with the first column held; on a phone each row becomes a card of labelled lines. */
+.ss-table {
+  overflow-x: auto; margin: 4px 0 10px; border: 1px solid var(--ss-line); border-radius: var(--ss-radius);
+  background: var(--ss-scanlines), var(--ss-surface); box-shadow: 0 3px 14px light-dark(#31596f10, #020b164f);
+}
+.ss-table:focus-visible { outline: 2px solid var(--ss-accent); outline-offset: 2px; }
+.ss-table table { width: 100%; min-width: var(--min, 640px); border-collapse: collapse; font-size: 0.84rem; }
+.ss-table th, .ss-table td { padding: 8px 10px; text-align: left; vertical-align: top; line-height: 1.45; }
+.ss-table th {
+  color: var(--ss-ink-2); font-weight: 600; white-space: nowrap; background: light-dark(#dceaf1, #152d40);
+  border-bottom: 1px solid var(--ss-line);
+}
+.ss-table td { color: var(--ss-ink-2); border-top: 1px solid color-mix(in srgb, var(--ss-line) 55%, transparent); }
+.ss-table tbody tr:first-child td { border-top: 0; }
+.ss-table th:first-child, .ss-table td:first-child { position: sticky; left: 0; z-index: 1; background: var(--ss-surface); }
+.ss-table th:first-child { background: light-dark(#dceaf1, #152d40); }
+.ss-table td:first-child { color: var(--ss-ink); font-family: var(--ss-mono); }
+.ss-table .nowrap, .ss-table .when { white-space: nowrap; }
+.ss-table .num { text-align: right; white-space: nowrap; }
+.ss-table td.num { font-family: var(--ss-mono); font-variant-numeric: tabular-nums; }
+.ss-table td.note { min-width: 16rem; overflow-wrap: anywhere; }
+.ss-table td .ss-dot { display: inline-block; margin-right: 6px; vertical-align: 1px; }
+@media (max-width: 640px) {
+  .ss-table { overflow-x: visible; }
+  .ss-table table, .ss-table tbody, .ss-table tr, .ss-table td { display: block; min-width: 0; }
+  .ss-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .ss-table tr { padding: 9px 12px; border-top: 1px solid var(--ss-line); }
+  .ss-table tbody tr:first-child { border-top: 0; }
+  .ss-table td, .ss-table td.num, .ss-table td.note {
+    display: grid; grid-template-columns: 8.6rem minmax(0, 1fr); gap: 10px; min-width: 0; padding: 2px 0;
+    border: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; position: static; background: none;
+  }
+  .ss-table td::before {
+    content: attr(data-label); color: var(--ss-muted); font-family: var(--ss-mono); font-size: 0.74rem;
+    line-height: 1.9;
+  }
+  .ss-table td:first-child { font-weight: 650; }
+}
+
 .ss-meter {
   position: relative; height: 6px; border-radius: 999px; background: var(--ss-accent-soft); overflow: hidden;
 }

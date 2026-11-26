@@ -215,6 +215,11 @@ def text_of(app: AppTest) -> str:
     return "\n".join(map(str, parts))
 
 
+def html_of(app: AppTest) -> list[str]:
+    """The markup of every `st.html` block a run shows, apart from the injected theme."""
+    return [element.proto.body for element in app.get("html") if not element.proto.body.startswith("<style>")]
+
+
 def chart_count(app: AppTest) -> int:
     return len(app.get("vega_lite_chart"))
 
@@ -375,7 +380,7 @@ def test_the_sources_page_shows_the_latest_official_run_and_the_feed(stores):
     text = text_of(app)
     assert "Official files" in text and "last started 12 hours ago" in text and "ended 1 hour ago (done)" in text
     for tile in ("New: 3", "Changed: 2", "Gone: 1", "Restored: 0", "Moved: 0", "Refused files: 1",
-                 "Confirmed unchanged: 2,500"):
+                 "Unchanged: 2,500"):
         assert tile in text
     assert ("www.msha.gov refused the run's requests; refusals are recorded, never worked around."
             in [info.value for info in app.info])
@@ -383,8 +388,12 @@ def test_the_sources_page_shows_the_latest_official_run_and_the_feed(stores):
     assert "3 changes, 0 confirmed unchanged" in text  # the newest manifest, independently of the publish log
     assert "2 files deleted, 3.5 MB" in text
     assert [warning.value for warning in app.warning] == []  # nothing is wrong
-    [sources] = [frame.value for frame in app.dataframe if "requests" in frame.value]
-    assert sources["source"].tolist() == ["msha", "osha"] and sources["requests"].tolist() == [2, 2803]
+    [sources] = [body for body in html_of(app) if 'aria-label="Sources of the latest official run"' in body]
+    assert sources.index('data-label="Source"><span>msha</span>') < sources.index('data-label="Source"><span>osha</span>')
+    assert 'data-label="Recorded requests"><span>2</span>' in sources and '><span>2,803</span>' in sources  # the same in every language
+    assert '<span class="ss-dot warning" aria-hidden="true"></span>refused</span></td>' in sources
+    # the whole note, never cut to the column's width
+    assert 'data-label="Note"><span>https://www.msha.gov/sitemap.xml: refused, the host served an HTML page</span>' in sources
 
 
 def test_a_feed_older_than_36_hours_or_not_published_is_a_warning(stores, tmp_path_factory, monkeypatch):
@@ -462,9 +471,11 @@ def test_numbers_read_the_same_in_every_browser_language(stream_rows):
     formats = {}
     for page in dashboard.PAGES:
         formats |= column_formats(run_page(page, mine="4609612"))
-    assert {"citations", "ss_share", "proposed_penalty_total", "proposed_penalty", "observed", "rows",
-            "found_24h"} <= set(formats)
+    assert {"citations", "ss_share", "proposed_penalty_total", "proposed_penalty", "observed", "rows"} <= set(formats)
     assert not set(formats.values()) & LOCALE_FORMATS, formats
+    # The status tables are markup with their numbers written out on the server, in one format for every browser.
+    [checks] = [body for body in html_of(run_page("Sources")) if 'aria-label="Live source checks"' in body]
+    assert 'class="num">Checks (24 h)</th>' in checks and 'data-label="Checks (24 h)"><span>24</span>' in checks
     # A printf format cannot scale, so the Standards table holds shares in percent and penalty totals in millions.
     standards = run_page("Standards").dataframe[0].value.set_index("cfr_section")
     assert standards.loc["75.400", ["ss_share", "proposed_penalty_total"]].tolist() == pytest.approx(
@@ -494,8 +505,13 @@ def test_stream_pages_render_events_forecasts_and_checks(stream_rows):
     assert ("The newest check of sitemaps-msha was refused by the host; refusals are recorded, never worked around."
             in [info.value for info in sources.info])
     assert sources.subheader[0].value == "Official files"
-    checks = next(frame.value for frame in sources.dataframe if "checks_24h" in frame.value)
-    assert "5 minutes ago" in checks.iloc[0].age and "UTC" in checks.iloc[0]["next"]
+    [checks] = [body for body in html_of(sources) if 'aria-label="Live source checks"' in body]
+    first = checks.split('<tr role="row">')[2]  # after the header row: the first source's row
+    assert 'data-label="Source"><span>feed-official</span>' in first and "5 minutes ago" in first
+    assert first.count(" UTC · ") == 2  # when it was last checked and when it is next due
+    # the whole note, wrapped instead of cut, and the refusal's status dot
+    assert 'data-label="Note"><span>refused, the host served an HTML page instead of the sitemap</span>' in checks
+    assert '<span class="ss-dot warning" aria-hidden="true"></span>refused</span></td>' in checks
 
 
 def test_tiles_remember_each_modes_last_observation_and_do_not_animate_a_refresh(stream_rows, monkeypatch):
@@ -531,7 +547,8 @@ def test_live_crawl_counts_only_this_sources_window_and_stops_pulsing_when_quiet
     unavailable = data.official_run().frame.iloc[0]
     assert pd.isna(unavailable["requests"]) and pd.isna(unavailable["changed"])
     html = text_of(run_page("Sources"))
-    assert "Crawl progress unavailable for osha" in html and "Answered 304 (active source): –" in html
+    assert "Crawl progress unavailable for osha" in html and "Answered 304: –" in html
+    assert '<span class="ss-dot accent" aria-hidden="true"></span>running</span></td>' in html  # a source being asked now
     st.cache_data.clear()
     store = Store(stores / "state" / "crawl-osha.sqlite")
     page = "https://www.osha.gov/test-page"
@@ -547,8 +564,8 @@ def test_live_crawl_counts_only_this_sources_window_and_stops_pulsing_when_quiet
     assert data.official_changes().frame["change"].tolist() == ["changed"]
     assert len(data.official_runs().frame) == 1
     html = text_of(run_page("Sources"))
-    assert "Answered 304 (active source): 1" in html and 'aria-label="being asked now"' in html
-    assert 'href="https://www.osha.gov/test-page"' in html and "Confirmed unchanged: 0" not in html
+    assert "Answered 304: 1" in html and 'aria-label="being asked now"' in html
+    assert 'href="https://www.osha.gov/test-page"' in html and "Unchanged: 0" not in html
     assert "ss-pulse" not in dashboard.official_card(now + timedelta(minutes=2), "Live")
 
 

@@ -109,7 +109,18 @@ SECTION_COLUMNS = {
 # percent, and the nation's penalty totals in millions (a mine's stay in dollars, which millions would round to $0.0M).
 SECTION_SCALES = {"ss_share": 100, "proposed_penalty_total": 1e-6}
 OFFICIAL_LABELS = {"new": "New", "changed": "Changed", "gone": "Gone", "restored": "Restored", "moved": "Moved",
-                   "rejected": "Refused files", "checked": "Confirmed unchanged"}
+                   "rejected": "Refused files", "checked": "Unchanged"}  # short enough for a tile on every screen
+# A source of the official run: its status as the run recorded it (official.state.STATUSES), or running.
+SOURCE_TONES = {**CHECK_TONES, "partial": "warning", "unavailable": "warning", "running": "accent",
+                "no end recorded": "warning"}
+RUN_COLUMNS = (view.Column("Source"), view.Column("Status", "nowrap"), view.Column("Recorded requests", "num"),
+               view.Column("Started (UTC)", "when"), view.Column("Ended (UTC)", "when"), view.Column("Note", "note"))
+CHECK_COLUMNS = (view.Column("Source"), view.Column("Last checked", "when"), view.Column("Next check (about)", "when"),
+                 view.Column("Status", "nowrap"), view.Column("Found", "num"), view.Column("Checks (24 h)", "num"),
+                 view.Column("Errors (24 h)", "num"), view.Column("Found (24 h)", "num"), view.Column("Note", "note"))
+# Chart text names its fonts: Vega measures a label on a canvas and draws it in SVG, and the two resolve the bare
+# generic "monospace" to different faces in some browser languages, which cut the first letter of a long label.
+CHART_FONT = '"Cascadia Mono", Consolas, Menlo, "DejaVu Sans Mono", "Liberation Mono", monospace'
 STALE_HOURS = int(STALE_AFTER.total_seconds() // 3600)
 THEME_CSS = (Path(__file__).with_name("theme.css")).read_text(encoding="utf-8")
 TERRAIN_IMAGE = base64.b64encode(Path(__file__).with_name("terrain.svg").read_bytes()).decode("ascii")
@@ -204,6 +215,12 @@ def moment(value: Any) -> datetime | None:
     return None if value is None or pd.isna(value) else pd.Timestamp(value).to_pydatetime()
 
 
+def minute(value: Any) -> str:
+    """A UTC time to the minute for a table cell, or – for a missing one."""
+    at = moment(value)
+    return "–" if at is None else f"{at:%Y-%m-%d %H:%M}"
+
+
 def count(value: Any) -> str:
     """A whole number that fits a phone-width tile: 12,345, or 2.14M from a million on."""
     if pd.isna(value):
@@ -245,9 +262,9 @@ def tiles(columns: int, minimum: int = 150) -> Any:
 def show_chart(chart: alt.Chart | alt.LayerChart) -> None:
     """Style a complete Vega-Lite figure after its layers are composed; keep native theme text colors."""
     figure = (
-        chart.configure_axis(labelFont="monospace", labelFontSize=11, titleFontSize=12, gridDash=[2, 4],
-                             gridOpacity=0.55)
-        .configure_legend(labelFont="monospace", labelFontSize=11, symbolStrokeWidth=2)
+        chart.configure_axis(labelFont=CHART_FONT, labelFontSize=11, titleFont=CHART_FONT, titleFontSize=12,
+                             gridDash=[2, 4], gridOpacity=0.55)
+        .configure_legend(labelFont=CHART_FONT, labelFontSize=11, titleFont=CHART_FONT, symbolStrokeWidth=2)
         .configure_view(strokeOpacity=0)
     )
     st.altair_chart(figure, width="stretch")
@@ -942,23 +959,15 @@ def sources_page() -> None:
                      f"The newest checks of {', '.join(refused)} were refused by their hosts")
                     + "; refusals are recorded, never worked around.", icon=":material/info:")
         latest = newest_checks(checks)
-        frame = checks.frame.assign(
-            age=checks.frame["checked_at"].map(lambda at: f"{view.clock(at, now)} UTC · {ago(at, now)}"),
-            next=[f"{view.clock(due, now)} UTC · {view.until(due, now)}" if due else ""
-                  for due in (latest[name]["next"] for name in checks.frame["source"])])
-        st.dataframe(frame, hide_index=True, row_height=72,
-                     column_order=["source", "age", "next", "status", "found", "checks_24h", "errors_24h", "found_24h",
-                                   "note"],
-                     column_config={
-                         "source": st.column_config.TextColumn("Source", pinned=True),
-                         "age": "Last checked",
-                         "next": "Next check (about)",
-                         "status": "Status",
-                         "found": st.column_config.NumberColumn("Found", format=COUNT_FORMAT),
-                         "checks_24h": st.column_config.NumberColumn("Checks (24 h)", format=COUNT_FORMAT),
-                         "errors_24h": st.column_config.NumberColumn("Errors (24 h)", format=COUNT_FORMAT),
-                         "found_24h": st.column_config.NumberColumn("Found (24 h)", format=COUNT_FORMAT),
-                         "note": st.column_config.TextColumn("Note", width="large")})
+        rows = []
+        for check in checks.frame.itertuples():
+            due = latest[check.source]["next"]
+            status = plain(check.status)
+            rows.append([check.source, f"{view.clock(check.checked_at, now)} UTC · {ago(check.checked_at, now)}",
+                         f"{view.clock(due, now)} UTC · {view.until(due, now)}" if due else "",
+                         view.Cell(status, CHECK_TONES.get(status, "muted")), count(check.found),
+                         count(check.checks_24h), count(check.errors_24h), count(check.found_24h), plain(check.note)])
+        st.html(view.table(CHECK_COLUMNS, rows, label="Live source checks", minimum=960))
         provenance("Each watcher's newest check and its last 24 hours, from `stream.source_checks`; the Live page's "
                    "heartbeat draws every check of the last two days.")
 
@@ -1017,7 +1026,7 @@ def official_files() -> None:
             labels.pop("checked")
         if active.any():
             labels.pop("checked", None)
-            labels["not_modified"] = "Answered 304 (active source)"
+            labels["not_modified"] = "Answered 304"  # 304 Not Modified answers from the source being asked now
         with tiles(len(labels), minimum=110):
             for name, label in labels.items():
                 tile(label, count(frame[name].sum(skipna=False)))
@@ -1027,19 +1036,15 @@ def official_files() -> None:
         if refused:
             st.info(f"{', '.join(refused)} refused the run's requests; refusals are recorded, never worked around.",
                     icon=":material/info:")
-        sources = frame.loc[frame["source"].notna()].copy()
-        sources["status"] = [f"● {status}" if status != "running" or ended == "is still running"
-                             else "○ no end recorded" for status in sources["status"]]
-        if not sources.empty:
-            st.dataframe(sources, hide_index=True,
-                         column_order=["source", "status", "requests", "started_at", "ended_at", "note"],
-                         column_config={"source": st.column_config.TextColumn("Source", pinned=True),
-                                        "status": "Status",
-                                        "requests": st.column_config.NumberColumn("Recorded requests",
-                                                                                  format=COUNT_FORMAT),
-                                        "started_at": st.column_config.DatetimeColumn("Started (UTC)", timezone="UTC"),
-                                        "ended_at": st.column_config.DatetimeColumn("Ended (UTC)", timezone="UTC"),
-                                        "note": st.column_config.TextColumn("Note", width="large")})
+        rows = []
+        for source in frame.loc[frame["source"].notna()].itertuples():
+            status = plain(source.status)
+            if status == "running" and ended != "is still running":
+                status = "no end recorded"
+            rows.append([source.source, view.Cell(status, SOURCE_TONES.get(status, "muted")), count(source.requests),
+                         minute(source.started_at), minute(source.ended_at), plain(source.note)])
+        if rows:
+            st.html(view.table(RUN_COLUMNS, rows, label="Sources of the latest official run", minimum=820))
         newest = files(data.official_changes)
         if newest.problem:
             st.info(newest.problem, icon=":material/info:")
