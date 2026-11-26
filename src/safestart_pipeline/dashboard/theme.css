@@ -1,83 +1,150 @@
-/* The dashboard's look beyond the theme in .streamlit/config.toml: tokens, a few overrides of Streamlit's own elements
-   (by the test ids Streamlit 1.67 renders), and the components view.py writes. Motion plays only where view.py marks a
-   real change or a source being asked now, and never for a viewer who asks for reduced motion. */
-
-:root {
-  --ss-bg: #0b0d10;
-  --ss-surface: #14171c;
-  --ss-surface-2: #1b1f26;
-  --ss-line: #262b33;
-  --ss-line-2: #323843;
-  --ss-ink: #eef1f5;
-  --ss-ink-2: #b8c0cc;
-  --ss-muted: #8a93a0;
-  --ss-dim: #5b6370;
-  --ss-accent: #2fd3e6;
-  --ss-accent-ink: #7fe3f0;
-  --ss-accent-soft: rgba(47, 211, 230, 0.12);
-  --ss-accent-line: rgba(47, 211, 230, 0.45);
-  --ss-good: #0ca30c;
-  --ss-warning: #fab219;
-  --ss-serious: #ec835a;
-  --ss-critical: #d03b3b;
-  --ss-radius: 12px;
+/* Streamlit sets color-scheme on the app when the viewer changes theme. light-dark()
+   follows that choice immediately, including when it differs from the operating system. */
+[data-testid="stApp"] {
+  --ss-bg: light-dark(#edf5f8, #07121e);
+  --ss-surface: light-dark(#f8fcfe, #0d202f);
+  --ss-surface-2: light-dark(#e1edf3, #142d40);
+  --ss-line: light-dark(#a7bdc8, #304e61);
+  --ss-line-2: light-dark(#748f9f, #547283);
+  --ss-ink: light-dark(#102c41, #e7f4fa);
+  --ss-ink-2: light-dark(#27485b, #cadae4);
+  --ss-muted: light-dark(#415e70, #a8c0d0);
+  --ss-dim: light-dark(#516d7e, #90a9ba);
+  --ss-accent: light-dark(#006c71, #57ddd6);
+  --ss-accent-ink: light-dark(#005d63, #92ede7);
+  --ss-accent-soft: color-mix(in srgb, var(--ss-accent) 10%, var(--ss-surface));
+  --ss-accent-line: color-mix(in srgb, var(--ss-accent) 66%, var(--ss-line));
+  --ss-good: light-dark(#006644, #7aeabf);
+  --ss-warning: light-dark(#775000, #ffda84);
+  --ss-serious: light-dark(#93401e, #ffb18d);
+  --ss-critical: light-dark(#a22142, #ff9cab);
+  --ss-radius: 7px;
+  --ss-mono: ui-monospace, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  --ss-grid: color-mix(in srgb, var(--ss-accent) 10%, transparent);
+  --ss-scanlines: repeating-linear-gradient(0deg, transparent 0 3px, light-dark(#10394909, #9ce8fb08) 3px 4px);
 }
 
-/* Streamlit's own elements ----------------------------------------------------------------------------------------- */
-
-/* The page: a faint cyan glow at the top, behind the header. */
+/* A fixed, small repeating tile drifts one period on its own layer. */
 [data-testid="stAppViewContainer"] {
+  isolation: isolate;
+  background: radial-gradient(ellipse at 96% 6%, light-dark(#dae2f3, #1a223e), transparent 47%), var(--ss-bg);
+}
+[data-testid="stAppViewContainer"]::before {
+  content: ""; position: absolute; inset: -48px 0 0; pointer-events: none; z-index: -1;
+  background-image: radial-gradient(circle at 9px 12px, var(--ss-line-2) 0.8px, transparent 1.4px),
+    linear-gradient(90deg, var(--ss-grid) 1px, transparent 1px),
+    linear-gradient(var(--ss-grid) 1px, transparent 1px);
+  background-size: 96px 48px, 48px 48px, 48px 48px; opacity: .64;
+  animation: ss-drift 48s linear infinite;
+}
+@keyframes ss-drift { to { transform: translateY(48px); } }
+[data-testid="stAppViewContainer"]::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
   background:
-    radial-gradient(1200px 380px at 12% -120px, rgba(47, 211, 230, 0.10), transparent 70%),
-    radial-gradient(900px 300px at 95% -160px, rgba(57, 135, 229, 0.10), transparent 70%),
-    var(--ss-bg);
+    radial-gradient(circle at 27px 45px, light-dark(#177c94, #a6ffed) 0 1px, transparent 2px) 0 0 / 181px 137px,
+    radial-gradient(circle at 86px 13px, light-dark(#70549e, #c4b7ff) 0 1px, transparent 1.8px) 0 0 / 227px 109px;
+  opacity: .54; animation: ss-twinkle 7s ease-in-out infinite;
 }
+@keyframes ss-twinkle { 0%, 100% { opacity: .28; } 50% { opacity: .88; } }
 [data-testid="stHeader"] { background: transparent; }
-[data-testid="stMainBlockContainer"] { padding-top: 1.75rem; }
-@media (max-width: 480px) {
-  [data-testid="stMainBlockContainer"] { padding-top: 1.25rem; }
-  [data-testid="stHeading"] h1 { max-width: calc(100% - 6rem); }
+[data-testid="stMainBlockContainer"] { padding-top: 2.8rem; min-width: 0; }
+
+.ss-mast {
+  --copy-width: 63%;
+  position: relative; isolation: isolate; overflow: hidden; border-radius: var(--ss-radius);
+  border: 1px solid var(--ss-accent-line); border-left: 3px solid var(--ss-accent);
+  padding: 20px clamp(16px, 3vw, 44px); color: var(--ss-ink);
+  background: linear-gradient(90deg, var(--ss-surface) var(--copy-width), transparent 80%),
+    repeating-linear-gradient(90deg, transparent 0 31px, light-dark(#376b7710, #a4eeff15) 31px 32px),
+    radial-gradient(ellipse at 84% 90%, light-dark(#c5e4e6, #15444f),
+      light-dark(#eaf2f7, #142438) 55%, light-dark(var(--ss-surface), #111e33));
+  box-shadow: 0 5px 24px light-dark(#34566618, #020a1680), inset 0 1px 0 var(--ss-accent-soft);
 }
-[data-testid="stHeading"] h1 {
-  letter-spacing: -0.01em;
-  background: linear-gradient(92deg, #ffffff 0%, #d7f6fa 45%, var(--ss-accent) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+.ss-terrain {
+  position: absolute; z-index: -1; right: 4%; top: 50%; width: min(44%, 450px); height: auto;
+  transform: translateY(-50%); pointer-events: none;
+  animation: ss-orbit 20s ease-in-out infinite alternate;
+  filter: drop-shadow(0 0 4px light-dark(#08767a22, #57ddd655));
 }
-@media (max-width: 480px) {
-  [data-testid="stHeading"] h1 { font-size: 1.35rem; }
+@keyframes ss-orbit {
+  from { transform: translate(-3px, -50%) rotate(-2deg); }
+  to { transform: translate(3px, -52%) rotate(2deg); }
+}
+.ss-mast::after {
+  content: ""; position: absolute; z-index: -1; pointer-events: none;
+  inset: 0; background: linear-gradient(104deg, transparent 44%, #75eed511 48%, #abfff166 50%, transparent 50.6%);
+  background-size: 240% 100%; background-position: 85% 0;
+  mask-image: linear-gradient(90deg, #0004 var(--copy-width), #000 86%);
+  animation: ss-scan 12s ease-in-out infinite;
+}
+@keyframes ss-scan { 0% { background-position: 100% 0; } 85%, 100% { background-position: 0 0; } }
+.ss-mast-copy { width: fit-content; max-width: var(--copy-width); }
+.ss-mast .ss-domain, .ss-mast .ss-build {
+  font-family: var(--ss-mono); line-height: 1.45; margin: 0; color: var(--ss-muted);
+}
+.ss-mast .ss-domain { font-size: .72rem; letter-spacing: .08em; font-weight: 700; text-transform: uppercase; }
+.ss-mast h1 {
+  font-size: clamp(1.9rem, 3.5vw, 3.5rem); font-weight: 720; line-height: 1.11;
+  color: var(--ss-ink); margin: .12em 0 .18em; padding: 0; letter-spacing: -.045em;
+}
+.ss-mast .ss-build { font-size: .79rem; }
+@supports (background-clip: text) {
+  .ss-mast h1 {
+    background-image: linear-gradient(105deg, var(--ss-ink) 34%, light-dark(#005957, #7ff6e0) 46%,
+      light-dark(#44316c, #d5bcff) 51%, var(--ss-ink) 59%);
+    background-size: 270% 100%; background-clip: text; color: transparent;
+    animation: ss-sheen 10s ease-in-out infinite;
+  }
+}
+@keyframes ss-sheen { from { background-position: 100% 0; } 82%, to { background-position: 0 0; } }
+@media (forced-colors: active) {
+  .ss-mast h1 { background: none; color: CanvasText; }
+}
+[data-testid="stHeading"] :is(h2, h3) { color: var(--ss-ink); letter-spacing: -.025em; }
+[data-testid="stHeading"] :is(h2, h3)::before {
+  content: ""; display: inline-block; width: .24em; height: .78em; margin-right: .45em;
+  background: var(--ss-accent); box-shadow: .14em -.13em var(--ss-accent-soft);
+}
+.stTabs [role="tablist"] { gap: .18rem; padding: 3px; background: var(--ss-surface); border: 1px solid var(--ss-line); }
+.stTabs [role="tabpanel"] { box-sizing: border-box; padding: clamp(14px, 2vw, 22px); }
+.stTabs [data-testid="stTab"] { padding-inline: clamp(.45rem, 1.5vw, 1.35rem); color: var(--ss-muted); }
+.stTabs [data-testid="stTab"] p { font-family: var(--ss-mono); font-weight: 650; letter-spacing: -.02em; }
+.stTabs [data-testid="stTab"][aria-selected="true"] { position: relative; color: var(--ss-accent-ink); background: var(--ss-accent-soft); }
+.stTabs [data-testid="stTab"][aria-selected="true"]::after {
+  content: ""; position: absolute; bottom: 0; inset-inline: 4px; height: 2px;
+  background: var(--ss-accent); box-shadow: 0 -1px 6px var(--ss-accent); pointer-events: none;
+}
+[data-testid="stMain"] :is(:focus-visible, [data-focus-visible]) {
+  outline: 2px solid var(--ss-accent-ink); outline-offset: -2px;
+  box-shadow: 0 0 7px var(--ss-accent), inset 0 0 7px var(--ss-accent-soft);
+}
+@media (max-width: 600px) {
+  [data-testid="stMainBlockContainer"] { padding-inline: .65rem; }
+  .ss-mast { --copy-width: 76%; padding: 13px; background-color: var(--ss-surface);
+    background-image: linear-gradient(90deg, var(--ss-surface) var(--copy-width),
+      light-dark(#e4f1f3, #193847) 90%, light-dark(#d5e9ec, #17273d)); }
+  .ss-mast h1 { font-size: clamp(1.38rem, 5.9vw, 2rem); }
+  .ss-mast .ss-domain { font-size: .64rem; letter-spacing: .025em; }
+  .ss-mast .ss-build { font-size: .68rem; }
+  .ss-terrain { width: 38%; right: -6%; }
+  .stTabs [role="tablist"] { width: 100%; gap: 0; padding-inline: 0; }
+  .stTabs [data-testid="stTab"] { flex: 1 1 auto; min-width: 0; padding-inline: 2px; white-space: nowrap; }
+  .stTabs [data-testid="stTab"] p { font-size: clamp(.68rem, 3.1vw, .86rem); }
 }
 
-/* Tabs: Streamlit draws keyboard focus as an outer ring in the primary color, which the tab bar clips into two
-   vertical bars. Drawn inside the tab instead, so it shows whole, in the accent. */
-.stTabs [data-testid="stTab"] { padding-left: 0.35rem; padding-right: 0.35rem; }
-@media (max-width: 480px) {
-  .stTabs [role="tablist"] { gap: 0.375rem; }
-  .stTabs [data-testid="stTab"] { padding-inline: 0.2rem; }
-}
-.stTabs [data-testid="stTab"][data-focus-visible] {
-  box-shadow: inset 0 0 0 2px var(--ss-accent-line);
-  border-radius: 6px;
-}
-
-/* Cards: bordered containers, metrics and charts sit on the surface. */
 [data-testid="stVerticalBlock"][data-test-border="true"],
-div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="border"] {
-  background: var(--ss-surface);
-}
-[data-testid="stMetric"] {
-  background: var(--ss-surface);
-  border-radius: var(--ss-radius);
-}
+div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="border"],
 [data-testid="stExpander"] details {
-  background: var(--ss-surface);
-  border-color: var(--ss-line);
+  background: var(--ss-scanlines), var(--ss-surface); border-color: var(--ss-line); color: var(--ss-ink);
 }
-
-[data-testid="stVegaLiteChart"] {
-  background: var(--ss-surface); border: 1px solid var(--ss-line); border-radius: var(--ss-radius); overflow: hidden;
+[data-testid="stVegaLiteChart"], [data-testid="stMetric"], [data-testid="stDataFrame"] {
+  min-width: 0; max-width: 100%; border: 1px solid var(--ss-line); border-radius: var(--ss-radius);
+  background: var(--ss-surface); box-shadow: 0 3px 14px light-dark(#31596f10, #020b164f);
 }
+[data-testid="stMetricLabel"] p { color: var(--ss-muted); font-family: var(--ss-mono); }
+[data-testid="stMetricValue"] { color: var(--ss-ink); font-variant-numeric: tabular-nums; }
+[data-testid="stMain"] [data-testid="stCaptionContainer"] { opacity: 1; }
+[data-testid="stCaptionContainer"] p { color: var(--ss-muted); }
 
 /* Segmented controls scroll sideways on a phone instead of wrapping onto a second line. */
 @media (max-width: 480px) {
@@ -95,10 +162,14 @@ div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="bor
   color: var(--ss-ink-2); font-size: 0.74rem; line-height: 1.5; white-space: nowrap;
 }
 .ss-chip.accent { color: var(--ss-accent-ink); border-color: var(--ss-accent-line); background: var(--ss-accent-soft); }
-.ss-chip.good { color: #8fe38f; border-color: rgba(12, 163, 12, 0.45); background: rgba(12, 163, 12, 0.12); }
-.ss-chip.warning { color: #ffd27a; border-color: rgba(250, 178, 25, 0.45); background: rgba(250, 178, 25, 0.10); }
-.ss-chip.serious { color: #f5b08f; border-color: rgba(236, 131, 90, 0.45); background: rgba(236, 131, 90, 0.10); }
-.ss-chip.critical { color: #ff9a9a; border-color: rgba(208, 59, 59, 0.55); background: rgba(208, 59, 59, 0.12); }
+.ss-chip.good { --tone: var(--ss-good); }
+.ss-chip.warning { --tone: var(--ss-warning); }
+.ss-chip.serious { --tone: var(--ss-serious); }
+.ss-chip.critical { --tone: var(--ss-critical); }
+.ss-chip:is(.good, .warning, .serious, .critical) {
+  color: var(--tone); border-color: color-mix(in srgb, var(--tone) 48%, var(--ss-line));
+  background: color-mix(in srgb, var(--tone) 7%, var(--ss-surface));
+}
 .ss-chip.muted { color: var(--ss-muted); }
 .ss-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--ss-muted)); flex: none; }
 .ss-dot.good { --c: var(--ss-good); }
@@ -124,7 +195,7 @@ div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="bor
 .ss-pulse {
   position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--ss-accent); flex: none;
   box-shadow: 0 0 0 0 rgba(47, 211, 230, 0.6);
-  animation: ss-pulse 1.8s ease-out infinite;
+  animation: ss-pulse 3s ease-out infinite;
 }
 @keyframes ss-pulse {
   0% { box-shadow: 0 0 0 0 rgba(47, 211, 230, 0.55); }
@@ -133,22 +204,35 @@ div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="bor
 
 /* The Live page's tiles */
 
-.ss-kpis { display: grid; grid-template-columns: 4fr 3fr; gap: 14px; margin: 2px 0 6px; }
+.ss-kpis { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 3fr); gap: 14px; margin: 2px 0 6px; }
 .ss-group { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 8px; align-content: start; }
 @media (min-width: 861px) {
   .ss-group { grid-template-rows: auto 1fr; align-content: stretch; }
 }
 .ss-group-head {
-  grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px;
   padding: 0 2px; min-height: 20px;
 }
 .ss-tile {
   position: relative; min-width: 0; overflow: hidden;
   display: flex; flex-direction: column; gap: 5px;
   padding: 11px 12px 10px; border-radius: var(--ss-radius);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 60%), var(--ss-surface);
-  border: 1px solid var(--ss-line);
+  background: var(--ss-scanlines), linear-gradient(180deg, #ffffff07, transparent 60%), var(--ss-surface);
+  border: 1px solid color-mix(in srgb, var(--c) 42%, var(--ss-line));
+  box-shadow: 0 2px 14px color-mix(in srgb, var(--c) 13%, transparent),
+    inset 0 0 20px color-mix(in srgb, var(--c) 6%, transparent);
 }
+/* Two diagonally opposed instrument brackets, drawn inside the panel. */
+.ss-tile::after, .ss-card::after, [data-testid="stMetric"]::after {
+  content: ""; position: absolute; inset: 2px; border-radius: 3px; pointer-events: none;
+  --edge: var(--c, var(--ss-accent));
+  background: linear-gradient(var(--edge), var(--edge)) left top / 13px 2px,
+    linear-gradient(var(--edge), var(--edge)) left top / 2px 9px,
+    linear-gradient(var(--edge), var(--edge)) right bottom / 13px 2px,
+    linear-gradient(var(--edge), var(--edge)) right bottom / 2px 9px;
+  background-repeat: no-repeat;
+}
+[data-testid="stMetric"] { position: relative; background-image: var(--ss-scanlines); }
 .ss-tile::before {
   content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px;
   background: linear-gradient(90deg, var(--c), transparent 85%); opacity: 0.85;
@@ -159,13 +243,25 @@ div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="bor
   overflow-wrap: anywhere;
 }
 .ss-new {
-  margin-left: 5px; flex: none; font-size: 0.68rem; font-weight: 700; color: var(--ss-bg);
+  grid-row: 2; margin-top: 2px; font-size: 0.68rem; font-weight: 700; color: light-dark(#ffffff, #07121e);
   background: var(--ss-accent); border-radius: 999px; padding: 0 7px; line-height: 1.6;
 }
 .ss-val {
-  display: flex; flex-wrap: wrap; align-items: center;
+  display: grid; align-content: start; justify-items: start; min-height: 2.15em;
   color: var(--ss-ink); font-weight: 650; line-height: 1.15; letter-spacing: -0.01em;
   font-size: clamp(1.35rem, 1.75vw, 2rem); white-space: nowrap;
+}
+.ss-reading {
+  color: color-mix(in srgb, var(--ss-ink) 88%, var(--c));
+  text-shadow: 0 0 3px color-mix(in srgb, var(--c) 58%, transparent),
+    0 0 9px color-mix(in srgb, var(--c) 42%, transparent),
+    0 0 17px color-mix(in srgb, var(--c) 32%, transparent);
+}
+/* Apply the halo after clipping the scrolling strips so it stays continuous across the digits. */
+.ss-reading .ss-odo {
+  text-shadow: none;
+  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--c) 60%, transparent))
+    drop-shadow(0 0 6px color-mix(in srgb, var(--c) 48%, transparent));
 }
 .ss-delta { min-height: 1.3em; display: flex; }
 .ss-delta .ss-chip { font-size: 0.7rem; padding: 0 6px; max-width: 100%; white-space: normal; }
@@ -174,7 +270,7 @@ div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="bor
   flex: 1 1 0; min-width: 2px; height: max(2px, calc(var(--h) * 100%));
   background: var(--ss-line-2); border-radius: 2px 2px 0 0;
 }
-.ss-spark i.some { background: color-mix(in srgb, var(--c) 55%, var(--ss-surface)); }
+.ss-spark i.some { background: var(--c); }
 .ss-spark i.today { background: var(--ss-accent); }
 .ss-foot {
   color: var(--ss-muted); font-size: 0.7rem; line-height: 1.35;
@@ -183,11 +279,12 @@ div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="bor
 .ss-foot span { overflow-wrap: anywhere; }
 
 /* A tile whose value changed since this viewer's last look: its digits roll and it glows, once. */
-.ss-tile.changed { animation: ss-arrive 1.8s ease-out 1; }
+.ss-tile.changed { animation: ss-arrive 2.8s ease-in-out 1; }
 @keyframes ss-arrive {
-  from {
-    border-color: var(--ss-accent);
-    box-shadow: 0 0 0 1px var(--ss-accent-line), 0 0 26px rgba(47, 211, 230, 0.35);
+  38% {
+    border-color: var(--c);
+    box-shadow: 0 0 0 1px var(--c), 0 0 17px color-mix(in srgb, var(--c) 48%, transparent),
+      inset 0 0 16px color-mix(in srgb, var(--c) 14%, transparent);
   }
 }
 .ss-odo { display: inline-block; white-space: nowrap; }
@@ -196,13 +293,13 @@ div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="bor
 .ss-d .r {
   position: absolute; left: 50%; top: 0;
   transform: translate(-50%, calc(var(--to) * -1.15em));
-  animation: ss-roll 1.3s cubic-bezier(0.2, 0.8, 0.2, 1) 1 both;
+  animation: ss-roll 2.4s cubic-bezier(0.3, 0.7, 0.3, 1) 1 both;
 }
 .ss-d .r b { display: block; height: 1.15em; line-height: 1.15em; font-weight: inherit; text-align: center; }
 @keyframes ss-roll { from { transform: translate(-50%, calc(var(--from) * -1.15em)); } }
 
 @media (max-width: 860px) {
-  .ss-kpis { grid-template-columns: 1fr; gap: 12px; }
+  .ss-kpis { grid-template-columns: minmax(0, 1fr); gap: 12px; }
 }
 @media (max-width: 480px) {
   .ss-group { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -214,10 +311,10 @@ div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="bor
 /* The Now strip and other cards */
 
 .ss-cards { display: grid; grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr)); gap: 10px; margin: 4px 0 8px; }
-@media (max-width: 900px) { .ss-cards { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .ss-cards { grid-template-columns: minmax(0, 1fr); } }
 .ss-card {
   position: relative; min-width: 0; padding: 12px 14px; border-radius: var(--ss-radius);
-  background: var(--ss-surface); border: 1px solid var(--ss-line);
+  background: var(--ss-scanlines), var(--ss-surface); border: 1px solid var(--ss-line);
   display: flex; flex-direction: column; gap: 7px;
 }
 .ss-card.live {
@@ -269,15 +366,48 @@ div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="bor
 }
 .ss-feed .meta .kind { color: var(--ss-ink-2); }
 .ss-feed .when { color: var(--ss-muted); font-size: 0.74rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.ss-feed li.fresh { animation: ss-slide 0.6s ease-out 1 both; box-shadow: inset 2px 0 0 var(--ss-accent); }
-@keyframes ss-slide { from { opacity: 0; transform: translateY(-6px); } }
+.ss-feed li.fresh { animation: ss-slide 2.2s ease-out 1 both; box-shadow: inset 2px 0 0 var(--ss-accent); }
+@keyframes ss-slide { from { transform: translateY(-4px); } }
 .ss-feed a { color: var(--ss-ink); text-decoration: none; border-bottom: 1px dotted var(--ss-line-2); }
 .ss-feed a:hover { color: var(--ss-accent-ink); border-bottom-color: var(--ss-accent-line); }
 
-/* Reduced motion: nothing moves, the final state shows. */
+
+.ss-kicker, .ss-chip, .ss-tile-label, .ss-val, .ss-source, .ss-big, .ss-feed .when {
+  font-family: var(--ss-mono); font-variant-numeric: tabular-nums;
+}
+.ss-chip { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.ss-card-head { flex-wrap: wrap; }
+.ss-card .ss-line { overflow-wrap: anywhere; }
+.ss-monitor {
+  display: flex; align-items: center; gap: 12px; padding: 6px 10px; margin-bottom: 8px;
+  border-block: 1px solid var(--ss-line);
+  background: linear-gradient(90deg, var(--ss-surface-2), transparent);
+}
+.ss-monitor .ss-row { min-width: 0; gap: 4px 8px; }
+.ss-radar {
+  --beam: var(--ss-muted);
+  position: relative; flex: 0 0 38px; height: 38px; overflow: hidden; border-radius: 50%;
+  border: 1px solid var(--beam);
+  background: repeating-radial-gradient(circle, transparent 0 6px, var(--ss-line-2) 6px 7px);
+}
+.ss-radar::before {
+  content: ""; position: absolute; inset: 0;
+  background: conic-gradient(from 12deg, transparent 0 272deg, var(--ss-accent-soft) 310deg, var(--beam) 359deg, transparent);
+}
+.ss-radar.online { --beam: var(--ss-accent); }
+.ss-radar.online::before { animation: ss-sweep 6s linear var(--phase) infinite; }
+@keyframes ss-sweep { to { transform: rotate(360deg); } }
+.ss-monitor .good .ss-dot { animation: ss-link 3s ease-out var(--phase) infinite; }
+@keyframes ss-link {
+  from { box-shadow: 0 0 0 0 var(--ss-good); }
+  70%, to { box-shadow: 0 0 0 6px transparent; }
+}
+
+/* Streamlit's tab underline and controls also respect the viewer's motion preference. */
 @media (prefers-reduced-motion: reduce) {
-  .ss-anim, .ss-anim *, .ss-tile.changed, .ss-pulse, .ss-feed li.fresh, .ss-d .r {
+  *, *::before, *::after {
     animation: none !important;
     transition: none !important;
+    scroll-behavior: auto !important;
   }
 }

@@ -17,6 +17,7 @@ def test_only_changed_digits_roll_on_a_new_observation():
     assert view.odometer(1234, 1233).count('class="ss-d"') == 1
     assert "--from:3;--to:4" in view.odometer(1234, 1233)
     assert "--from:0;--to:1" in view.odometer(1000, 999)
+    assert "--from:9;--to:10" in view.odometer(1000, 999)
     assert "--from:0;--to:9" in view.odometer(999, 1000)
     assert view.odometer(1_000_001, 1_000_000) == "1.00M"
 
@@ -28,7 +29,11 @@ def test_tile_markup_has_an_exact_count_and_escapes_the_source_text():
     assert 'aria-label="Page changes: 1.23M. 1,234,567 stored.' in html
     assert 'title="2026-11-24: 1"' in html and '--h:0.000' in html
     assert 'OSHA &amp; MSHA' in html and '&lt;note&gt; &quot;' in html
-    assert "ss-anim" not in html and "ss-anim changed" in view.tile(replace(item, previous=1_234_566))
+    assert "ss-odo" in html and "ss-anim changed" not in html and "ss-new" not in html
+    assert "ss-odo" not in view.tile(replace(item, previous=item.value))
+    assert "ss-anim changed" not in view.tile(replace(item, previous=item.value, fresh=1))
+    assert "ss-anim changed" not in view.tile(replace(item, previous=item.value, value=None))
+    assert "ss-anim changed" in view.tile(replace(item, previous=1_234_566))
     assert "Trend unavailable" in view.tile(replace(item, days=[]))
 
 

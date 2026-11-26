@@ -1,70 +1,98 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 748" width="640" height="748"
-     role="img" aria-labelledby="title">
-  <title id="title">Key numbers: 6 public sources (websites, eCFR, 20 datasets, an API); 84,602 files kept (44.6
-    GB raw archive, every version); 18.1 M lake rows (20 datasets, 40 versions in Parquet); 3.1
-    M violations (1.2 M inspections, 276,013 accidents); 10 SQL questions (over 8 tables and 5
-    marts in DuckDB); 374,400 events streamed (through Kafka into PostgreSQL); 0.909 test ROC
-    AUC (riskiest 5% at 10x the base rate); 556 tests (then the whole stack in CI); 5 dashboard
-    pages (live on Google Cloud over HTTPS)</title>
-  <style>
-    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
-    .tile { fill: #ffffff0b; stroke: #ffffff1f; stroke-width: 1.5; }
-    .num { font-size: 46px; font-weight: 700; }
-    .label { fill: #f1f5f9; font-size: 24px; font-weight: 600; }
-    .detail { fill: #94a3b8; font-size: 0px; }
-    .sweep { animation: sweep 7s ease-in-out infinite; }
-    @keyframes sweep { 0% { transform: translateX(-320px); } 45%, 100% { transform: translateX(640px); } }
-    @media (prefers-reduced-motion: reduce) { .sweep { animation: none; opacity: 0; } }
-  </style>
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0b1220"/><stop offset="1" stop-color="#16213b"/>
-    </linearGradient>
-    <linearGradient id="shine" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
-      <stop offset=".5" stop-color="#ffffff" stop-opacity=".07"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </linearGradient>
-    <clipPath id="card"><rect width="640" height="748" rx="24"/></clipPath>
-  </defs>
-  <rect width="640" height="748" rx="24" fill="url(#bg)"/>
-  <g><rect class="tile" x="22" y="22" width="290" height="128" rx="16"/>
-    <rect x="22" y="40" width="4" height="92" rx="2" fill="#cbd5e1"/>
-    <text class="num" x="44" y="84" fill="#cbd5e1">6</text>
-    <text class="label" x="44" y="116">public sources</text></g>
-  <g><rect class="tile" x="328" y="22" width="290" height="128" rx="16"/>
-    <rect x="328" y="40" width="4" height="92" rx="2" fill="#60a5fa"/>
-    <text class="num" x="350" y="84" fill="#60a5fa">84,602</text>
-    <text class="label" x="350" y="116">files kept</text></g>
-  <g><rect class="tile" x="22" y="166" width="290" height="128" rx="16"/>
-    <rect x="22" y="184" width="4" height="92" rx="2" fill="#60a5fa"/>
-    <text class="num" x="44" y="228" fill="#60a5fa">18.1 M</text>
-    <text class="label" x="44" y="260">lake rows</text></g>
-  <g><rect class="tile" x="328" y="166" width="290" height="128" rx="16"/>
-    <rect x="328" y="184" width="4" height="92" rx="2" fill="#60a5fa"/>
-    <text class="num" x="350" y="228" fill="#60a5fa">3.1 M</text>
-    <text class="label" x="350" y="260">violations</text></g>
-  <g><rect class="tile" x="22" y="310" width="290" height="128" rx="16"/>
-    <rect x="22" y="328" width="4" height="92" rx="2" fill="#60a5fa"/>
-    <text class="num" x="44" y="372" fill="#60a5fa">10</text>
-    <text class="label" x="44" y="404">SQL questions</text></g>
-  <g><rect class="tile" x="328" y="310" width="290" height="128" rx="16"/>
-    <rect x="328" y="328" width="4" height="92" rx="2" fill="#fb923c"/>
-    <text class="num" x="350" y="372" fill="#fb923c">374,400</text>
-    <text class="label" x="350" y="404">events streamed</text></g>
-  <g><rect class="tile" x="22" y="454" width="290" height="128" rx="16"/>
-    <rect x="22" y="472" width="4" height="92" rx="2" fill="#60a5fa"/>
-    <text class="num" x="44" y="516" fill="#60a5fa">0.909</text>
-    <text class="label" x="44" y="548">test ROC AUC</text></g>
-  <g><rect class="tile" x="328" y="454" width="290" height="128" rx="16"/>
-    <rect x="328" y="472" width="4" height="92" rx="2" fill="#2dd4bf"/>
-    <text class="num" x="350" y="516" fill="#2dd4bf">556</text>
-    <text class="label" x="350" y="548">tests</text></g>
-  <g><rect class="tile" x="22" y="598" width="596" height="128" rx="16"/>
-    <rect x="22" y="616" width="4" height="92" rx="2" fill="#4ade80"/>
-    <text class="num" x="44" y="660" fill="#4ade80">5</text>
-    <text class="label" x="44" y="692">dashboard pages</text></g>
-
-  <g clip-path="url(#card)"><rect class="sweep" x="0" y="-40" width="213" height="828"
-    fill="url(#shine)" transform="translate(-320 0)"/></g>
+<svg id="still" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="640" height="862" viewBox="0 0 640 862" role="img" aria-labelledby="title desc">
+<title id="title">SafeStart build record</title>
+<desc id="desc">November 23, 2026 build. 6 public sources (Websites, eCFR, datasets and API); 84,602 files kept (44.6 GB across archived versions); 18.1 M lake rows (20 datasets / 40 Parquet versions); 3.1 M violations (1.2 M inspections / 276,013 accidents); 10 sql questions (8 model tables / 5 DuckDB marts); 374,400 events streamed (Kafka into PostgreSQL); 0.909 test roc auc (Top 5% at 10× the base rate); 556 tests (Unit and integration suite); 5 dashboard pages (Google Cloud / HTTPS).</desc>
+<defs>
+ <linearGradient id="night" x2="1" y2=".8"><stop stop-color="#071420"/><stop offset=".57" stop-color="#0d2233"/><stop offset="1" stop-color="#201d3b"/></linearGradient>
+ <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#5592a7" stroke-opacity=".17"/></pattern>
+ <radialGradient id="aura"><stop stop-color="#5fe2d8" stop-opacity=".17"/><stop offset="1" stop-color="#5fe2d8" stop-opacity="0"/></radialGradient>
+ <radialGradient id="bloom"><stop offset="0" stop-color="#a4ffef" stop-opacity="1"/><stop offset=".28" stop-color="#59f1db" stop-opacity=".55"/><stop offset="1" stop-color="#59f1db" stop-opacity="0"/></radialGradient>
+ <filter id="ink-glow" x="-65%" y="-70%" width="230%" height="240%">
+  <feGaussianBlur in="SourceGraphic" stdDeviation="3.6"/>
+  <feComponentTransfer><feFuncA type="linear" slope=".68"/></feComponentTransfer>
+  <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+ </filter>
+</defs>
+<rect x="0" y="0" width="640" height="862" fill="url(#night)" />
+<rect x="0" y="0" width="640" height="862" fill="url(#grid)" />
+<g fill="#c7faff" aria-hidden="true">
+<g><circle cx="639" cy="270" r="1.3" opacity="0.82"/><circle cx="234" cy="155" r="0.7" opacity="0.33"/><circle cx="548" cy="396" r="1.3" opacity="0.82"/><circle cx="104" cy="253" r="0.7" opacity="0.48"/><circle cx="597" cy="281" r="1.3" opacity="0.82"/><circle cx="374" cy="145" r="1" opacity="0.66"/><circle cx="182" cy="470" r="1.3" opacity="0.33"/><circle cx="605" cy="308" r="1.3" opacity="0.82"/><circle cx="249" cy="400" r="1" opacity="0.66"/><circle cx="225" cy="358" r="0.7" opacity="0.48"/><circle cx="16" cy="274" r="1.3" opacity="0.48"/><circle cx="168" cy="407" r="1.3" opacity="0.82"/><circle cx="438" cy="560" r="1" opacity="0.48"/><circle cx="101" cy="31" r="0.7" opacity="0.33"/><circle cx="435" cy="440" r="0.7" opacity="0.66"/><circle cx="41" cy="481" r="1.3" opacity="0.33"/><circle cx="625" cy="483" r="1.3" opacity="0.48"/><circle cx="348" cy="569" r="1.3" opacity="0.33"/><circle cx="469" cy="420" r="0.7" opacity="0.82"/><circle cx="330" cy="148" r="0.7" opacity="0.48"/><circle cx="69" cy="57" r="1.3" opacity="0.82"/><circle cx="418" cy="5" r="1.3" opacity="0.66"/><circle cx="325" cy="563" r="0.7" opacity="0.82"/><circle cx="578" cy="600" r="1.3" opacity="0.66"/><circle cx="579" cy="21" r="1" opacity="0.48"/><circle cx="483" cy="702" r="0.7" opacity="0.48"/><circle cx="139" cy="405" r="1.3" opacity="0.82"/><circle cx="419" cy="508" r="0.7" opacity="0.66"/><circle cx="422" cy="313" r="1" opacity="0.33"/><circle cx="430" cy="27" r="1" opacity="0.66"/><circle cx="124" cy="712" r="1.3" opacity="0.48"/><circle cx="375" cy="759" r="1" opacity="0.82"/><circle cx="439" cy="446" r="1" opacity="0.82"/><circle cx="242" cy="620" r="1.3" opacity="0.33"/><circle cx="52" cy="217" r="1.3" opacity="0.48"/><circle cx="613" cy="743" r="1" opacity="0.66"/><circle cx="414" cy="818" r="1.3" opacity="0.82"/><circle cx="152" cy="211" r="0.7" opacity="0.48"/><circle cx="26" cy="789" r="1" opacity="0.33"/><circle cx="525" cy="460" r="1" opacity="0.48"/><circle cx="432" cy="131" r="0.7" opacity="0.82"/><circle cx="540" cy="97" r="0.7" opacity="0.82"/><circle cx="262" cy="465" r="1.3" opacity="0.66"/><circle cx="592" cy="60" r="1" opacity="0.48"/><circle cx="155" cy="282" r="0.7" opacity="0.82"/><circle cx="480" cy="641" r="1" opacity="0.48"/><circle cx="387" cy="428" r="1.3" opacity="0.33"/><circle cx="248" cy="656" r="1.3" opacity="0.48"/><circle cx="286" cy="592" r="1" opacity="0.33"/><circle cx="120" cy="853" r="0.7" opacity="0.33"/><circle cx="33" cy="819" r="1" opacity="0.48"/></g>
+<g class="stars-near"><circle cx="125" cy="576" r="1.3" opacity="0.82"/><circle cx="100" cy="262" r="1" opacity="0.33"/><circle cx="183" cy="644" r="1.3" opacity="0.33"/><circle cx="485" cy="740" r="0.7" opacity="0.82"/><circle cx="162" cy="197" r="1" opacity="0.33"/><circle cx="563" cy="453" r="1.3" opacity="0.48"/><circle cx="401" cy="602" r="0.7" opacity="0.66"/><circle cx="244" cy="511" r="0.7" opacity="0.33"/><circle cx="278" cy="236" r="0.7" opacity="0.66"/><circle cx="209" cy="858" r="1" opacity="0.48"/><circle cx="73" cy="815" r="1.3" opacity="0.48"/><circle cx="586" cy="364" r="1.3" opacity="0.82"/><circle cx="446" cy="223" r="1" opacity="0.82"/><circle cx="300" cy="420" r="1.3" opacity="0.82"/><circle cx="118" cy="78" r="1" opacity="0.82"/><circle cx="493" cy="624" r="1" opacity="0.33"/><circle cx="107" cy="373" r="0.7" opacity="0.66"/><circle cx="81" cy="580" r="1" opacity="0.33"/><circle cx="580" cy="552" r="1" opacity="0.48"/><circle cx="277" cy="282" r="1" opacity="0.82"/><circle cx="514" cy="31" r="1.3" opacity="0.48"/><circle cx="452" cy="160" r="1" opacity="0.66"/><circle cx="144" cy="663" r="0.7" opacity="0.48"/><circle cx="506" cy="223" r="0.7" opacity="0.48"/><circle cx="384" cy="185" r="0.7" opacity="0.82"/><circle cx="131" cy="810" r="1.3" opacity="0.66"/><circle cx="63" cy="432" r="0.7" opacity="0.33"/><circle cx="90" cy="85" r="1.3" opacity="0.66"/><circle cx="394" cy="774" r="1.3" opacity="0.82"/><circle cx="223" cy="410" r="1" opacity="0.33"/><circle cx="106" cy="398" r="1.3" opacity="0.82"/><circle cx="123" cy="487" r="1" opacity="0.33"/><circle cx="549" cy="29" r="0.7" opacity="0.66"/><circle cx="363" cy="489" r="0.7" opacity="0.66"/><circle cx="0" cy="578" r="1" opacity="0.33"/><circle cx="7" cy="833" r="1" opacity="0.33"/><circle cx="394" cy="125" r="1.3" opacity="0.48"/><circle cx="554" cy="289" r="0.7" opacity="0.66"/><circle cx="237" cy="319" r="1.3" opacity="0.82"/><circle cx="601" cy="6" r="0.7" opacity="0.33"/><circle cx="217" cy="660" r="1" opacity="0.48"/><circle cx="486" cy="493" r="1.3" opacity="0.33"/><circle cx="141" cy="167" r="0.7" opacity="0.48"/><circle cx="441" cy="728" r="0.7" opacity="0.33"/><circle cx="346" cy="666" r="0.7" opacity="0.48"/><circle cx="321" cy="98" r="1" opacity="0.33"/><circle cx="255" cy="712" r="1" opacity="0.33"/><circle cx="480" cy="487" r="0.7" opacity="0.66"/><circle cx="28" cy="310" r="1.3" opacity="0.48"/><circle cx="463" cy="8" r="1.3" opacity="0.48"/><circle cx="379" cy="597" r="0.7" opacity="0.33"/></g>
+<g class="stars-far"><circle cx="36" cy="276" r="1" opacity="0.66"/><circle cx="440" cy="381" r="0.7" opacity="0.48"/><circle cx="157" cy="703" r="1" opacity="0.66"/><circle cx="71" cy="279" r="1.3" opacity="0.82"/><circle cx="485" cy="97" r="1.3" opacity="0.66"/><circle cx="398" cy="672" r="0.7" opacity="0.48"/><circle cx="69" cy="667" r="1" opacity="0.66"/><circle cx="409" cy="358" r="0.7" opacity="0.66"/><circle cx="353" cy="849" r="1" opacity="0.82"/><circle cx="287" cy="10" r="1" opacity="0.48"/><circle cx="534" cy="796" r="1.3" opacity="0.33"/><circle cx="619" cy="178" r="1.3" opacity="0.82"/><circle cx="560" cy="509" r="0.7" opacity="0.82"/><circle cx="193" cy="174" r="0.7" opacity="0.66"/><circle cx="585" cy="830" r="1.3" opacity="0.33"/><circle cx="364" cy="441" r="1" opacity="0.48"/><circle cx="603" cy="141" r="1.3" opacity="0.82"/><circle cx="631" cy="784" r="0.7" opacity="0.66"/><circle cx="213" cy="171" r="1" opacity="0.66"/><circle cx="374" cy="277" r="0.7" opacity="0.82"/><circle cx="563" cy="110" r="1.3" opacity="0.48"/><circle cx="45" cy="392" r="0.7" opacity="0.48"/><circle cx="388" cy="598" r="1.3" opacity="0.48"/><circle cx="305" cy="402" r="1" opacity="0.66"/><circle cx="413" cy="490" r="1" opacity="0.82"/><circle cx="441" cy="242" r="1" opacity="0.82"/><circle cx="571" cy="176" r="1.3" opacity="0.82"/><circle cx="490" cy="163" r="0.7" opacity="0.48"/><circle cx="60" cy="756" r="1" opacity="0.33"/><circle cx="464" cy="135" r="0.7" opacity="0.66"/><circle cx="405" cy="721" r="0.7" opacity="0.66"/><circle cx="274" cy="189" r="0.7" opacity="0.66"/><circle cx="165" cy="174" r="0.7" opacity="0.48"/><circle cx="100" cy="104" r="0.7" opacity="0.66"/><circle cx="360" cy="418" r="1.3" opacity="0.33"/><circle cx="297" cy="386" r="1.3" opacity="0.33"/><circle cx="352" cy="558" r="0.7" opacity="0.33"/><circle cx="623" cy="715" r="1.3" opacity="0.66"/><circle cx="337" cy="517" r="1" opacity="0.82"/><circle cx="303" cy="522" r="1.3" opacity="0.66"/><circle cx="472" cy="569" r="0.7" opacity="0.82"/><circle cx="74" cy="19" r="1.3" opacity="0.48"/><circle cx="115" cy="777" r="1" opacity="0.66"/><circle cx="498" cy="448" r="1" opacity="0.82"/><circle cx="160" cy="222" r="1.3" opacity="0.33"/><circle cx="336" cy="432" r="1.3" opacity="0.48"/><circle cx="11" cy="728" r="1.3" opacity="0.33"/><circle cx="578" cy="832" r="1" opacity="0.82"/><circle cx="197" cy="401" r="1.3" opacity="0.33"/><circle cx="231" cy="333" r="1" opacity="0.66"/><circle cx="440" cy="625" r="1.3" opacity="0.66"/></g>
+</g>
+<path d="M12 35V12h35M593 12h35v23M12 827v23h35M593 850h35v-23" fill="none" stroke="#80e9ff" stroke-opacity=".75" stroke-width="2"/>
+<style>
+ @keyframes twinkle { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+ @keyframes send { to { stroke-dashoffset: -100; } }
+ .packet { stroke-dasharray: 4 96; stroke-linecap: round; }
+ @media (prefers-reduced-motion: no-preference) {
+  .stars-near { animation: twinkle 6.4s ease-in-out -2s infinite; }
+  .stars-far { animation: twinkle 8.8s ease-in-out -6s infinite reverse; }
+  .packet { animation: send 8s linear infinite; }
+ }
+ #still:target * { animation: none !important; }
+</style>
+<text x="28" y="47" font-family="Consolas, 'Liberation Mono', monospace" font-size="23" font-weight="500" fill="#80e9ff" >BUILD RECORD   /   2026-11-23</text>
+<path d="M24 73h277l12 12v128H24Z" fill="#102232" stroke="#426073"/>
+<path d="M25 93v-19h28m260 123v15h-19" fill="none" stroke="#65f1d1" stroke-width="2"/>
+<text x="42" y="128" font-family="Consolas, 'Liberation Mono', monospace" font-size="46" font-weight="700" filter="url(#ink-glow)" fill="#65f1d1" >6</text>
+<text x="42" y="160" font-family="'Segoe UI', Arial, sans-serif" font-size="23" font-weight="650" fill="#edf9fc" >Public sources</text>
+<text x="42" y="188" font-family="'Segoe UI', Arial, sans-serif" font-size="19" font-weight="500" fill="#c2d8e5" >Web, bulk, API</text>
+<path d="M42 204H295" fill="none" stroke="#26485c" />
+<path d="M42 204H295" fill="none" stroke="#65f1d1" pathLength="100" class="packet" style="animation-delay:-0s" stroke-width="2"/>
+<path d="M327 73h277l12 12v128H327Z" fill="#102232" stroke="#426073"/>
+<path d="M328 93v-19h28m260 123v15h-19" fill="none" stroke="#65f1d1" stroke-width="2"/>
+<text x="345" y="128" font-family="Consolas, 'Liberation Mono', monospace" font-size="46" font-weight="700" filter="url(#ink-glow)" fill="#65f1d1" >84,602</text>
+<text x="345" y="160" font-family="'Segoe UI', Arial, sans-serif" font-size="23" font-weight="650" fill="#edf9fc" >Files kept</text>
+<text x="345" y="188" font-family="'Segoe UI', Arial, sans-serif" font-size="19" font-weight="500" fill="#c2d8e5" >44.6 GB archived</text>
+<path d="M345 204H598" fill="none" stroke="#26485c" />
+<path d="M345 204H598" fill="none" stroke="#65f1d1" pathLength="100" class="packet" style="animation-delay:-0.67s" stroke-width="2"/>
+<path d="M24 227h277l12 12v128H24Z" fill="#102232" stroke="#426073"/>
+<path d="M25 247v-19h28m260 123v15h-19" fill="none" stroke="#80e9ff" stroke-width="2"/>
+<text x="42" y="282" font-family="Consolas, 'Liberation Mono', monospace" font-size="46" font-weight="700" filter="url(#ink-glow)" fill="#80e9ff" >18.1 M</text>
+<text x="42" y="314" font-family="'Segoe UI', Arial, sans-serif" font-size="23" font-weight="650" fill="#edf9fc" >Lake rows</text>
+<text x="42" y="342" font-family="'Segoe UI', Arial, sans-serif" font-size="19" font-weight="500" fill="#c2d8e5" >20 sets / 40 versions</text>
+<path d="M42 358H295" fill="none" stroke="#26485c" />
+<path d="M42 358H295" fill="none" stroke="#80e9ff" pathLength="100" class="packet" style="animation-delay:-1.34s" stroke-width="2"/>
+<path d="M327 227h277l12 12v128H327Z" fill="#102232" stroke="#426073"/>
+<path d="M328 247v-19h28m260 123v15h-19" fill="none" stroke="#80e9ff" stroke-width="2"/>
+<text x="345" y="282" font-family="Consolas, 'Liberation Mono', monospace" font-size="46" font-weight="700" filter="url(#ink-glow)" fill="#80e9ff" >3.1 M</text>
+<text x="345" y="314" font-family="'Segoe UI', Arial, sans-serif" font-size="23" font-weight="650" fill="#edf9fc" >Violations</text>
+<text x="345" y="342" font-family="'Segoe UI', Arial, sans-serif" font-size="19" font-weight="500" fill="#c2d8e5" >276,013 accidents</text>
+<path d="M345 358H598" fill="none" stroke="#26485c" />
+<path d="M345 358H598" fill="none" stroke="#80e9ff" pathLength="100" class="packet" style="animation-delay:-2.01s" stroke-width="2"/>
+<path d="M24 381h277l12 12v128H24Z" fill="#102232" stroke="#426073"/>
+<path d="M25 401v-19h28m260 123v15h-19" fill="none" stroke="#b3a5ff" stroke-width="2"/>
+<text x="42" y="436" font-family="Consolas, 'Liberation Mono', monospace" font-size="46" font-weight="700" filter="url(#ink-glow)" fill="#b3a5ff" >10</text>
+<text x="42" y="468" font-family="'Segoe UI', Arial, sans-serif" font-size="23" font-weight="650" fill="#edf9fc" >SQL questions</text>
+<text x="42" y="496" font-family="'Segoe UI', Arial, sans-serif" font-size="19" font-weight="500" fill="#c2d8e5" >8 tables / 5 marts</text>
+<path d="M42 512H295" fill="none" stroke="#26485c" />
+<path d="M42 512H295" fill="none" stroke="#b3a5ff" pathLength="100" class="packet" style="animation-delay:-2.68s" stroke-width="2"/>
+<path d="M327 381h277l12 12v128H327Z" fill="#102232" stroke="#426073"/>
+<path d="M328 401v-19h28m260 123v15h-19" fill="none" stroke="#b3a5ff" stroke-width="2"/>
+<text x="345" y="436" font-family="Consolas, 'Liberation Mono', monospace" font-size="46" font-weight="700" filter="url(#ink-glow)" fill="#b3a5ff" >374,400</text>
+<text x="345" y="468" font-family="'Segoe UI', Arial, sans-serif" font-size="23" font-weight="650" fill="#edf9fc" >Events streamed</text>
+<text x="345" y="496" font-family="'Segoe UI', Arial, sans-serif" font-size="19" font-weight="500" fill="#c2d8e5" >Kafka to PostgreSQL</text>
+<path d="M345 512H598" fill="none" stroke="#26485c" />
+<path d="M345 512H598" fill="none" stroke="#b3a5ff" pathLength="100" class="packet" style="animation-delay:-3.35s" stroke-width="2"/>
+<path d="M24 535h277l12 12v128H24Z" fill="#102232" stroke="#426073"/>
+<path d="M25 555v-19h28m260 123v15h-19" fill="none" stroke="#65f1d1" stroke-width="2"/>
+<text x="42" y="590" font-family="Consolas, 'Liberation Mono', monospace" font-size="46" font-weight="700" filter="url(#ink-glow)" fill="#65f1d1" >0.909</text>
+<text x="42" y="622" font-family="'Segoe UI', Arial, sans-serif" font-size="23" font-weight="650" fill="#edf9fc" >Test ROC AUC</text>
+<text x="42" y="650" font-family="'Segoe UI', Arial, sans-serif" font-size="19" font-weight="500" fill="#c2d8e5" >Top 5%: 10× lift</text>
+<path d="M42 666H295" fill="none" stroke="#26485c" />
+<path d="M42 666H295" fill="none" stroke="#65f1d1" pathLength="100" class="packet" style="animation-delay:-4.02s" stroke-width="2"/>
+<path d="M327 535h277l12 12v128H327Z" fill="#102232" stroke="#426073"/>
+<path d="M328 555v-19h28m260 123v15h-19" fill="none" stroke="#65f1d1" stroke-width="2"/>
+<text x="345" y="590" font-family="Consolas, 'Liberation Mono', monospace" font-size="46" font-weight="700" filter="url(#ink-glow)" fill="#65f1d1" >556</text>
+<text x="345" y="622" font-family="'Segoe UI', Arial, sans-serif" font-size="23" font-weight="650" fill="#edf9fc" >Tests</text>
+<text x="345" y="650" font-family="'Segoe UI', Arial, sans-serif" font-size="19" font-weight="500" fill="#c2d8e5" >Nov 23 suite</text>
+<path d="M345 666H598" fill="none" stroke="#26485c" />
+<path d="M345 666H598" fill="none" stroke="#65f1d1" pathLength="100" class="packet" style="animation-delay:-4.69s" stroke-width="2"/>
+<path d="M24 689h580l12 12v128H24Z" fill="#102232" stroke="#426073"/>
+<path d="M25 709v-19h28m563 123v15h-19" fill="none" stroke="#80e9ff" stroke-width="2"/>
+<text x="42" y="744" font-family="Consolas, 'Liberation Mono', monospace" font-size="46" font-weight="700" filter="url(#ink-glow)" fill="#80e9ff" >5</text>
+<text x="42" y="776" font-family="'Segoe UI', Arial, sans-serif" font-size="23" font-weight="650" fill="#edf9fc" >Dashboard pages</text>
+<text x="42" y="804" font-family="'Segoe UI', Arial, sans-serif" font-size="19" font-weight="500" fill="#c2d8e5" >Google Cloud / HTTPS</text>
+<path d="M42 820H598" fill="none" stroke="#26485c" />
+<path d="M42 820H598" fill="none" stroke="#80e9ff" pathLength="100" class="packet" style="animation-delay:-5.36s" stroke-width="2"/>
 </svg>

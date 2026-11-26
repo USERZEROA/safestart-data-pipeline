@@ -11,8 +11,8 @@ sentence so a panel shows either its data or what is missing.
 
 The Live page shows only what really changes. Every event counts once, so the totals grow only when a source publishes
 something new; each tile says what the last day brought, shows its kind's last 14 days, and names the check that can
-move it and when that check is next due. Its digits roll and the tile glows on the refresh where its count changed
-since the viewer last looked, and at no other time; a pulse marks a source being asked right now (view.py, theme.css).
+move it and when that check is next due. The first available total counts up on entry. After that its digits roll
+and the tile glows on a real change. A separate indicator reports connectivity to the stream store.
 
 The tabs run lazily and follow the URL (`?page=Mine+brief&mine=4609612`): only the open page queries its stores, and
 a mine's brief can be shared as a link. Warehouse answers stay cached until a new build is swapped in, but a query that
@@ -31,12 +31,14 @@ Run: streamlit run src/safestart_pipeline/dashboard/app.py
 
 from __future__ import annotations
 
+import base64
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -110,6 +112,7 @@ OFFICIAL_LABELS = {"new": "New", "changed": "Changed", "gone": "Gone", "restored
                    "rejected": "Refused files", "checked": "Confirmed unchanged"}
 STALE_HOURS = int(STALE_AFTER.total_seconds() // 3600)
 THEME_CSS = (Path(__file__).with_name("theme.css")).read_text(encoding="utf-8")
+TERRAIN_IMAGE = base64.b64encode(Path(__file__).with_name("terrain.svg").read_bytes()).decode("ascii")
 
 
 # Cached reads
@@ -237,6 +240,17 @@ def tile(label: str, value: str, **options: Any) -> None:
 def tiles(columns: int, minimum: int = 150) -> Any:
     """A responsive grid of tiles: `columns` across on a wide screen, as many as fit at `minimum` px on a narrow one."""
     return st.grid(columns, min_column_width=minimum, gap="xsmall")
+
+
+def show_chart(chart: alt.Chart | alt.LayerChart) -> None:
+    """Style a complete Vega-Lite figure after its layers are composed; keep native theme text colors."""
+    figure = (
+        chart.configure_axis(labelFont="monospace", labelFontSize=11, titleFontSize=12, gridDash=[2, 4],
+                             gridOpacity=0.55)
+        .configure_legend(labelFont="monospace", labelFontSize=11, symbolStrokeWidth=2)
+        .configure_view(strokeOpacity=0)
+    )
+    st.altair_chart(figure, width="stretch")
 
 
 def section_picker(frame: pd.DataFrame, key: str, height: int | str = "auto") -> str | None:
@@ -394,7 +408,10 @@ def live_tiles(mode: str | None) -> None:
     status = (view.chip("Stream counts unavailable", "warning", dot="warning") if counts.problem else
               view.chip("Stream store reachable", "good", dot="good"))
     updated = view.chip(f"Updated {now:%H:%M:%S} UTC · every {REFRESH_SECONDS} s", title=view.stamp(now))
-    st.html(f'<div class="ss-row">{status}{updated}</div>' + view.kpi_row(groups))
+    sweep = "ss-radar" if counts.problem else "ss-radar online"
+    st.html(f'<div class="ss-monitor" style="--phase:-{now.timestamp() % 6:.2f}s">'
+            f'<i class="{sweep}" aria-hidden="true"></i>'
+            f'<div class="ss-row">{status}{updated}</div></div>' + view.kpi_row(groups))
     provenance("Totals and 24 h arrivals count distinct stored events in the selected mode (`stream.events`, "
                f"cached {TOTALS_TTL_SECONDS} s). "
                "Bars show 14 UTC source days across both modes (`stream.daily_counts`).")
@@ -588,7 +605,7 @@ def activity_panel(mode: str | None) -> None:
         if rows.empty:
             st.caption(f"No {shown_mode} events received in the last {span}.")
         else:
-            st.altair_chart(charts.activity(rows, grain, start, now), width="stretch")
+            show_chart(charts.activity(rows, grain, start, now))
     provenance(f"Events received per {grain} (UTC), from `stream.events` in PostgreSQL. The replay sends the history "
                "once per start of the stack; live events come from the watchers.")
 
@@ -731,8 +748,8 @@ def heartbeat_panel() -> None:
     if marks.empty and spans.empty:
         return
     stamp = pd.Timestamp(now)
-    st.altair_chart(charts.heartbeat(marks, spans, stamp - pd.Timedelta(hours=HEARTBEAT_HOURS), stamp,
-                                     stamp + pd.Timedelta(hours=AHEAD_HOURS)), width="stretch")
+    show_chart(charts.heartbeat(marks, spans, stamp - pd.Timedelta(hours=HEARTBEAT_HOURS), stamp,
+                                stamp + pd.Timedelta(hours=AHEAD_HOURS)))
     legend = (view.chip("found new or done", "good", dot="good") + view.chip("unchanged", "muted", dot="muted")
               + view.chip("refused or unsigned", "warning", dot="warning")
               + view.chip("error", "critical", dot="critical") + view.chip("skipped", "muted", dot="dim")
@@ -757,9 +774,9 @@ def enforcement_page() -> None:
     st.subheader(f"{label} by {grain}", anchor=False)
     counts = stream(data.daily_counts, kind, days, grain)
     if shown(counts, f"No {label.lower()} counted yet: the analytics consumer keeps these counts."):
-        st.altair_chart(charts.counts_over_time(counts.frame, kind, grain), width="stretch")
+        show_chart(charts.counts_over_time(counts.frame, kind, grain))
         span = "all days" if period == "All" else f"last {period}"
-        st.altair_chart(charts.counts_by_district(counts.frame, kind, span), width="stretch")
+        show_chart(charts.counts_by_district(counts.frame, kind, span))
         provenance("Records per day they happened, from `stream.daily_counts`, which the analytics consumer keeps "
                    "from the Kafka stream, each event counted once.")
 
@@ -770,7 +787,7 @@ def enforcement_page() -> None:
         district = st.selectbox("District", options, format_func=lambda name: name or NO_DISTRICT)
         series = stream(data.forecasts, kind, district, min(days, FORECAST_DAYS))
         if shown(series, "No forecasts for this district in the period."):
-            st.altair_chart(charts.forecast(series.frame, kind), width="stretch")
+            show_chart(charts.forecast(series.frame, kind))
             methods = ", ".join(sorted(set(series.frame["method"].astype(str))))
             st.caption(f"One-step-ahead forecast of each day ({md(methods)}); red points are the days the analytics "
                        "consumer flagged as anomalies.")
@@ -792,8 +809,7 @@ def enforcement_page() -> None:
     if shown(history, "No district history in the warehouse."):
         measure = st.segmented_control("Measure", list(MEASURES), default="violations", required=True,
                                        format_func=MEASURES.get, key="history_measure")
-        st.altair_chart(charts.district_heatmap(history.frame, measure, f"{MEASURES[measure]} per year"),
-                        width="stretch")
+        show_chart(charts.district_heatmap(history.frame, measure, f"{MEASURES[measure]} per year"))
         provenance("From `mart_district_year` in the DuckDB warehouse.")
 
 
@@ -801,7 +817,7 @@ def standards_page() -> None:
     st.subheader("Most cited standards", anchor=False)
     top = warehouse(data.top_cited_sections, 100)
     if shown(top, "No citations in the warehouse."):
-        st.altair_chart(charts.top_sections(top.frame.head(15)), width="stretch")
+        show_chart(charts.top_sections(top.frame.head(15)))
         st.caption("The 100 most cited sections of 30 CFR. Select a row to read the section.")
         show_section(section_picker(top.frame, key="standards_sections", height=320))
         provenance("From `mart_top_cited_sections` joined to `cfr_section` (the eCFR text) in the DuckDB warehouse.")
@@ -809,7 +825,7 @@ def standards_page() -> None:
     st.subheader("S&S share of violations", anchor=False)
     trend = warehouse(data.ss_trend)
     if shown(trend, "No violations in the warehouse."):
-        st.altair_chart(charts.ss_trend(trend.frame), width="stretch")
+        show_chart(charts.ss_trend(trend.frame))
         st.caption("S&S (significant and substantial): a violation reasonably likely to lead to a serious injury or "
                    f"illness. Years with fewer than {charts.TREND_MIN_VIOLATIONS} violations are left out.")
         provenance("From `mart_ss_trend` in the DuckDB warehouse.")
@@ -969,7 +985,7 @@ def sources_page() -> None:
                     f": {int(held.frame.iloc[0]['files']):,} distinct files, "
                     f"{float(held.frame.iloc[0]['bytes']) / 1e9:,.1f} GB")
         st.caption(f"{total:,} URLs downloaded from the MSHA and OSHA websites{distinct}.")
-        st.altair_chart(charts.documents(documents.frame), width="stretch")
+        show_chart(charts.documents(documents.frame))
         provenance("From `document` in the DuckDB warehouse: the crawls' inventories, one row per URL.")
 
 
@@ -1077,11 +1093,13 @@ def official_files() -> None:
 
 
 def header() -> None:
-    st.title("SafeStart safety data", anchor=False)
     stamp = data.warehouse_stamp()
-    built = (f"warehouse built {datetime.fromtimestamp(stamp[1] / 1e9, UTC):%Y-%m-%d %H:%M} UTC" if stamp
-             else "no warehouse yet")
-    st.caption(f"MSHA enforcement, 30 CFR standards and official files · {built}.")
+    built = (f"Warehouse built {datetime.fromtimestamp(stamp[1] / 1e9, UTC):%Y-%m-%d %H:%M} UTC" if stamp
+             else "No warehouse yet")
+    st.html(f'<header class="ss-mast"><img class="ss-terrain" alt="" width="450" height="184" '
+            f'src="data:image/svg+xml;base64,{TERRAIN_IMAGE}"><div class="ss-mast-copy">'
+            '<p class="ss-domain">MSHA enforcement / 30 CFR / Official files</p>'
+            f'<h1>SafeStart safety data</h1><p class="ss-build">{built}</p></div></header>')
 
 
 def main() -> None:

@@ -1,15 +1,8 @@
 """Altair charts for the dashboard, drawn from one palette so that an entity keeps its color on every page.
 
-Colors follow the entity, never its rank: each event kind and each commodity has a fixed hue from a categorical set
-whose neighbors stay distinguishable under color-vision deficiency, and severity uses reserved status colors (serious
-for S&S violations and serious accidents, critical for anomalies) that never stand for a series. A chart with one
-series uses the first hue and no legend; a chart with more carries a legend, so color never carries meaning alone.
-Every axis names its unit and every mark has a tooltip.
-
-The dashboard is dark (.streamlit/config.toml), so the hues are the palette's dark steps, checked as a set against the
-card surface (every neighbor apart under color-vision deficiency, each at least 3:1 against the surface); magnitudes
-run from a dark blue that recedes into the surface to a light one; touching marks are parted by a gap of the surface's
-color. The activity and heartbeat axes use a UTC scale in every browser.
+Each event kind keeps its hue across tiles, trends and tooltips. Midtone series colors work on the ice and navy
+chart surfaces. Forecasts have a dashed stroke, anomalies have point markers, and the heatmap has a quantitative
+legend. Streamlit supplies theme-aware axis and legend text. Activity and heartbeat use UTC in every browser.
 """
 
 from __future__ import annotations
@@ -18,17 +11,17 @@ import altair as alt
 import pandas as pd
 
 BLUE, ORANGE, AQUA, YELLOW, MAGENTA, GREEN, VIOLET = (
-    "#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#0ca30c", "#9085e9")
+    "#348cd1", "#d17329", "#119881", "#ab891b", "#c562ab", "#739533", "#8f76d4")
 CATEGORICAL = (BLUE, ORANGE, AQUA, YELLOW, MAGENTA, GREEN, VIOLET)
-SERIOUS = "#ec835a"  # status color: S&S violations and serious accidents (definitions.py)
-CRITICAL = "#d03b3b"  # status color: anomalies
-MUTED = "#8a93a0"  # forecasts and folded "other" categories
-SEQUENTIAL = ("#104281", "#cde2fb")  # one hue for magnitudes: low recedes into the dark surface, high is light
-SURFACE = "#14171c"  # the card surface (theme.css), whose color parts touching marks
-ACCENT = "#2fd3e6"  # the interface's accent: "now" and the work under way, never a series
+SERIOUS = "#ca556d"
+CRITICAL = "#d54c54"
+MUTED = "#76869a"
+SEQUENTIAL = ("#233951", "#23798a", "#75dfce")
+SURFACE = "#102434"  # fine keyline between adjacent marks
+ACCENT = "#188e99"  # the current time on the timeline
 # Status colors with the words that go with them (the dashboard always prints the status beside its color).
-TONES = {"good": "#0ca30c", "muted": "#8a93a0", "warning": "#fab219", "serious": "#ec835a", "critical": "#d03b3b",
-         "dim": "#5b6370", "accent": ACCENT}
+TONES = {"good": AQUA, "muted": MUTED, "warning": YELLOW, "serious": SERIOUS, "critical": CRITICAL,
+         "dim": "#607389", "accent": ACCENT}
 
 KIND_ORDER = ("inspection", "violation", "accident", "order_107a", "dataset_version", "page_change", "regulation")
 KIND_LABELS = {
@@ -157,7 +150,8 @@ def counts_over_time(frame: pd.DataFrame, kind: str, grain: str) -> alt.Chart:
     return alt.Chart(long).mark_line(strokeWidth=2).encode(
         x=alt.X("period:T", title=None),
         y=alt.Y("count:Q", title=f"{label} per {grain}"),
-        color=alt.Color("series:N", title=None, legend=legend, scale=alt.Scale(domain=domain, range=[BLUE, SERIOUS])),
+        color=alt.Color("series:N", title=None, legend=legend,
+                        scale=alt.Scale(domain=domain, range=[KIND_COLORS[kind], SERIOUS][:len(domain)])),
         tooltip=[alt.Tooltip("period:T", title=grain.capitalize()), alt.Tooltip("series:N", title="Series"),
                  alt.Tooltip("count:Q", title="Records", format=",")],
     ).properties(height=HEIGHT)
@@ -170,7 +164,7 @@ def counts_by_district(frame: pd.DataFrame, kind: str, period: str) -> alt.Chart
     tooltip = [alt.Tooltip("district:N", title="District"), alt.Tooltip("events:Q", title="Records", format=",")]
     if kind in SERIOUS_LABELS:
         tooltip.append(alt.Tooltip("serious:Q", title=SERIOUS_LABELS[kind], format=","))
-    return alt.Chart(by_district).mark_bar(color=BLUE, cornerRadiusEnd=3).encode(
+    return alt.Chart(by_district).mark_bar(color=KIND_COLORS[kind], cornerRadiusEnd=3).encode(
         x=alt.X("events:Q", title=f"{KIND_LABELS[kind]}, {period}"),
         y=alt.Y("district:N", sort="-x", axis=_every_label("District")),
         tooltip=tooltip,
@@ -178,17 +172,19 @@ def counts_by_district(frame: pd.DataFrame, kind: str, period: str) -> alt.Chart
 
 
 def forecast(frame: pd.DataFrame, kind: str) -> alt.LayerChart:
-    """Observed counts against the one-step-ahead forecast (gray), anomalies marked (columns day, observed,
-    predicted, residual, anomaly). Both layers share one color scale, so they draw one legend."""
-    domain, colors = ["Observed", "Forecast", "Anomaly"], [BLUE, MUTED, CRITICAL]
+    """Observed counts, a dashed one-step-ahead forecast and anomaly markers on one color scale."""
+    domain, colors = ["Observed", "Forecast", "Anomaly"], [KIND_COLORS[kind], MUTED, CRITICAL]
     color_scale = alt.Scale(domain=domain, range=colors)
+    legend = _top_legend()
+    legend.symbolOpacity = 1  # Keep the legend keys solid when Vega merges the translucent layers.
     lines = frame.melt("day", value_vars=["observed", "predicted"], var_name="series", value_name="count")
     lines["series"] = lines["series"].map({"observed": "Observed", "predicted": "Forecast"})
     y_title = f"{KIND_LABELS[kind]} per day"
     line = alt.Chart(lines).mark_line(strokeWidth=2).encode(
         x=alt.X("day:T", title=None),
         y=alt.Y("count:Q", title=y_title),
-        color=alt.Color("series:N", title=None, scale=color_scale, legend=_top_legend()),
+        color=alt.Color("series:N", title=None, scale=color_scale, legend=legend),
+        strokeDash=alt.condition(alt.datum.series == "Forecast", alt.value([6, 4]), alt.value([1, 0])),
         tooltip=[alt.Tooltip("day:T", title="Day"), alt.Tooltip("series:N", title="Series"),
                  alt.Tooltip("count:Q", title="Records", format=",.1f")],
     )
@@ -196,12 +192,22 @@ def forecast(frame: pd.DataFrame, kind: str) -> alt.LayerChart:
     points = alt.Chart(anomalies).mark_point(filled=True, size=64, opacity=1).encode(
         x="day:T",
         y=alt.Y("observed:Q", title=y_title),
-        color=alt.Color("series:N", title=None, scale=color_scale, legend=_top_legend()),
+        color=alt.Color("series:N", title=None, scale=color_scale, legend=legend),
         tooltip=[alt.Tooltip("day:T", title="Day"), alt.Tooltip("observed:Q", title="Observed", format=","),
                  alt.Tooltip("predicted:Q", title="Forecast", format=",.1f"),
                  alt.Tooltip("residual:Q", title="Residual", format="+,.1f")],
     )
-    return alt.layer(line, points).properties(height=HEIGHT)
+    # Translucent underlays follow the same coordinates, dashes and scale as their sharp foreground marks.
+    forecast_glow = line.transform_filter(alt.datum.series == "Forecast").encode(tooltip=alt.value(None))
+    anomaly_glow = points.encode(tooltip=alt.value(None))
+    return alt.layer(
+        forecast_glow.mark_line(strokeWidth=11, strokeCap="round", opacity=0.10, aria=False),
+        forecast_glow.mark_line(strokeWidth=6, strokeCap="round", opacity=0.22, aria=False),
+        line,
+        anomaly_glow.mark_point(filled=True, size=360, opacity=0.10, aria=False),
+        anomaly_glow.mark_point(filled=True, size=180, opacity=0.25, aria=False),
+        points,
+    ).properties(height=HEIGHT)
 
 
 def district_heatmap(frame: pd.DataFrame, measure: str, title: str) -> alt.Chart:
@@ -265,7 +271,7 @@ def documents(frame: pd.DataFrame, kinds: int = 6) -> alt.Chart:
     return alt.Chart(data).mark_bar().encode(
         x=alt.X("sum(documents):Q", title="Documents downloaded"),
         y=alt.Y("site:N", sort="-x", axis=_every_label(None)),
-        color=alt.Color("kind:N", title=None, legend=_top_legend(columns=4),
+        color=alt.Color("kind:N", title=None, legend=_top_legend(columns=2),
                         scale=alt.Scale(domain=domain, range=colors)),
         tooltip=[alt.Tooltip("site:N", title="Site"), alt.Tooltip("kind:N", title="Kind"),
                  alt.Tooltip("sum(documents):Q", title="Documents", format=","),

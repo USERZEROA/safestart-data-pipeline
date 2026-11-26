@@ -7,6 +7,8 @@
 
 <p align="center">
   <picture>
+    <source media="(prefers-reduced-motion: reduce) and (max-width: 600px)" srcset="docs/images/readme/hero-phone.svg#still">
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/readme/hero.svg#still">
     <source media="(max-width: 600px)" srcset="docs/images/readme/hero-phone.svg">
     <img src="docs/images/readme/hero.svg" width="100%"
       alt="From the public mine-safety record to a crew's pre-shift check: collect, keep, model, stream, serve">
@@ -17,9 +19,9 @@
   <a href="https://github.com/USERZEROA/safestart-data-pipeline/actions/workflows/ci.yml"><img alt="CI"
     src="https://github.com/USERZEROA/safestart-data-pipeline/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://35.254.13.119"><img alt="Live dashboard"
-    src="https://img.shields.io/badge/live-dashboard-15803d?logo=streamlit&logoColor=white"></a>
+    src="https://img.shields.io/badge/live-dashboard-006c71?logo=streamlit&logoColor=white"></a>
   <a href="docs/SafeStart-data-pipeline-documentation.pdf"><img alt="Documentation (PDF)"
-    src="https://img.shields.io/badge/documentation-PDF-1d4ed8"></a>
+    src="https://img.shields.io/badge/documentation-PDF-365777"></a>
   <a href="https://github.com/USERZEROA/safestart-data-pipeline/commits/main"><img alt="Last commit"
     src="https://img.shields.io/github/last-commit/USERZEROA/safestart-data-pipeline"></a>
   <a href="LICENSE"><img alt="License: all rights reserved"
@@ -54,9 +56,12 @@ SafeStart.
 
 ## Course requirements
 
+The [line-by-line rubric check](docs/evidence/rubric-check.md) records the evidence and the single-author
+collaboration limitation.
+
 | Requirement (points) | Where to look |
 |---|---|
-| Repository and collaboration (60) | Haiwei Yu is the sole contributor. [Commit history][history] |
+| Repository and collaboration (60) | Haiwei Yu is the sole contributor. [Contribution record](docs/evidence/rubric-check.md#repository-and-collaboration) |
 | Data ingestion (40) | [How six public sources are collected][ingestion] |
 | Data storage (40) | [Entity relationships](docs/ERD.md) for the warehouse and stream store |
 | Data querying (40) | [Ten SQL questions and their answers](docs/QUERIES.md) |
@@ -64,10 +69,9 @@ SafeStart.
 | Architecture and orchestration (50) | [Batch tasks and logs][flow] from a real Prefect Cloud run |
 | Containers, CI/CD and testing (60) | [CI workflow][ci] for lint, the test suite and the Docker Compose stack |
 | Undercurrents of data engineering (60) | [Eight principles and their implementation][principles] |
-| Additional components (60) | [Streamlit dashboard](https://35.254.13.119) on Google Cloud |
+| Additional components (60) | [Five dashboard views](docs/DOCUMENTATION.md#dashboard) with warehouse and stream data |
 | Video and documentation (50) | 8 min 6 s walkthrough above and [12-page report][pdf] with a one-page summary |
 
-[history]: https://github.com/USERZEROA/safestart-data-pipeline/commits/main
 [ingestion]: docs/DOCUMENTATION.md#sources-and-ingestion
 [flow]: docs/evidence/prefect-run-2026-11-23.md
 [ci]: .github/workflows/ci.yml
@@ -133,6 +137,8 @@ stream, purple the daily official-files update, and green the dashboard. The
 
 <p align="center">
   <picture>
+    <source media="(prefers-reduced-motion: reduce) and (max-width: 600px)" srcset="docs/images/readme/key-numbers-phone.svg#still">
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/readme/key-numbers.svg#still">
     <source media="(max-width: 600px)" srcset="docs/images/readme/key-numbers-phone.svg">
     <img src="docs/images/readme/key-numbers.svg" width="100%" alt="Key numbers: 6 public sources; 84,602 files
       kept (44.6 GB, every version); 18.1 million lake rows (20 datasets, 40 versions); 3.1 million violations
@@ -142,9 +148,19 @@ stream, purple the daily official-files update, and green the dashboard. The
   </picture>
 </p>
 
-The board records the **2026-11-23 build**. See the [source counts](docs/evidence/sources.md),
-[lake manifests](docs/evidence/lake.md), [batch run][flow] and [model evaluation](docs/ML.md).
-The test suite grew from 556 at that build to 590 on November 24.
+Each reading comes from the **November 23, 2026 build**. The [batch run][flow] records the path from download to export.
+
+| Board reading | Evidence |
+|---|---|
+| 6 public sources | [Acquisition method for each source][ingestion] |
+| 84,602 files · 44.6 GB | [Archive counts and bytes by folder](docs/evidence/sources.md#raw-archive) |
+| 18.1 M lake rows · 20 datasets · 40 versions | [Manifest and source-line counts](docs/evidence/lake.md) |
+| 3.1 M violations · 1.2 M inspections · 276,013 accidents | [Exact row counts by dataset](docs/evidence/lake.md) |
+| 10 SQL questions · 8 model tables · 5 marts | [Questions and answers](docs/QUERIES.md) · [warehouse schema](docs/ERD.md) |
+| 374,400 events streamed | [Replay period and count](docs/DOCUMENTATION.md#streaming) |
+| Test ROC AUC 0.909 · top 5% at 10× the base rate | [Held-out model evaluation](docs/ML.md) |
+| 556 tests in the build · 590 collected on November 24 | [Build snapshot](docs/DOCUMENTATION.md#executive-summary) · [later test inventory](docs/DOCUMENTATION.md#testing-and-ci) |
+| 5 dashboard pages | [Views and data sources](docs/DOCUMENTATION.md#dashboard) · [deployment](docs/DEPLOYMENT.md) |
 
 ## Team
 

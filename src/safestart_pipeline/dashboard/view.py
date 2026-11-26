@@ -5,10 +5,10 @@ it. Nothing here imports Streamlit, so the tests read it as text.
 Every text that comes from a source (titles, notes, URLs, hosts) goes through `html.escape`. The markup carries no
 script and no inline SVG: Streamlit's sanitizer keeps HTML and CSS only, so bars are elements sized by a CSS variable.
 
-Motion follows one rule: only a real change moves. A tile's digits roll and the tile glows once, on the refresh where
-its value differs from what this viewer saw last (the caller passes `previous`); a newly arrived event slides in once;
-a pulse marks a source being asked right now, with its phase taken from the clock, so a redraw does not restart it;
-everything else is still. theme.css stops all of it for a viewer who asks for reduced motion.
+The first available total counts up on entry. A change to a previously seen total also highlights its tile once.
+A new event slides in once.
+Source-request pulses follow the clock so refreshes continue their phase. The decorative field and the Live
+connection indicator use separate styles. All motion respects the viewer's reduced-motion preference.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-PULSE_SECONDS = 1.8  # the pulse's cycle in theme.css
+PULSE_SECONDS = 3  # the pulse's cycle in theme.css
 DIGITS = "".join(f"<b>{digit}</b>" for digit in range(10))
 
 
@@ -128,8 +128,13 @@ def odometer(value: int | None, previous: int | None) -> str:
             cells.append(esc(new))
             continue
         start = int(was) if was.isdigit() else 0
-        cells.append(f'<span class="ss-d" style="--from:{start};--to:{new}"><span class="w">{new}</span>'
-                     f'<span class="r">{DIGITS}</span></span>')
+        end = int(new)
+        strip = DIGITS
+        if value > previous and end < start:
+            end += 10  # roll forward through zero on a carry, including 99 → 100
+            strip += DIGITS
+        cells.append(f'<span class="ss-d" style="--from:{start};--to:{end}"><span class="w">{new}</span>'
+                     f'<span class="r">{strip}</span></span>')
     return f'<span class="ss-odo ss-anim" aria-hidden="true">{"".join(cells)}</span>'
 
 
@@ -170,15 +175,16 @@ def sparkline(tile: Tile) -> str:
 
 
 def tile(item: Tile) -> str:
-    changed = item.previous is not None and item.previous != item.value
+    changed = item.previous is not None and item.value is not None and item.previous != item.value
     classes = "ss-tile ss-anim changed" if changed else "ss-tile"
     badge = f'<span class="ss-new">+{item.fresh:,} new</span>' if item.fresh > 0 else ""
+    number = odometer(item.value, 0 if item.previous is None else item.previous)
     foot = "".join(f"<span>{esc(part)}</span>" for part in item.foot)
     return (f'<article class="{classes}" style="--c:{esc(item.color)}" data-kind="{esc(item.kind)}"'
             f' title="{esc(item.note)}" aria-label="{esc(item.label)}: {esc(whole(item.value))}. {esc(item.note)}">'
             f'<div class="ss-tile-head">{dot(color=item.color)}<span class="ss-tile-label">{esc(item.label)}</span>'
             '</div>'
-            f'<div class="ss-val">{odometer(item.value, item.previous)}{badge}</div>'
+            f'<div class="ss-val"><span class="ss-reading">{number}</span>{badge}</div>'
             f'<div class="ss-delta">{chip(item.delta, item.delta_tone)}</div>'
             f'{sparkline(item)}<div class="ss-foot">{foot}</div></article>')
 
