@@ -29,13 +29,13 @@
 </p>
 
 <p align="center">
-  <a href="https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@dbbe7820da447be395bf9fc096c7f91e5a6f76c3/docs/SafeStart-data-pipeline-video.mp4"><img
-    src="docs/images/video-thumbnail.png" width="410" alt="Video walkthrough, 8 min 6 s: click to watch"></a>
+  <a href="https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@040c348e2b6cff4d7327694fb644fc2b9808b844/docs/SafeStart-data-pipeline-video.mp4"><img
+    src="docs/images/video-thumbnail.png" width="410" alt="Video walkthrough, 8 min 48 s: click to watch"></a>
 </p>
 
 <p align="center">
-  <b>Video walkthrough</b>, 8 min 6 s:
-  <a href="https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@dbbe7820da447be395bf9fc096c7f91e5a6f76c3/docs/SafeStart-data-pipeline-video.mp4">watch in the browser</a>
+  <b>Video walkthrough</b>, 8 min 48 s:
+  <a href="https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@040c348e2b6cff4d7327694fb644fc2b9808b844/docs/SafeStart-data-pipeline-video.mp4">watch in the browser</a>
   or <a href="https://github.com/USERZEROA/safestart-data-pipeline/raw/main/docs/SafeStart-data-pipeline-video.mp4">
   download</a>
   &nbsp;·&nbsp; <b>Live dashboard</b>: <a href="https://35.254.13.119">35.254.13.119</a>, on Google Cloud
@@ -52,7 +52,9 @@ SafeStart.
 > Each time the stack starts, it replays enforcement history from 2024 onward. The November 23 build replayed 374,400
 > events in about 90 minutes. Each event counts once, even after a restart. Watchers check the Federal Register and
 > the signed feed hourly, MSHA's datasets and sitemaps every six hours, and OSHA's sitemap daily. The daily
-> official-files update runs between 16:30 and 04:30 UTC. Totals grow when a source yields a distinct event.
+> official-files update starts on the server at 16:30 UTC and publishes a [signed feed](https://35.254.13.119/feed/official/latest.json).
+> Manifest 2 recorded 3 new and 12 changed files. Manifest 3 checked 3,904 pages with no changes. The video's dark
+> Live view shows all seven event totals and lets you switch between historical replay and live discoveries.
 
 ## Course requirements
 
@@ -70,7 +72,7 @@ collaboration limitation.
 | Containers, CI/CD and testing (60) | [CI workflow][ci] for lint, the test suite and the Docker Compose stack |
 | Undercurrents of data engineering (60) | [Eight principles and their implementation][principles] |
 | Additional components (60) | [Five dashboard views](docs/DOCUMENTATION.md#dashboard) with warehouse and stream data |
-| Video and documentation (50) | 8 min 6 s walkthrough above and [12-page report][pdf] with a one-page summary |
+| Video and documentation (50) | 8 min 48 s walkthrough above and [12-page report][pdf] with a one-page summary |
 
 [ingestion]: docs/DOCUMENTATION.md#sources-and-ingestion
 [flow]: docs/evidence/prefect-run-2026-11-23.md

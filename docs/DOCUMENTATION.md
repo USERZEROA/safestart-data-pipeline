@@ -10,12 +10,12 @@
 [ci-badge]: https://github.com/USERZEROA/safestart-data-pipeline/actions/workflows/ci.yml/badge.svg
 [ci]: https://github.com/USERZEROA/safestart-data-pipeline/actions/workflows/ci.yml
 
-<a href="https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@dbbe7820da447be395bf9fc096c7f91e5a6f76c3/docs/SafeStart-data-pipeline-video.mp4"><img
-src="images/video-thumbnail.png" alt="Video walkthrough, 8 min 6 s: click to watch" width="480"></a>
+<a href="https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@040c348e2b6cff4d7327694fb644fc2b9808b844/docs/SafeStart-data-pipeline-video.mp4"><img
+src="images/video-thumbnail.png" alt="Video walkthrough, 8 min 48 s: click to watch" width="480"></a>
 
-**Video walkthrough** (8 min 6 s): it opens on a crew's pre-shift check in SafeStart, then follows the
-pipeline's main flow: a real Prefect run, the lake, the warehouse, the model, the live stream and a mine's brief.
-[Watch it in the browser](https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@dbbe7820da447be395bf9fc096c7f91e5a6f76c3/docs/SafeStart-data-pipeline-video.mp4),
+**Video walkthrough** (8 min 48 s): from a crew's pre-shift check in SafeStart through a real Prefect run, the
+lake, the warehouse, the risk model, the Live page, the signed official-files feed and a mine's brief.
+[Watch it in the browser](https://cdn.jsdelivr.net/gh/USERZEROA/safestart-data-pipeline@040c348e2b6cff4d7327694fb644fc2b9808b844/docs/SafeStart-data-pipeline-video.mp4),
 or [download the file][download].
 
 [download]: https://github.com/USERZEROA/safestart-data-pipeline/raw/main/docs/SafeStart-data-pipeline-video.mp4
@@ -91,7 +91,7 @@ Cloud VM, fed by the live stream; Prefect Cloud runs its batch</td>
 </tr>
 <tr>
 <td>Quality</td>
-<td>556 tests; CI runs lint and the tests against PostgreSQL, then the whole stack on a synthetic sample data root</td>
+<td>590 tests (556 at the November 23 build); CI runs lint and the tests against PostgreSQL, then the stack on sample data</td>
 </tr>
 </tbody>
 </table>
@@ -177,7 +177,7 @@ href="#deployment">Deployment</a></td>
 </tr>
 <tr>
 <td><strong>Video and documentation</strong> (50)</td>
-<td>The walkthrough (8 min 6 s) and this document's <a href="#executive-summary">one-page executive summary</a></td>
+<td>The walkthrough (8 min 48 s) and this document's <a href="#executive-summary">one-page executive summary</a></td>
 </tr>
 </tbody>
 </table>
@@ -606,6 +606,10 @@ batch and the Sunday model, and stops by 04:30 UTC, before SafeStart's planned 0
 one by hand and `ssp official status` shows the latest. [docs/OFFICIAL_FILES.md](OFFICIAL_FILES.md) has its rules
 and the feed's contract.
 
+The recording shows numbered manifests 1 through 3 with their signatures and both SHA-256 links verified locally.
+Manifest 2, the first daily run, recorded 3 new files and 12 changed files. Manifest 3 confirmed 3,904 pages
+unchanged and listed no changes. Later runs have their own sequence numbers. [Latest signed feed manifest](https://35.254.13.119/feed/official/latest.json).
+
 - **What it asks.** A probe of `www.msha.gov`, the eCFR titles the batch found new and the Federal Register's final
   rules for titles 29 and 30 (as hints), the MSHA legacy host's held documents for at most two hours, then OSHA until
   the deadline: its sitemap, the 500 hub pages whose links reach 98.8% of the files the project's pages link to, new
@@ -662,13 +666,14 @@ uses cyan for selection and keyboard focus.
 - **Sources** opens with the official run, its recent changes, feed history and publish warnings. The check table,
   dataset versions and downloaded corpus follow.
 
-The screenshots below show the earlier dashboard. The mine brief is shown at desktop and phone widths.
+The video and the stills below show the sci-fi dashboard deployed on November 26 at 08:03 UTC: the mine brief at
+desktop and phone widths.
 
 <img src="images/dashboard-mine-brief.png" width="520"
 alt="Mine brief of Marshall County Mine: its 12-month record and the standards cited most there, with their text">
 <img src="images/dashboard-mine-brief-phone.png" width="240" alt="The same mine brief at phone width">
 
-The Enforcement page while the replay streams 2024: one district's violations each day against the one-step-ahead
+The Enforcement page: one district's violations each day over the past year against the one-step-ahead
 forecast, which has learned the weekly rhythm of inspections (days it flags, when the window has any, are marked in
 red):
 
