@@ -351,7 +351,7 @@ div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="bor
 .ss-table tbody tr:first-child td { border-top: 0; }
 .ss-table th:first-child, .ss-table td:first-child { position: sticky; left: 0; z-index: 1; background: var(--ss-surface); }
 .ss-table th:first-child { background: light-dark(#dceaf1, #152d40); }
-.ss-table td:first-child { color: var(--ss-ink); font-family: var(--ss-mono); }
+.ss-table td:first-child { color: var(--ss-ink); font-family: var(--ss-mono); white-space: nowrap; }
 .ss-table .nowrap, .ss-table .when { white-space: nowrap; }
 .ss-table .num { text-align: right; white-space: nowrap; }
 .ss-table td.num { font-family: var(--ss-mono); font-variant-numeric: tabular-nums; }
@@ -363,7 +363,8 @@ div[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"][style*="bor
   .ss-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .ss-table tr { padding: 9px 12px; border-top: 1px solid var(--ss-line); }
   .ss-table tbody tr:first-child { border-top: 0; }
-  .ss-table td, .ss-table td.num, .ss-table td.note {
+  /* every cell of a card wraps, the one-line columns of the wide table included */
+  .ss-table td, .ss-table td.num, .ss-table td.note, .ss-table td.when, .ss-table td.nowrap, .ss-table td:first-child {
     display: grid; grid-template-columns: 8.6rem minmax(0, 1fr); gap: 10px; min-width: 0; padding: 2px 0;
     border: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; position: static; background: none;
   }
